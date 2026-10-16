@@ -1,0 +1,20 @@
+[package]
+name = "cz-cli"
+description = "Command-line runner for Civilization Zero experiments"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "cz"
+path = "src/main.rs"
+
+[features]
+default = []
+parallel = ["simulation-core/parallel"]
+
+[dependencies]
+simulation-core = { path = "../simulation-core" }
+serde.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,26 @@
+[package]
+name = "simulation-core"
+description = "Civilization Zero deterministic world kernel (Phase 1)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+# Run the (pure) decision phase on a rayon thread pool. Results must be
+# bit-identical to the serial path; see tests/determinism.rs.
+parallel = ["dep:rayon"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+rayon = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest.workspace = true
+criterion.workspace = true
+
+[[bench]]
+name = "step"
+harness = false
