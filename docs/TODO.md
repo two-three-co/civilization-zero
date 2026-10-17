@@ -16,7 +16,7 @@ Phase 2 の計画は ADR-0010（Toy 1）に従う。
 - [ ] `Event::Acted { agent, intent, outcome }` の記録（2a-3、Store/Transfer と同時。全行動記録は設定で ON/OFF、台帳サイズを計測）。
 - [ ] 台帳のバイナリ形式（postcard は内部タグ付き enum を復号できないので別ワイヤ型が要る。JSON Lines で足りている間はやらない）。
 - [ ] 2b-6 の磨き込み（任意）: 分岐を 2 本以上、fork した B をさらに fork、B の介入履歴の表示、B 側の個体インスペクタ（3-9c の比較で B の学習者を見たいときは `?policy=learner` で A を学習世界にする）。
-- [ ] 3-9c の残り（任意）: 公開 URL での比較の確認（push 後）、曲線の履歴は 1 フレーム 1 点（1,200 点を超えると間引いて描画、tick/フレームを下げた長時間再生ではメモリが伸びる）。
+- [ ] 3-9c の残り（任意。公開 URL での比較は 2026-10-17 に確認済み、STATUS 参照）: 曲線の履歴は 1 フレーム 1 点（1,200 点を超えると間引いて描画、tick/フレームを下げた長時間再生ではメモリが伸びる）。
 - [ ] wasm サイズ（205 KB → 3-3 で 226 KB → 3-9a で 278 KB、3-4 と合わせて 286 KB → 3-9b で 337 KB → 3-9c で 345 KB。3-9a の +52 KB は `agent_json` / `ledger_json` / `agent_events_json` の serde_json 直列化が主、3-9b の +51 KB は `thread_json` / `deals_json` の `Thread` / `Deal` 直列化）: serde_json を境界から外す（介入・イベント・個体を構造体や typed array で渡す）か、`--profile wasm` 相当の設定を wasm-pack に通せば縮む見込み。計測してから。
 
 ## Phase 3: Agent Cognition（ADR-0013 のタスク表に従う）
