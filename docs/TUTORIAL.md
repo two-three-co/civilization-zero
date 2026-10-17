@@ -5,7 +5,7 @@ Civilization Zero の最初の遊べるマイルストーン。ブラウザだ�
 
 ## 開き方
 
-- 配信 URL: docs/STATUS.md の「配信」欄（未設定なら下のローカル手順）。
+- 配信 URL: **https://two-three-co.github.io/civilization-zero/**（`main` の最新ビルド。フッタのコミットで版が分かる）。
 - ローカル: リポジトリで `cd web && npm install && npm run build:wasm && npm run dev` → `http://127.0.0.1:5173/`。
 - 配布された `dist/` フォルダ: 任意の静的サーバーで配信する（例: `python3 -m http.server 8766` を `dist` の親で実行し `/dist/` を開く）。`file://` では Worker が動かないブラウザがある。
 

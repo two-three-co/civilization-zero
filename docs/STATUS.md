@@ -1,6 +1,6 @@
 # 実装進捗（新しいセッションはまずここを読む）
 
-最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · **Phase 2 = Toy 1: 機能完了（2a-1, 2a-2, 2a-4〜2a-6, 2b-1〜2b-7 済）。配信 URL の確定のみ残る（private リポジトリの Pages は要プラン）。2a-3 は Toy 1 に不要で保留**（ADR-0010）· カーネル版 `simulation-core 0.1.0`
+最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · **Phase 2 = Toy 1 完了（2a-1, 2a-2, 2a-4〜2a-6, 2b-1〜2b-7 済、配信中: https://two-three-co.github.io/civilization-zero/ ）。2a-3 は Phase 3 へ**（ADR-0010）· カーネル版 `simulation-core 0.1.0`
 リポジトリ: https://github.com/two-three-co/civilization-zero（private）· CI: GitHub Actions（fmt / clippy / test debug+release / wasm ビルド）
 
 ## 状態の区別
@@ -48,15 +48,25 @@
 | 2b-4 | 巻き戻し: Worker が `seek` の所要時間を計測、UI に「last seek: N ms（re-ran M）」を表示。ドラッグ中のシークは最新のみ処理（間引き）。任意 tick への `Go` 入力 | 済 (2026-10-17) | 最悪ケース（間隔 250 → 249 tick 再実行）**45〜56 ms**、124 tick 再実行 30 ms、スナップショット上 0 ms。目標 ≤ 200 ms |
 | 2b-5 | 介入パネル（干ばつ・資源量スケール・個体追加・個体除去）、プロトコルに `intervene` / `history`、履歴は **台帳から読み戻し**（`WasmWorld::interventions_json`）。head 以外では Apply 無効（分岐は 2b-6） | 済 (2026-10-17) | UI で tick 300 に干ばつ（regrow 0 / 10）を適用 → 履歴「tick 300 drought」→ tick 600 / 900 のハッシュが native `cz run --drought-at 300 --drought-amount 0 --drought-interval 10` と一致（`0x4392fb01743338c5` / `0x4be57883bb1d1a06`）。`tests/native.rs::intervention_history_comes_from_the_ledger` |
 | 2b-6 | 分岐の並列比較: `WasmWorld::fromSnapshot`（fork はワーカー境界をバイナリスナップショットで越える。`Multiverse::fork` と bit 一致）、プロトコル v2（`snapshot` 要求、`init` に `snapshot`、`Frame.origin`）、「Fork here」（任意 tick）、2 ワーカー同期再生・同期シーク、分割表示、A/B の人口・食料・ハッシュ比較表、スパークライン重ね描き、「Verify: fork again」（同一スナップショット + 同一介入で作り直して同 tick のハッシュ照合） | 済 (2026-10-17) | `tests/native.rs::a_fork_built_from_a_snapshot_matches_multiverse_fork_and_is_reproducible`。**ブラウザ**: fork 21 ms、2 世界同期で 1,800 tick/s・60 fps、tick 400 で A / B のハッシュが native `cz run --ticks 400`（無介入 / `--drought-at 300`）と一致、Verify = MATCH（90 ms） |
-| 2b-7 | アプリ内「Five-minute tour」（5 ステップを世界の状態から自動判定: 観察 → 巻き戻し → 介入 → 分岐 → Verify）、[docs/TUTORIAL.md](TUTORIAL.md)、ビルドにコミットを刻印（フッタ「built from commit …」）、`.github/workflows/pages.yml`（GitHub Pages。リポジトリ変数 `PAGES_ENABLED=true` と Settings → Pages の有効化で動く）、CI が `web/dist` を `toy1-dist` アーティファクトとして保存 | 済 (2026-10-17)。**配信先は要決定**（下記） | 本番ビルドをサブパス `/civilization-zero/` で配信してブラウザ検証: kernel バッジ、wasm/Worker の相対パス解決、ツアー 5/5 到達、Verify = MATCH |
+| 2b-7 | アプリ内「Five-minute tour」（5 ステップを世界の状態から自動判定: 観察 → 巻き戻し → 介入 → 分岐 → Verify）、[docs/TUTORIAL.md](TUTORIAL.md)、ビルドにコミットを刻印（フッタ「built from commit …」）、`.github/workflows/pages.yml`（GitHub Pages）、CI が `web/dist` を `toy1-dist` アーティファクトとして保存 | 済 (2026-10-17)、**配信中** | ローカルでサブパス配信を検証後、GitHub Pages に配信し本番 URL でブラウザ検証（kernel バッジ、ツアー 5/5、Verify = MATCH） |
 | 2a-3 | Store/Transfer + `Acted` | 未（Toy 1 に不要） | — |
 
 ### 配信
 
-- 静的ファイルのみ（`web/dist`: HTML + JS + CSS + wasm + Worker、約 420 KB、サーバー不要）。PRODUCT.md 基準 4 を満たす。
-- GitHub Pages: **リポジトリが private のため、org のプランが Pages 対応（Team 以上）か、リポジトリを public にする必要がある**。有効化手順: Settings → Pages → Source: GitHub Actions、`gh variable set PAGES_ENABLED --body true`。URL は `https://two-three-co.github.io/civilization-zero/` の見込み。
-- 代替: 各 CI 実行の `toy1-dist` アーティファクトを配る（unzip して静的サーバーで配信）。
-- 配信 URL: **未設定**（決定後にここへ記録）。
+- **配信 URL: https://two-three-co.github.io/civilization-zero/**（GitHub Pages、`main` への push ごとに `pages` ワークフローが再配信。リポジトリは 2026-10-17 に public 化、Pages は GitHub Actions ソース、変数 `PAGES_ENABLED=true`）。
+- 静的ファイルのみ（`web/dist`: HTML + JS + CSS + wasm + Worker、約 420 KB、サーバー不要）。フッタの「built from commit」でカーネル版を特定できる。PRODUCT.md 基準 4。
+- 配布の代替: 各 CI 実行の `toy1-dist` アーティファクト（unzip して静的サーバーで配信）。
+
+## Phase 2 完了判定（ADR-0010 の完了条件）
+
+| 条件 | 状態 |
+|---|---|
+| PRODUCT.md の Toy 1 受け入れ基準 1〜4 | 1 ツアー付きで 4 操作を自力で体験可 / 2 分割表示と比較表・重ね描き / 3 Verify ボタンでハッシュ一致 / 4 静的配信 — すべて満たす |
+| 計測: 1,300 体で ≥ 60 tick/s、巻き戻し ≤ 200 ms を画面に表示 | 1,802 tick/s（30 tick/フレーム）、最悪シーク 56 ms。画面に実測値表示 |
+| 決定論: 同一介入 2 回でハッシュ一致、CI に native-wasm ハッシュ一致テスト | Verify = MATCH。`wasm-pack test --node` が CI で `GOLDEN_200` を照合 |
+| ユーザーがブラウザで確認するデモ = Toy 1、配信 URL を記録 | 上記 URL |
+
+**Phase 2 = Toy 1 完了（2026-10-17）。** 残件 2a-3（Store/Transfer + `Acted`）は Phase 3 の通信・交換と一緒に扱う。
 
 ## 計測値（Apple M1, rustc 1.99.1, release, 2026-10-17）
 

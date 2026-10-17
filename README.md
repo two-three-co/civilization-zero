@@ -5,7 +5,9 @@
 
 中心的な問い: **「人工社会は、自らを統治する実行可能なルールを発明できるか？」**
 
-現在は **Phase 1: Deterministic World Kernel**（出生・寿命を含む）が完了した段階です。制度・認知・分岐世界はまだありません。
+**遊ぶ: https://two-three-co.github.io/civilization-zero/** （Toy 1。ブラウザだけで動き、サーバーには何も送らない。遊び方は [docs/TUTORIAL.md](docs/TUTORIAL.md)）
+
+現在は **Phase 2: Toy 1**（観察・巻き戻し・介入・分岐比較・再現性検証）まで完了しています。制度・認知はまだありません。
 進捗と計測値は [docs/STATUS.md](docs/STATUS.md)、設計は [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、
 判断の記録は [docs/adr/](docs/adr/)、研究仮説・リスク・実験は [docs/research/](docs/research/) を参照。
 

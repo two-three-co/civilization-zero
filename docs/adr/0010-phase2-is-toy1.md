@@ -37,6 +37,11 @@ Phase 2 を **2a（カーネル側、CLI で検証可能）** と **2b（ブラ�
 
 工数見積りは出さない（計測主義）。各タスクは受け入れ基準を満たしたら STATUS.md に移す。
 
+## 結果（2026-10-17）
+
+全タスク完了。配信 URL: https://two-three-co.github.io/civilization-zero/ 。完了条件の照合は docs/STATUS.md「Phase 2 完了判定」。
+2a-3（Store/Transfer + `Acted`）は Toy 1 に不要だったため Phase 3 に移した。
+
 ## Phase 2 の完了条件（まとめ）
 
 1. PRODUCT.md の Toy 1 受け入れ基準 1〜4。
