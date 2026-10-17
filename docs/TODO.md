@@ -22,7 +22,7 @@ Phase 2 の計画は ADR-0010（Toy 1）に従う。
 
 - [x] 3-1 空間インデックス + `Observation::neighbors()` + `Perception` 設定（済 2026-10-17: ゴールデン不変、step +11〜16%）
 - [x] 3-2 `Transfer` / `Store` / `Harm`、`DeathCause::Violence`、`Transferred` / `Harmed` イベント、`Acted` 記録（済 2026-10-17: ゴールデン不変を旧定義で証明、Random は社会行動も抽選）
-- [ ] 3-3 `Signal(Say)`、記憶リング `recent[K]` のカーネル更新
+- [x] 3-3 `Signal(Say)`、`last_signal` の観測、記憶リング `recent[K]` のカーネル更新（済 2026-10-17: `Agent.recent` は `memory` の兄弟フィールド、空なら符号化に入らずゴールデン不変、スナップショット形式 5）
 - [ ] 3-4 交渉メッセージ `Propose / Accept / Reject`（配達と台帳のみ、履行は強制しない）
 - [ ] 3-5 `PolicyKind::{Reflex, Learner}` の枠、`Intervention::SetPolicy`、CLI の方策拡張
 - [ ] 3-6 Reflex 方策（固定小数点、Forager 等価の初期重み、突然変異 ON）

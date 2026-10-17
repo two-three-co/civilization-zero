@@ -53,6 +53,8 @@ pub fn add_agent_with(
         policy,
         params,
         memory: Memory::default(),
+        last_signal: None,
+        recent: Vec::new(),
     });
     w.ledger.energy_initial += energy;
     w.ledger.food_initial += inventory as u64;

@@ -8,6 +8,7 @@
 use crate::action::{Action, Outcome};
 use crate::agent::AgentId;
 use crate::intervention::Intervention;
+use crate::memory::Message;
 use crate::space::Pos;
 use serde::{Deserialize, Serialize};
 
@@ -81,6 +82,12 @@ pub enum Event {
         action: Action,
         outcome: Outcome,
     },
+    /// A signal was made (`Action::Signal`). Recorded when `record_signals`.
+    Signaled {
+        tick: u64,
+        agent: AgentId,
+        message: Message,
+    },
 }
 
 impl Event {
@@ -91,7 +98,8 @@ impl Event {
             | Event::Intervened { tick, .. }
             | Event::Transferred { tick, .. }
             | Event::Harmed { tick, .. }
-            | Event::Acted { tick, .. } => *tick,
+            | Event::Acted { tick, .. }
+            | Event::Signaled { tick, .. } => *tick,
         }
     }
 }

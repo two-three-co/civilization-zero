@@ -1,13 +1,13 @@
 # 実装進捗（新しいセッションはまずここを読む）
 
-最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · **Phase 2 = Toy 1 完了（配信中: https://two-three-co.github.io/civilization-zero/ ）。Phase 3（Agent Cognition, ADR-0013）進行中: 3-1, 3-2 済**（ADR-0010）· カーネル版 `simulation-core 0.1.0`
-リポジトリ: https://github.com/two-three-co/civilization-zero（private）· CI: GitHub Actions（fmt / clippy / test debug+release / wasm ビルド）
+最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · **Phase 2 = Toy 1 完了（配信中: https://two-three-co.github.io/civilization-zero/ ）。Phase 3（Agent Cognition, ADR-0013）進行中: 3-1, 3-2, 3-3 済**（ADR-0010）· カーネル版 `simulation-core 0.1.0`
+リポジトリ: https://github.com/two-three-co/civilization-zero（public）· CI: GitHub Actions（fmt / clippy / test debug+release / wasm ビルド）
 
 ## 状態の区別
 
 - **実装済み・テスト通過・計測済み**: 下表の Phase 1 項目、ADR-0008 のライフサイクル、ADR-0009 の wasm 計測。
 - **設計のみ**: Phase 2 の 2a-3（保留）、Phase 3 以降。
-- **未着手**: Nomos / Genesis の全コード。`web/` は本物のカーネル（wasm）で観察・巻き戻し・介入・分岐比較・再現性検証ができ、5 分ツアー付き（PRODUCT.md の Toy 1 基準 1〜4 を満たす。基準 4 は静的ビルドで満たすが、公開 URL は配信先の決定待ち）。
+- **未着手**: Nomos / Genesis の全コード。`web/` は本物のカーネル（wasm）で観察・巻き戻し・介入・分岐比較・再現性検証ができ、5 分ツアー付き（PRODUCT.md の Toy 1 基準 1〜4 を公開 URL で満たす）。
 
 ## Phase 1 チェックリスト
 
@@ -22,7 +22,7 @@
 | 7 | 初期行動方針 | 済（Forager + Random 帰無モデル、`PolicyParams` 継承） | `policy.rs`, ADR-0005/0008 |
 | 8 | シード付き乱数 | 済 | `rng.rs`, ADR-0004 |
 | 9 | 決定論的 step | 済 | `tests/determinism.rs`、native = wasm32（ADR-0009） |
-| 10 | シリアライズ | 済（形式 3、JSON + バイナリ） | スナップショット + ハッシュ照合、ADR-0006 |
+| 10 | シリアライズ | 済（形式 5、JSON + バイナリ） | スナップショット + ハッシュ照合、ADR-0006 |
 | 11 | 自動テスト | 済 | 37 テスト（proptest 48 ケース含む）、debug/release 両方通過、CI 緑 |
 | 12 | ベンチマーク | 済 | criterion、下記 |
 | 13 | 2D ビューア | 済 | `viewer/index.html`（trace 形式 2、年齢表示）、ブラウザで確認済み |
@@ -74,7 +74,8 @@
 |---|---|---|---|
 | 3-1 | 空間インデックス（`src/spatial.rs`、tick 開始時に `agents` から計数ソートで構築、派生状態で保存しない）、`Observation::neighbors()`（`social_radius` 内を (距離, id) 順、自分を除く）、`Perception { social_radius, see_policy, see_inventory, see_energy }`（既定 2 / off / on / off、`serde(default)` で旧 config も読める） | 済 (2026-10-17) | `tests/neighbors.rs`（4 テスト + proptest 64 ケースで総当たりと一致）、`spatial.rs` 単体 2 本。**既定世界の遷移は不変**（旧符号化で state_hash を再計算し `0xf16cb4be6e7ed69b` に一致）。計測: 構築 **10 µs**（1,310 体, 128²）、step 132 → **147〜154 µs/tick（+11〜16%、2 回計測、基準 +20% 以内）**、decide 0.97 → 1.10〜1.18 ms/10 tick |
 | 3-2 | 行動 `Transfer { to, n }` / `Store(n)` / `Harm { target }`（S(t) の位置で隣接判定、行為者 id 順、試行コスト）、失敗 `NotAdjacent` / `TargetFull` / `NoSuchTarget`、`DeathCause::Violence`（加害を受けた tick の死、餓死より優先）、イベント `Transferred` / `Harmed`（常時）/ `Acted`（`record_actions`）、台帳 `transfers` / `food_transferred` / `food_stored` / `harms`、config `transfer_cost` 100 / `harm_cost` 2,000 / `harm_damage` 20。Random 方策は 10 行動を一様に抽選（社会行動の対象は隣接個体）。`cz run --record-actions`、表に d.viol / xfer / harm 列。スナップショット形式 4（先頭の `format` だけ先に読んで旧版を `Format(n)` で拒否） | 済 (2026-10-17) | `tests/interaction.rs`（8 テスト: 移転・部分移転・4 種の失敗と試行コスト・S(t) 隣接と id 順・貯蔵・加害の累積と Violence・Acted の記録と JSON・Random 世界の不変条件）。**Forager 世界の遷移は不変**（旧定義のハッシュを再計算して `0xb7b914705736f95f` に一致）。計測: step 148 µs/tick（3-1 と同じ）、**`Acted` 台帳は 1,000 体 × 2,000 tick で 2,634,945 イベント・220 MB（84 B/イベント、記録なし 680 KB の 324 倍）** → 診断用。Random は加害コストで tick 300 までに絶滅 |
-| 3-3 〜 3-10 | 記憶、通信・交渉、方策の枠と SetPolicy、Reflex、Learner、EXP-002、UI、文書 | 未 | — |
+| 3-3 | 行動 `Signal(Message::Say(u8))`（コスト `signal_cost` 既定 0）、`Agent.last_signal { tick, message }`、`Observation::neighbors()` の `Neighbor.signal`（**前 tick の発信だけ**を `signal_radius` 内で観測、既定 2）、カーネルが書く記憶 `Agent.recent: Vec<Interaction { tick, other, kind, value }>`（`kind` = GaveTo / ReceivedFrom / Harmed / HarmedBy / SawHarm / Heard、上限 `memory_slots` 既定 8、0 で無効）。Apply の 5b（死亡処理の前）でその tick の移転・加害・目撃（被害者から `social_radius` 内）・聴取（発信者から `signal_radius` 内）を起きた順に反映。`Event::Signaled`（`record_signals`、既定 OFF）、台帳 `signals`、`step` は空間インデックスを Decide と Apply で共有（`apply_with`）。Random は `Say(0..8)` を含む 11 行動を抽選。スナップショット形式 5。`cz run` の表に sig 列、`cz log` に signaled | 済 (2026-10-17) | `src/memory.rs`、`tests/memory.rs`（5 本: 発信は同 tick に聴取・次 tick だけ観測・半径外は不可、記憶の順序と上限と `memory_slots = 0`、Forager 世界は記憶も発信も空、スナップショット往復とハッシュへの寄与、**proptest 32 ケースで serial = parallel の記憶一致・上限・oldest-first**）。**Forager のゴールデン `0x658ee873d1866501` は不変**（空の `recent` / `None` の `last_signal` は符号化にバイトを足さない）。計測（M1）: step **154 µs/tick**（1,316 体、3-1 の 147〜154 の範囲内）、バイナリ往復 0.75 ms。スナップショット 1,357 体 56.8 → **59.6 KB（+5%）**、個体部分は Forager 19.7 B/体、Random（記憶 5.5 件/体）46 B/体、満杯 8 件で 64 B/体（記憶なし 15〜20 B）→ 全個体満杯でも約 120 KB（≈ 2.0 倍、基準 ≤ 2 倍。tick・id が大きいと varint が伸び少し超えうる）。ADR の見込み 125 KB 増より小さい |
+| 3-4 〜 3-10 | 通信・交渉、方策の枠と SetPolicy、Reflex、Learner、EXP-002、UI、文書 | 未 | — |
 
 ## 計測値（Apple M1, rustc 1.99.1, release, 2026-10-17）
 
@@ -135,6 +136,7 @@ native と同条件で `state_hash` 一致（`0x1c677f12c51ae3b1`）。
 ### その他
 
 - `state_hash`（≈1,310 体, 128²）: 261 µs。スナップショット往復: JSON 1.63 ms（304 KB）、**バイナリ 0.69 ms（56.8 KB）**。
+- 3-3 後（2026-10-17, commit の bench）: step **154 µs/tick**（1,316 体）、parallel decide 146 µs/tick、`spatial_index` 11.2 µs、`state_hash` 267 µs、スナップショット往復 JSON 2.31 ms（346 KB）/ **バイナリ 0.75 ms（59.6 KB、1,357 体）**。個体部分: Forager 19.7 B/体、Random（記憶 5.5 件/体）46 B/体、満杯 8 件 64 B/体。10k 体 1.54 ms/tick（parallel 0.86）、100k 体 20.6 ms/tick（parallel 10.3）。
 - Multiverse（ADR-0012）: fork 0.07 ms、`state_at` は最大でスナップショット間隔分の再実行（間隔 500 → 33 ms、100 → 6.7 ms）、再生 11,900 tick/s（照合込み）。
 - 並列 decide（rayon, M1 8 コア）は手順 B で 1.14×（1.3k 体）〜 2.25×（137k 体）（ADR-0011 後。直列が速くなった分、相対効果は 1.35×〜3.0× から下がった）。1〜2k 体の Toy 1 では使わない（ADR-0009）。手順 A で「1k 体では逆効果」に見えたのは、走査の少ない tick ではスレッド起動コストが支配的になるため。
 
@@ -162,7 +164,8 @@ ADR-0011 で走査を行スライス化（ハッシュ不変、-16%）→ 2 パ�
 | 2026-10-17 | 0xf16cb4be6e7ed69b | ADR-0011: Forager の視界走査を 2 パス化。勝者の分布は不変（`tests/forager.rs` の一様性テスト）、乱数の消費列だけが変わる。行スライス化（commit ee515f4）はハッシュ不変だった |
 | 2026-10-17 | 0xb7b914705736f95f | ADR-0013 3-1: ゴールデンを **config を含まない `dynamics_hash`** に再定義（config に `perception` を追加したため `state_hash` は変わる）。**遷移は不変**: 旧符号化（perception なしの config JSON）で `state_hash` を再計算すると前行の値に一致 |
 | 2026-10-17 | 0x658ee873d1866501 | ADR-0013 3-2: `dynamics_hash` を **台帳も含まない**物理状態（tick・id・資源・個体）だけに再定義（台帳に社会行動の集計と死因 `Violence` を追加したため）。**遷移は不変**: 3-1 時点の定義で再計算すると前行の値に一致。以後、config と台帳の追加はゴールデンを変えない |
+| 2026-10-17 | 0x658ee873d1866501（不変） | ADR-0013 3-3: `Agent.last_signal` / `Agent.recent` は**非空のときだけ**符号化に入るので、発信も記憶もない Forager 世界では値が変わらない。Random 世界は `Say` が抽選に加わり軌跡が変わる（EXP-001 の注記） |
 
 ## 次のタスク
 
-**Phase 3（Agent Cognition）**: 設計は [ADR-0013](adr/0013-phase3-agent-cognition.md)、タスクは docs/TODO.md。最初に着手するのは 3-1（空間インデックスと他者観測）。3-9a（UI の社会マーカー）は 3-2 以降に並行できる。
+**Phase 3（Agent Cognition）**: 設計は [ADR-0013](adr/0013-phase3-agent-cognition.md)、タスクは docs/TODO.md。3-1〜3-3 済。次は 3-4（交渉メッセージ `Propose / Accept / Reject` の配達と台帳）。3-9a（UI の社会マーカー・インスペクタの記憶表示）は並行できる。

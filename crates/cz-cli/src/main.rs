@@ -178,7 +178,7 @@ fn simulate(mut world: World, o: &Opts) -> R {
         do_check
     );
     println!(
-        "{:>6} {:>6} {:>6} {:>7} {:>6} {:>6} {:>5} {:>5} {:>9} {:>9} {:>9}",
+        "{:>6} {:>6} {:>6} {:>7} {:>6} {:>6} {:>5} {:>5} {:>5} {:>9} {:>9} {:>9}",
         "tick",
         "alive",
         "births",
@@ -187,6 +187,7 @@ fn simulate(mut world: World, o: &Opts) -> R {
         "d.viol",
         "xfer",
         "harm",
+        "sig",
         "gathered",
         "consumed",
         "food"
@@ -194,7 +195,7 @@ fn simulate(mut world: World, o: &Opts) -> R {
     let mut step_time = Duration::ZERO;
     let mut agent_steps = 0u64;
     let (mut gathered, mut consumed, mut births) = (0u64, 0u64, 0u64);
-    let (mut xfers, mut harms) = (0u64, 0u64);
+    let (mut xfers, mut harms, mut sigs) = (0u64, 0u64, 0u64);
     let mut deaths = [0u64; DeathCause::COUNT];
     for _ in 0..ticks {
         if let Some(t) = trace.as_mut() {
@@ -221,6 +222,7 @@ fn simulate(mut world: World, o: &Opts) -> R {
         births += r.births as u64;
         xfers += r.transfers as u64;
         harms += r.harms as u64;
+        sigs += r.signals as u64;
         for (acc, d) in deaths.iter_mut().zip(r.deaths_by_cause) {
             *acc += d as u64;
         }
@@ -229,7 +231,7 @@ fn simulate(mut world: World, o: &Opts) -> R {
         }
         if world.tick % 100 == 0 {
             println!(
-                "{:>6} {:>6} {:>6} {:>7} {:>6} {:>6} {:>5} {:>5} {:>9} {:>9} {:>9}",
+                "{:>6} {:>6} {:>6} {:>7} {:>6} {:>6} {:>5} {:>5} {:>5} {:>9} {:>9} {:>9}",
                 world.tick,
                 world.agents.len(),
                 births,
@@ -238,12 +240,13 @@ fn simulate(mut world: World, o: &Opts) -> R {
                 deaths[DeathCause::Violence.index()],
                 xfers,
                 harms,
+                sigs,
                 gathered,
                 consumed,
                 world.resources.total_food()
             );
-            (gathered, consumed, births, xfers, harms, deaths) =
-                (0, 0, 0, 0, 0, [0; DeathCause::COUNT]);
+            (gathered, consumed, births, xfers, harms, sigs, deaths) =
+                (0, 0, 0, 0, 0, 0, [0; DeathCause::COUNT]);
         }
     }
     let secs = step_time.as_secs_f64();
@@ -416,6 +419,7 @@ fn cmd_log(o: &Opts) -> R {
             Event::Transferred { .. } => "transferred",
             Event::Harmed { .. } => "harmed",
             Event::Acted { .. } => "acted",
+            Event::Signaled { .. } => "signaled",
         };
         *counts.entry(kind).or_default() += 1;
     }

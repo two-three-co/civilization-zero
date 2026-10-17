@@ -35,10 +35,10 @@ crates/simulation-core     ← Deterministic World Kernel。外部依存は serd
 - **World** = `config` + `tick` + `ResourceGrid` + `Vec<Agent>`（id 昇順を不変条件として維持）+ `next_agent_id`（単調増加、再利用なし）+ `Ledger`。
 - **空間**: 有界の整数グリッド（`u16` 座標）、4近傍、境界は壁。1セルに何体でも入れる（Phase 1 では移動衝突なし）。
 - **資源**: SoA（`food: Vec<u32>`, `capacity: Vec<u32>`）。パッチ生成、`regrow_interval` ごとに定量再生。
-- **Agent**: `id, pos, energy(milli), health, inventory, age, policy, params, memory{target}`。
+- **Agent**: `id, pos, energy(milli), health, inventory, age, policy, params, memory{target}, last_signal, recent`。`memory` は方策が所有し `Intent` で返す。`last_signal`（最後の発信と tick）と `recent`（直近 `memory_slots` 件の相互作用 `{tick, other, kind, value}`、oldest-first）はカーネルだけが書く（ADR-0013 D4, D5）。
   `params`（`PolicyParams { hunger_permille }`）は親から継承、突然変異は既定 OFF（ADR-0008）。
 - **Ledger**: 食料・エネルギーの流入/流出、出生数、死因別死亡数を累計し、保存則を任意の tick で検証可能にする。
-- **Event**: `Born` / `Died` / `Intervened` / `Transferred` / `Harmed` / `Acted` の自己完結レコード（tick 入り、serde 内部タグ）。`Intervened` は `World::intervene()` の戻り値、他は `TickReport.events`。`Acted`（全個体の行動と結果）は `record_actions` のときだけ。Phase 2 の台帳形式そのもので、Phase 4 の違反判定の材料。
+- **Event**: `Born` / `Died` / `Intervened` / `Transferred` / `Harmed` / `Signaled` / `Acted` の自己完結レコード（tick 入り、serde 内部タグ）。`Signaled` は `record_signals` のときだけ。`Intervened` は `World::intervene()` の戻り値、他は `TickReport.events`。`Acted`（全個体の行動と結果）は `record_actions` のときだけ。Phase 2 の台帳形式そのもので、Phase 4 の違反判定の材料。
 - **EventLog**（ADR-0010 2a-2）: 追記専用の `Vec<Event>`。tick 非減少を検証、`range(from..to)` は二分探索。JSON Lines（先頭にヘッダ行 `{"format":1,"kernel":…}`）の書き出し/読み戻しは `Write` / `BufRead` を受け取り、カーネルはファイルを開かない。
 - **Intervention**（ADR-0010 2a-1）: `Drought` / `ScaleFood` / `SpawnAgents` / `RemoveAgent`。tick の合間に `World::intervene()` で適用。乱数を使わず、無効なら状態を変えずに `Err`。差分は台帳の `food_intervened` / `energy_intervened` に計上され、保存則の検査式に入る。
 
@@ -47,15 +47,16 @@ ECS ライブラリは使わない（ADR-0001）。
 ## 1 tick の実行順序（ADR-0002, ADR-0008）
 
 ```
-S(t) ──Index──▶ SpatialIndex（派生状態、保存しない）
+S(t) ──Index──▶ SpatialIndex（派生状態、保存しない。Decide と Apply で共有）
      ──Decide(純関数, 並列化可)──▶ Intent[]  ──Apply──▶ S(t+1)
-         ↑ RngStream(seed,tick,agent,Decide)、Observation::neighbors() は Index を読むだけ
+         ↑ RngStream(seed,tick,agent,Decide)、Observation::neighbors() は Index を読むだけ（前 tick の発信は Neighbor.signal）
 Apply:
   2 Consume   在庫→エネルギー（私的、競合なし）
   3 Gather    S(t) の位置で解決。同一セルの請求者を抽選キー順に逐次配分
-  3b Transfer / Store / Harm   S(t) の位置で隣接判定（Manhattan ≤ 1）、行為者 id 順に逐次解決（ADR-0013 D3）
+  3b Transfer / Store / Harm / Signal   S(t) の位置で隣接判定（Manhattan ≤ 1）、行為者 id 順に逐次解決。Signal の聴取者は signal_radius 内（ADR-0013 D3, D5）
   4 Move      同時適用（セル容量無制限なので衝突しない）
   5 Upkeep    代謝+行動コスト → Rest 回復 → 飢餓ダメージ → 加齢
+  5b Memory   その tick の移転・加害・目撃（被害者から social_radius 内）・聴取を起きた順に各個体の recent へ（上限 memory_slots、カーネルのみが書く。ADR-0013 D4）
   6 Death     health<=0 はその tick に加害を受けていれば Violence、そうでなければ Starvation。それ以外で age>=max_age は OldAge。食料はセルへ、エネルギーは償却
   7 Birth     生存者で energy>=birth_threshold の個体を id 順に処理。子 id は next_agent_id から連番、末尾に追加
   8 Env       regrow_interval ごとに再生

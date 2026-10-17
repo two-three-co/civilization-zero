@@ -8,10 +8,14 @@
 //! 3. **Gather**  – resolved against `S(t)` positions. Claimants on the same
 //!    cell are ordered by a seeded lottery key and served sequentially until
 //!    the cell is empty, so food can never be taken twice.
+//!    - *3b. Interact* – Transfer / Store / Harm / Signal, resolved at `S(t)`
+//!      positions in actor (id) order (ADR-0013 D3, D5).
 //! 4. **Move**    – all moves applied simultaneously (cells are unbounded,
 //!    so moves never conflict).
 //! 5. **Upkeep**  – metabolism + action costs, then Rest healing, then
 //!    starvation damage, then ageing.
+//!    - *5b. Memory* – the kernel appends what each agent gave, received,
+//!      suffered, witnessed or heard this tick to `Agent.recent` (ADR-0013 D4).
 //! 6. **Death**   – `health <= 0` dies of `Starvation`; otherwise
 //!    `age >= max_age` dies of `OldAge`. Carried food is dropped on the cell,
 //!    remaining energy is written off in the ledger. The dead do not reach
@@ -29,6 +33,7 @@ use crate::agent::{Agent, AgentId, Memory};
 use crate::config::{ConfigError, WorldConfig};
 use crate::event::{DeathCause, Event};
 use crate::intervention::{Intervention, InterventionError};
+use crate::memory::{remember, Interaction, InteractionKind, Signal};
 use crate::policy::{decide, Intent, Observation, PolicyKind};
 use crate::resources::ResourceGrid;
 use crate::rng::{RngStream, Stream};
@@ -54,6 +59,7 @@ pub struct Ledger {
     pub food_transferred: u64,
     pub food_stored: u64,
     pub harms: u64,
+    pub signals: u64,
     /// Net food added (+) or removed (-) by interventions.
     pub food_intervened: i64,
     /// Net energy added (+) or removed (-) by interventions.
@@ -77,9 +83,10 @@ pub struct TickReport {
     pub food_transferred: u64,
     pub food_stored: u64,
     pub harms: u32,
-    /// Events in the order they happened: transfers and harms in actor
-    /// order, `Acted` (if recorded), then deaths in id order, then births
-    /// in parent-id order.
+    pub signals: u32,
+    /// Events in the order they happened: transfers, harms and signals (if
+    /// recorded) in actor order, `Acted` (if recorded), then deaths in id
+    /// order, then births in parent-id order.
     pub events: Vec<Event>,
 }
 
@@ -147,6 +154,8 @@ impl World {
                     policy: policy_for(i),
                     params: config.initial_params,
                     memory: Memory::default(),
+                    last_signal: None,
+                    recent: Vec::new(),
                 }
             })
             .collect();
@@ -183,6 +192,7 @@ impl World {
             resources: &self.resources,
             bounds: self.bounds(),
             config: &self.config,
+            tick: self.tick,
             agents: &self.agents,
             index,
         }
@@ -197,35 +207,48 @@ impl World {
     /// Phase 1 of a tick: compute every agent's intent without mutating state.
     pub fn decide_all(&self) -> Vec<Intent> {
         let index = self.spatial_index();
+        self.decide_all_with(&index)
+    }
+
+    /// `decide_all` over an index already built for this tick.
+    pub fn decide_all_with(&self, index: &SpatialIndex) -> Vec<Intent> {
         self.agents
             .iter()
-            .map(|a| self.decide_one(a, &index))
+            .map(|a| self.decide_one(a, index))
             .collect()
     }
 
     #[cfg(feature = "parallel")]
     pub fn decide_all_parallel(&self) -> Vec<Intent> {
-        use rayon::prelude::*;
         let index = self.spatial_index();
+        self.decide_all_parallel_with(&index)
+    }
+
+    #[cfg(feature = "parallel")]
+    pub fn decide_all_parallel_with(&self, index: &SpatialIndex) -> Vec<Intent> {
+        use rayon::prelude::*;
         // `collect` on an indexed parallel iterator preserves input order;
         // the index is built once and only read.
         self.agents
             .par_iter()
-            .map(|a| self.decide_one(a, &index))
+            .map(|a| self.decide_one(a, index))
             .collect()
     }
 
-    /// Advance one tick with the serial decision phase.
+    /// Advance one tick with the serial decision phase. The tick's spatial
+    /// index is built once and shared by Decide and Apply.
     pub fn step(&mut self) -> TickReport {
-        let intents = self.decide_all();
-        self.apply(intents)
+        let index = self.spatial_index();
+        let intents = self.decide_all_with(&index);
+        self.apply_with(intents, &index)
     }
 
     /// Advance one tick deciding in parallel. Must equal `step` bit-for-bit.
     #[cfg(feature = "parallel")]
     pub fn step_parallel(&mut self) -> TickReport {
-        let intents = self.decide_all_parallel();
-        self.apply(intents)
+        let index = self.spatial_index();
+        let intents = self.decide_all_parallel_with(&index);
+        self.apply_with(intents, &index)
     }
 
     pub fn run(&mut self, ticks: u64) {
@@ -234,9 +257,18 @@ impl World {
         }
     }
 
-    /// Phases 2-8. `intents[i]` belongs to `self.agents[i]`.
+    /// Phases 2-8. `intents[i]` belongs to `self.agents[i]`. Builds the
+    /// tick's spatial index itself; `step` shares one with Decide.
     pub fn apply(&mut self, intents: Vec<Intent>) -> TickReport {
+        let index = self.spatial_index();
+        self.apply_with(intents, &index)
+    }
+
+    /// `apply` with the index of the tick's start positions, which locates
+    /// the witnesses of a harm and the listeners of a signal.
+    pub fn apply_with(&mut self, intents: Vec<Intent>, index: &SpatialIndex) -> TickReport {
         assert_eq!(intents.len(), self.agents.len(), "one intent per agent");
+        assert_eq!(index.len(), self.agents.len(), "index built for this tick");
         let cfg = &self.config;
         let bounds = self.resources.bounds;
         let tick = self.tick;
@@ -324,6 +356,9 @@ impl World {
         // Resolved at S(t) positions in actor (id) order. Targets are named
         // by id; `agents` is sorted, so the lookup is a binary search.
         let mut harmed = vec![false; n];
+        // What agents will remember of this tick, in order of occurrence
+        // (ADR-0013 D4). Applied in phase 5b.
+        let mut notes: Vec<(usize, Interaction)> = Vec::new();
         for (i, it) in intents.iter().enumerate() {
             match it.action {
                 Action::Transfer { to, n: want } => {
@@ -345,6 +380,25 @@ impl World {
                                     self.ledger.food_transferred += q as u64;
                                     report.transfers += 1;
                                     report.food_transferred += q as u64;
+                                    let from = self.agents[i].id;
+                                    notes.push((
+                                        i,
+                                        Interaction {
+                                            tick,
+                                            other: to,
+                                            kind: InteractionKind::GaveTo,
+                                            value: q as i64,
+                                        },
+                                    ));
+                                    notes.push((
+                                        j,
+                                        Interaction {
+                                            tick,
+                                            other: from,
+                                            kind: InteractionKind::ReceivedFrom,
+                                            value: q as i64,
+                                        },
+                                    ));
                                     report.events.push(Event::Transferred {
                                         tick,
                                         from: self.agents[i].id,
@@ -382,6 +436,40 @@ impl World {
                             harmed[j] = true;
                             self.ledger.harms += 1;
                             report.harms += 1;
+                            let (by, at) = (self.agents[i].id, self.agents[j].pos);
+                            notes.push((
+                                i,
+                                Interaction {
+                                    tick,
+                                    other: target,
+                                    kind: InteractionKind::Harmed,
+                                    value: cfg.harm_damage,
+                                },
+                            ));
+                            notes.push((
+                                j,
+                                Interaction {
+                                    tick,
+                                    other: by,
+                                    kind: InteractionKind::HarmedBy,
+                                    value: cfg.harm_damage,
+                                },
+                            ));
+                            // Witnesses: everyone else within social_radius
+                            // of the victim at S(t).
+                            for (_, k) in index.within(at, cfg.perception.social_radius) {
+                                if k != i && k != j {
+                                    notes.push((
+                                        k,
+                                        Interaction {
+                                            tick,
+                                            other: by,
+                                            kind: InteractionKind::SawHarm,
+                                            value: target.0 as i64,
+                                        },
+                                    ));
+                                }
+                            }
                             report.events.push(Event::Harmed {
                                 tick,
                                 by: self.agents[i].id,
@@ -391,6 +479,33 @@ impl World {
                             Outcome::Ok
                         }
                     };
+                }
+                Action::Signal(message) => {
+                    let (who, at) = (self.agents[i].id, self.agents[i].pos);
+                    self.agents[i].last_signal = Some(Signal { tick, message });
+                    self.ledger.signals += 1;
+                    report.signals += 1;
+                    if cfg.record_signals {
+                        report.events.push(Event::Signaled {
+                            tick,
+                            agent: who,
+                            message,
+                        });
+                    }
+                    // Listeners: everyone else within signal_radius at S(t).
+                    for (_, k) in index.within(at, cfg.perception.signal_radius) {
+                        if k != i {
+                            notes.push((
+                                k,
+                                Interaction {
+                                    tick,
+                                    other: who,
+                                    kind: InteractionKind::Heard,
+                                    value: message.value(),
+                                },
+                            ));
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -417,6 +532,7 @@ impl World {
                 Action::Gather => cfg.gather_cost,
                 Action::Transfer { .. } => cfg.transfer_cost,
                 Action::Harm { .. } => cfg.harm_cost,
+                Action::Signal(_) => cfg.signal_cost,
                 _ => 0,
             };
             let cost = (cfg.metabolism_cost + action_cost).min(a.energy);
@@ -444,6 +560,21 @@ impl World {
                     action: it.action,
                     outcome: outcomes[i],
                 });
+            }
+        }
+
+        // --- Phase 5b: memory (ADR-0013 D4) --------------------------------
+        // Kernel-written, in order of occurrence, while every agent of S(t)
+        // is still present so the indices are valid. `memory_slots == 0`
+        // means nobody remembers anything.
+        let slots = cfg.memory_slots as usize;
+        if slots == 0 {
+            for a in &mut self.agents {
+                a.recent.clear();
+            }
+        } else {
+            for (k, note) in notes {
+                remember(&mut self.agents[k].recent, slots, note);
             }
         }
 
@@ -512,6 +643,8 @@ impl World {
                     policy: parent.policy,
                     params,
                     memory: Memory::default(),
+                    last_signal: None,
+                    recent: Vec::new(),
                 };
                 report.events.push(Event::Born {
                     tick,
@@ -604,6 +737,8 @@ impl World {
                         policy,
                         params,
                         memory: Memory::default(),
+                        last_signal: None,
+                        recent: Vec::new(),
                     });
                     self.next_agent_id += 1;
                 }
@@ -670,6 +805,13 @@ impl World {
             }
             if !a.params.is_valid() {
                 errs.push(format!("{:?} params out of range: {:?}", a.id, a.params));
+            }
+            if a.recent.len() > cfg.memory_slots as usize {
+                errs.push(format!(
+                    "{:?} remembers more than memory_slots: {}",
+                    a.id,
+                    a.recent.len()
+                ));
             }
             if !self.bounds().contains(a.pos) {
                 errs.push(format!("{:?} out of bounds: {:?}", a.id, a.pos));
@@ -743,6 +885,7 @@ impl World {
             l.food_transferred,
             l.food_stored,
             l.harms,
+            l.signals,
         ] {
             h.u64(v);
         }
@@ -782,6 +925,22 @@ impl World {
             match a.memory.target {
                 Some(p) => h.u64((1 << 32) | ((p.x as u64) << 16) | p.y as u64),
                 None => h.u64(0),
+            }
+            // Signals and memory contribute bytes only when present, so a
+            // world that never uses them keeps its golden hash (ADR-0013 3-3).
+            if let Some(s) = a.last_signal {
+                h.u64(1);
+                h.u64(s.tick);
+                h.u64(s.message.hash_code());
+            }
+            if !a.recent.is_empty() {
+                h.u64(a.recent.len() as u64);
+                for e in &a.recent {
+                    h.u64(e.tick);
+                    h.u64(e.other.0);
+                    h.u64(e.kind as u64);
+                    h.u64(e.value as u64);
+                }
             }
         }
     }
@@ -861,7 +1020,8 @@ pub const SNAPSHOT_MAGIC: [u8; 4] = *b"CZS\0";
 /// Bumped whenever `World`'s serialised shape changes. 2: life cycle fields
 /// (ADR-0008). 3: intervention ledger fields (ADR-0010 2a-1). 4: perception
 /// config, social-action ledger fields, `DeathCause::Violence` (ADR-0013 3-1/3-2).
-pub const SNAPSHOT_FORMAT: u32 = 4;
+/// 5: `Agent.last_signal`, `Agent.recent`, `Ledger.signals` (ADR-0013 3-3).
+pub const SNAPSHOT_FORMAT: u32 = 5;
 
 /// Written form: borrows the world instead of cloning it.
 #[derive(Serialize)]

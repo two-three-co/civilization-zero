@@ -52,6 +52,14 @@ pub struct WorldConfig {
     /// multiplies ledger size by the population.
     pub record_actions: bool,
 
+    // --- communication and memory (ADR-0013 D4, D5) ---
+    /// Paid on every Signal.
+    pub signal_cost: i64,
+    /// How many interactions an agent remembers (`Agent.recent`); 0 disables memory.
+    pub memory_slots: u8,
+    /// Record `Event::Signaled` for every signal. Off by default.
+    pub record_signals: bool,
+
     // --- life cycle (ADR-0008) ---
     /// A surviving agent whose energy is at or above this value after upkeep
     /// produces one child. `None` disables reproduction.
@@ -83,6 +91,8 @@ pub struct WorldConfig {
 pub struct Perception {
     /// Manhattan radius within which other agents are observable.
     pub social_radius: u16,
+    /// Manhattan radius within which signals are heard and seen (ADR-0013 D5).
+    pub signal_radius: u16,
     pub see_policy: bool,
     pub see_inventory: bool,
     pub see_energy: bool,
@@ -92,6 +102,7 @@ impl Default for Perception {
     fn default() -> Self {
         Self {
             social_radius: 2,
+            signal_radius: 2,
             see_policy: false,
             see_inventory: true,
             see_energy: false,
@@ -135,6 +146,9 @@ impl Default for WorldConfig {
             harm_cost: 2_000,
             harm_damage: 20,
             record_actions: false,
+            signal_cost: 0,
+            memory_slots: 8,
+            record_signals: false,
             birth_threshold: Some(80_000),
             child_energy: 40_000,
             max_age: Some(3_000),
@@ -159,7 +173,7 @@ impl std::error::Error for ConfigError {}
 
 impl WorldConfig {
     pub fn validate(&self) -> Result<(), ConfigError> {
-        let checks: [(bool, &'static str); 16] = [
+        let checks: [(bool, &'static str); 17] = [
             (
                 self.width > 0 && self.height > 0,
                 "width/height must be > 0",
@@ -184,7 +198,8 @@ impl WorldConfig {
                     && self.rest_heal >= 0
                     && self.transfer_cost >= 0
                     && self.harm_cost >= 0
-                    && self.harm_damage >= 0,
+                    && self.harm_damage >= 0
+                    && self.signal_cost >= 0,
                 "costs must be non-negative",
             ),
             (self.gather_amount > 0, "gather_amount must be > 0"),
@@ -212,9 +227,11 @@ impl WorldConfig {
                 "mutation_step_permille must be <= 1000",
             ),
             (
-                self.perception.social_radius <= Perception::MAX_RADIUS,
-                "perception.social_radius must be <= 32",
+                self.perception.social_radius <= Perception::MAX_RADIUS
+                    && self.perception.signal_radius <= Perception::MAX_RADIUS,
+                "perception radii must be <= 32",
             ),
+            (self.memory_slots <= 64, "memory_slots must be <= 64"),
         ];
         for (ok, msg) in checks {
             if !ok {

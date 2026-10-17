@@ -9,6 +9,7 @@
 //! | Transfer{to, n}   | `to` alive, not self, adjacent at S(t) (Manhattan <= 1), inventory > 0 | `transfer_cost` (paid on attempt) | min(n, inventory, `to`'s free space) food moves to `to`; actors resolved in id order | `NoSuchTarget`, `NotAdjacent`, `EmptyInventory`, `TargetFull` (cost paid) |
 //! | Store(n)          | inventory > 0                                             | 0                                  | min(n, inventory) food onto the own cell (no capacity cap)         | `EmptyInventory`                                             |
 //! | Harm{target}      | target alive, not self, adjacent at S(t)                  | `harm_cost` (paid on attempt)      | target.health -= `harm_damage`; stacks; a death this tick is `Violence` | `NoSuchTarget`, `NotAdjacent` (cost paid)                   |
+//! | Signal(m)         | -                                                         | `signal_cost`                      | `last_signal := (t, m)`; others within `signal_radius` at S(t) hear it now and see it next tick | -                              |
 //!
 //! `metabolism_cost` is paid every tick regardless of action. Failures here
 //! are *physical* infeasibility; rule violations (Phase 4) are a different
@@ -17,6 +18,7 @@
 //! after an institution.
 
 use crate::agent::AgentId;
+use crate::memory::Message;
 use crate::space::Dir;
 use serde::{Deserialize, Serialize};
 
@@ -38,10 +40,13 @@ pub enum Action {
     Harm {
         target: AgentId,
     },
+    /// Say something (ADR-0013 D5): agents within `signal_radius` hear it
+    /// this tick and see it in the next tick's observation.
+    Signal(Message),
 }
 
 impl Action {
-    pub const KIND_COUNT: usize = 7;
+    pub const KIND_COUNT: usize = 8;
 
     pub fn kind_index(self) -> usize {
         match self {
@@ -52,6 +57,7 @@ impl Action {
             Action::Transfer { .. } => 4,
             Action::Store(_) => 5,
             Action::Harm { .. } => 6,
+            Action::Signal(_) => 7,
         }
     }
 }

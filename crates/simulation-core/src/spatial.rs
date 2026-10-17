@@ -98,6 +98,8 @@ mod tests {
             policy: PolicyKind::Forager,
             params: PolicyParams::default(),
             memory: Memory::default(),
+            last_signal: None,
+            recent: Vec::new(),
         }
     }
 

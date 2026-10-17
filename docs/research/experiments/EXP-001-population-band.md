@@ -105,6 +105,7 @@ Random は走査を使わないので軌跡が完全に同一で、絶滅 tick �
 Random 方策は 3-2 で社会行動（`Transfer` / `Store` / `Harm`）も一様に抽選するようになった。上の Random の数値は 3-2 以前の
 7 行動版のもの。3-2 以降の Random は加害の試行コスト（既定 2,000）で急速に消耗し、1,000 体が tick 100 で約 200 体、tick 300 で絶滅する
 （`cz run --policy random`、seed 42）。Forager の結果は影響を受けない（ゴールデン不変）。
+3-3 で Random は `Signal(Say)` も抽選するようになった（11 行動）ので軌跡はさらに変わる（seed 42: tick 100 で 223 体、tick 200 で 6 体）。Forager は不変。
 
 ## データ
 

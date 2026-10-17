@@ -41,7 +41,7 @@ Decide の前に一様グリッドのバケット（セル → 個体 index 列�
 | `Harm { target }` | 隣接 | `harm_cost`（エネルギー、台帳 `energy_spent`） | 相手の health −`harm_damage`。複数は加算 | `NotAdjacent` |
 | `Signal(message)` | — | `signal_cost`（既定 0） | `last_signal = (tick, message)`。`signal_radius` 内の個体が次 tick に観測 | — |
 
-- 解決順は既存の固定フェーズに従う: Consume → Gather → **Transfer → Store → Harm** → Move → Upkeep → Death → Birth → Env。移転と加害は S(t) の位置で判定する（Gather と同じ同時手番）。
+- 解決順は既存の固定フェーズに従う: Consume → Gather → **Interact（Transfer / Store / Harm / Signal、行為者 id 順）** → Move → Upkeep → **Memory（3-3）** → Death → Birth → Env。移転・加害・発信は S(t) の位置で判定する（Gather と同じ同時手番）。
 - 加害による死は新しい死因 `DeathCause::Violence`（その tick に加害を受けて health ≤ 0。餓死より優先）。
 - `Harm` は「制裁」そのものではない。制裁は Phase 4 で、台帳上の違反に対して個体が `Harm`（や移転拒否）を選ぶ相互作用として表現する（R4）。
 - 台帳: `Event::Transferred { from, to, amount }`、`Event::Harmed { by, target, damage }` は**常に**記録。`Event::Signaled` は `record_signals`、`Event::Acted { agent, intent, outcome }` は `record_actions` で ON（既定 OFF、サイズを計測）。
@@ -52,12 +52,22 @@ Decide の前に一様グリッドのバケット（セル → 個体 index 列�
 更新は Apply の末尾でその tick のイベントから決定論的に行う（Decide は読むだけ、ADR-0005 を保つ）。`SawHarm` は `social_radius` 内で起きた加害を目撃者に書く（規範の第三者執行の材料）。
 スナップショットに入る（1,300 体 × 8 × 約 12 B ≈ 125 KB の増加見込み。計測する）。
 
+**実装（3-3、2026-10-17）と設計からの差分**:
+- 記憶は `Agent.memory` の中ではなく兄弟フィールド **`Agent.recent: Vec<Interaction>`**。`Memory` は方策が所有し `Intent` で返す値（ADR-0005）なので、カーネルが書く記録を同じ構造体に入れると「方策は世界を変えない」の境界が曖昧になり、`Intent.memory` の書き戻しで記憶を潰す事故も起こりうる。
+- 固定長配列 `[Interaction; K]` ではなく `Vec` を `memory_slots`（u8、既定 8、0 で無効、上限 64）で打ち切る oldest-first のリング。K は設定値で型に埋め込めず、空なら 1 B で済む。
+- `kind` は 3-3 時点で `GaveTo / ReceivedFrom / Harmed / HarmedBy / SawHarm / Heard` の 6 種（`ProposalFrom / Accepted / Rejected / Promised` は 3-4）。`SawHarm` の `value` は被害者 id、`Heard` の `value` は記号。
+- 書き込み順は 3b の解決順: 行為者 id 順に、1 行為につき 行為者 → 相手 → 目撃者（被害者から `social_radius` 内）/ 聴取者（発信者から `signal_radius` 内）を (距離, id) 順。発信者自身は聴取者に含めない。Phase 5b（死亡処理の前）で反映するので、その tick に死ぬ個体にも書かれる（スナップショットには残らない）。
+- ハッシュ: `last_signal` と `recent` は**非空のときだけ** `dynamics_hash` にバイトを足す。Forager 世界では両方とも空なのでゴールデン `0x658ee873d1866501` は不変（空なら旧符号化と同一バイト列になるため、旧符号化の再計算は不要）。
+- 計測（Apple M1, 2026-10-17）: スナップショットの個体部分は Forager 19.7 B/体（`None` + 空 Vec で +2 B）、Random（記憶 5.5 件/体）46 B/体、満杯 8 件で 64 B/体（記憶を消すと 15〜20 B）。1 件 約 6 B（postcard varint）。128² 世界は資源 33 KB が支配的で、1,357 体の Forager スナップショットは 56.8 → 59.6 KB（+5%）、全個体が満杯でも約 120 KB（≈ 2.0 倍。tick・id が 16,384 を超えると varint が伸び 2 倍を少し超えうる）。見込みの 125 KB 増より小さい。
+
 ### D5. 通信と交渉は「記録されるが強制されないメッセージ」（3-3, 3-4）
 
 `Signal` のペイロードは `Message` enum:
 - `Say(symbol: u8)` — 意味を事前に与えない記号（R1: 語彙の意味は学習に委ねる）
 - `Propose { to, give: u8, want: u8, by: u16 }` — 「今 give 渡す、by tick までに want 返せ」
 - `Accept { to, offer_tick }` / `Reject { to }`
+
+**実装（3-3）**: `Say` のみ。`Observation::neighbors()` の `Neighbor.signal` は**前 tick の発信だけ**（`last_signal.tick + 1 == tick`）を `signal_radius`（既定 2）内で見せる。古い発信は観測から消えるが `Agent.last_signal` には残る。聴取者には同 tick の Memory フェーズで `Heard` が書かれる。`Event::Signaled` は `record_signals`（既定 OFF）。Random 方策は `Say(0..8)` を含む 11 行動を一様に抽選する。
 
 カーネルは配達（相手の記憶に `ProposalFrom` 等を書く）と台帳記録だけを行い、**約束の履行は強制しない**。履行は `Transfer` という物理行動であり、不履行は台帳から判定できる「社会的事実」になる。これが Phase 4 の制度（違反の定義と制裁）への接続点で、R4（制度は物理を変えない）と整合する。
 資源は食料 1 種類のまま。したがって交換は「今と後」の移転（貸し借り・分かち合い）であり、互恵と信頼の材料になる。資源の多様化は、それが必要だと実験が示してから（Phase 4 以降）。
@@ -93,7 +103,7 @@ Decide の前に一様グリッドのバケット（セル → 個体 index 列�
 |---|---|---|---|
 | 3-1 ✅ | 空間インデックス + `Observation::neighbors()` + `Perception` 設定。**済 2026-10-17**: `src/spatial.rs`（計数ソート、O(n + cells)）、`tests/neighbors.rs`（順序・半径・端のクリップ・情報制限・proptest で総当たりと一致）。計測: インデックス構築 10 µs、step 132 → 147〜154 µs/tick（+11〜16%、2 回計測）。ゴールデンは config を含まない `dynamics_hash` に再定義（旧符号化の再計算で遷移不変を証明） | – | 近傍が (距離, id) 順で決定論的。serial = parallel。既定世界のゴールデン不変。ベンチ: 1.3k 体で step +20% 以内（計測） |
 | 3-2 ✅ | `Transfer` / `Store` / `Harm` 行動、`DeathCause::Violence`、`Transferred` / `Harmed` イベント、`Acted` 記録（設定）。**済 2026-10-17**: `tests/interaction.rs` 8 本、Forager のゴールデン不変（旧定義で証明）、`Acted` は 1,000 体 × 2,000 tick で 220 MB（20,000 tick なら約 2.2 GB → 診断用に限定）。ゴールデンは台帳も除いた物理状態のみに再定義 | 3-1 | 保存則テスト（移転・貯蔵で食料不変、加害コストは `energy_spent`）、隣接判定は S(t)、相手が満杯で部分移転、ゴールデン不変。`record_actions` ON の台帳サイズを計測 |
-| 3-3 | `Signal(Say)`、`last_signal` の観測、記憶リング `recent[K]` とカーネル更新（受領・被害・目撃・聴取） | 3-2 | 記憶の内容が決定論的（proptest）、スナップショットの増分を計測（≤ 2 倍）、ゴールデン不変（符号化のみの変更は旧符号化で証明） |
+| 3-3 ✅ | `Signal(Say)`、`last_signal` の観測、記憶リング `recent[K]` とカーネル更新（受領・被害・目撃・聴取）。**済 2026-10-17**: `src/memory.rs`、`tests/memory.rs` 5 本（proptest 32 ケース: serial = parallel で記憶が一致、上限、oldest-first）、Forager のゴールデン不変（空の記憶はバイトを足さない）、スナップショット形式 5。計測: step 154 µs/tick（3-1 の 147〜154 の範囲内）、スナップショット Forager +5%、全個体満杯で約 2.0 倍（D4 参照） | 3-2 | 記憶の内容が決定論的（proptest）、スナップショットの増分を計測（≤ 2 倍）、ゴールデン不変（符号化のみの変更は旧符号化で証明） |
 | 3-4 | 交渉メッセージ `Propose / Accept / Reject` の配達と台帳、`Promised` 記憶 | 3-3 | 単体テストで「提案 → 受諾 → 移転 → 返済」が台帳と記憶に正しく並ぶ。台本方策（正直な互恵者）で再現。履行は強制されないことのテスト（不履行が起きても物理は進む） |
 | 3-5 | `PolicyKind::{Reflex, Learner}` の枠、`PolicyParams` の拡張（重みベクトル / Q 表）、`Intervention::SetPolicy`、CLI `--policy reflex|learner|mixed-learning` | 3-2 | SetPolicy を同一 tick で 2 回 fork してハッシュ一致。スナップショット形式の版上げと互換テスト |
 | 3-6 | Reflex 方策（特徴ベクトル・固定小数点スコア・Forager 等価の初期重み・突然変異 ON） | 3-3, 3-5 | 初期重みの Reflex が Forager と 1,000 tick 同一決定（ハッシュ一致）。`tests/forager.rs` 相当の決定規則テスト。1.3k 体で decide ≤ 150 ns/体·tick（計測） |

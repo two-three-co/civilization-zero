@@ -1,3 +1,4 @@
+use crate::memory::{Interaction, Signal};
 use crate::policy::{PolicyKind, PolicyParams};
 use crate::space::Pos;
 use serde::{Deserialize, Serialize};
@@ -30,5 +31,12 @@ pub struct Agent {
     pub policy: PolicyKind,
     /// Inherited from the parent, mutated only if `mutation_enabled`.
     pub params: PolicyParams,
+    /// Policy-owned state, returned with each `Intent`.
     pub memory: Memory,
+    /// What this agent last said and when (ADR-0013 D5). Kernel-written.
+    pub last_signal: Option<Signal>,
+    /// Oldest-first record of at most `memory_slots` interactions this agent
+    /// took part in or witnessed (ADR-0013 D4). Kernel-written; policies
+    /// only read it.
+    pub recent: Vec<Interaction>,
 }

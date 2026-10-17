@@ -23,6 +23,7 @@ fn nearest_first_then_by_id_and_never_self() {
     let mut w = empty_world(WorldConfig {
         perception: Perception {
             social_radius: 2,
+            signal_radius: 2,
             ..Perception::default()
         },
         ..cfg()
@@ -47,6 +48,7 @@ fn radius_zero_sees_only_the_same_cell_and_the_grid_edge_is_clipped() {
     let mut w = empty_world(WorldConfig {
         perception: Perception {
             social_radius: 0,
+            signal_radius: 2,
             ..Perception::default()
         },
         ..cfg()
@@ -76,6 +78,7 @@ fn perception_limits_what_is_visible() {
 
     w.config.perception = Perception {
         social_radius: 2,
+        signal_radius: 2,
         see_policy: true,
         see_inventory: false,
         see_energy: true,
@@ -115,6 +118,7 @@ fn perception_is_part_of_the_config_and_older_configs_still_load() {
     assert!(WorldConfig {
         perception: Perception {
             social_radius: 33,
+            signal_radius: 2,
             ..Perception::default()
         },
         ..WorldConfig::default()

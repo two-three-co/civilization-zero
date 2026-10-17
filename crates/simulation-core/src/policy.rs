@@ -8,6 +8,7 @@
 use crate::action::Action;
 use crate::agent::{Agent, AgentId, Memory};
 use crate::config::WorldConfig;
+use crate::memory::Message;
 use crate::resources::ResourceGrid;
 use crate::rng::RngStream;
 use crate::space::{Bounds, Dir, Pos};
@@ -62,6 +63,8 @@ pub struct Observation<'a> {
     pub resources: &'a ResourceGrid,
     pub bounds: Bounds,
     pub config: &'a WorldConfig,
+    /// The tick being decided; signals from `tick - 1` are the fresh ones.
+    pub tick: u64,
     /// All agents of the tick (id order) and the index built over them.
     pub agents: &'a [Agent],
     pub index: &'a SpatialIndex,
@@ -78,6 +81,8 @@ pub struct Neighbor {
     pub policy: Option<PolicyKind>,
     pub inventory: Option<u32>,
     pub energy: Option<i64>,
+    /// What the neighbour said last tick, if within `signal_radius`.
+    pub signal: Option<Message>,
 }
 
 impl Observation<'_> {
@@ -101,6 +106,10 @@ impl Observation<'_> {
                 policy: p.see_policy.then_some(a.policy),
                 inventory: p.see_inventory.then_some(a.inventory),
                 energy: p.see_energy.then_some(a.energy),
+                signal: a
+                    .last_signal
+                    .filter(|s| s.tick + 1 == self.tick && distance <= p.signal_radius as u32)
+                    .map(|s| s.message),
             })
             .collect()
     }
@@ -133,14 +142,15 @@ fn random(obs: &Observation<'_>, rng: &mut RngStream) -> Intent {
             .collect();
         (!near.is_empty()).then(|| near[rng.below(near.len() as u64) as usize])
     };
-    let action = match rng.below(10) {
+    let action = match rng.below(11) {
         0..=3 => Action::Move(Dir::ALL[rng.below(4) as usize]),
         4 => Action::Gather,
         5 => Action::Consume(1),
         6 => Action::Rest,
         7 => adjacent(rng).map_or(Action::Rest, |to| Action::Transfer { to, n: 1 }),
         8 => Action::Store(1),
-        _ => adjacent(rng).map_or(Action::Rest, |target| Action::Harm { target }),
+        9 => adjacent(rng).map_or(Action::Rest, |target| Action::Harm { target }),
+        _ => Action::Signal(Message::Say(rng.below(8) as u8)),
     };
     Intent {
         action,
