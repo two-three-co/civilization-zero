@@ -16,7 +16,7 @@ Phase 2 の計画は ADR-0010（Toy 1）に従う。
 - [ ] `Event::Acted { agent, intent, outcome }` の記録（2a-3、Store/Transfer と同時。全行動記録は設定で ON/OFF、台帳サイズを計測）。
 - [ ] 2b-6 のために `WasmWorld` に fork API（cursor 位置での介入 = 新ブランチ）を追加し、Worker 1 つ = `Multiverse` 1 つ（複数ブランチ）か、ブランチごとに Worker かを決める。
 - [ ] 台帳のバイナリ形式（postcard は内部タグ付き enum を復号できないので別ワイヤ型が要る。JSON Lines で足りている間はやらない）。
-- [ ] Toy 1 UI の続き（2b-3〜2b-7）: 実測 tick/s の表示、巻き戻し ≤ 200 ms の計測表示、介入パネル、分岐の並列表示、静的配信。
+- [ ] Toy 1 UI の続き: 2b-6 分岐の並列表示（`WasmWorld` に fork、2 ワーカー同期再生、指標の差分、両ハッシュ表示、同一介入 2 回で一致の確認）、2b-7 静的配信と 5 分チュートリアル。
 - [ ] wasm サイズ（205 KB）: serde_json を境界から外す（介入とイベントを構造体で渡す）か、`--profile wasm` 相当の設定を wasm-pack に通せば縮む見込み。計測してから。
 - [ ] ブラウザでの性能計測（1,000〜2,000 体で ≥ 60 tick/s）。
 

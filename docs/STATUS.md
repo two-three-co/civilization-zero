@@ -1,13 +1,13 @@
 # 実装進捗（新しいセッションはまずここを読む）
 
-最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · **Phase 2 = Toy 1 進行中（2a-1, 2a-2, 2a-4, 2a-5, 2a-6, 2b-1, 2b-2 済）**（ADR-0010）· カーネル版 `simulation-core 0.1.0`
+最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · **Phase 2 = Toy 1 進行中（2a-1, 2a-2, 2a-4〜2a-6, 2b-1〜2b-5 済。残り 2b-6 分岐比較、2b-7 配信、2a-3）**（ADR-0010）· カーネル版 `simulation-core 0.1.0`
 リポジトリ: https://github.com/two-three-co/civilization-zero（private）· CI: GitHub Actions（fmt / clippy / test debug+release / wasm ビルド）
 
 ## 状態の区別
 
 - **実装済み・テスト通過・計測済み**: 下表の Phase 1 項目、ADR-0008 のライフサイクル、ADR-0009 の wasm 計測。
-- **設計のみ**: Phase 2 の 2a-3、2b-3 以降（ADR-0010 のタスク表）、Phase 3 以降。
-- **未着手**: Nomos / Genesis の全コード。`web/` は本物のカーネル（wasm）で動くが、介入・分岐の UI はまだプレースホルダ。
+- **設計のみ**: Phase 2 の 2a-3、2b-6、2b-7（ADR-0010 のタスク表）、Phase 3 以降。
+- **未着手**: Nomos / Genesis の全コード。`web/` は本物のカーネル（wasm）で観察・巻き戻し・介入ができるが、分岐の並列比較と配信はまだ。
 
 ## Phase 1 チェックリスト
 
@@ -44,7 +44,10 @@
 | 2a-5 | `Multiverse` / `Branch`（head + tick 0 からの台帳 + 周期スナップショット）、`fork(from, at, interventions)` と系譜（`parent`, `forked_at`）、`cz fork` | 済 (2026-10-17) | `tests/fork.rs`（同一介入 2 回 fork でハッシュ一致、fork の fork の系譜、無効 fork の拒否）。`cz fork`: **fork 0.07 ms**、`state_at` は間隔 500 で最大 33 ms、間隔 100 で 6.7 ms。ADR-0012 |
 | 2a-6 | バイナリスナップショット（postcard、マジック + 形式版 + ハッシュ照合）、`cz` は拡張子で切替 | 済 (2026-10-17) | `tests/snapshot_bin.rs`: 1,357 体で **56.8 KB**（JSON 304 KB）、往復 **0.69 ms**（JSON 1.63 ms）、改竄・切り詰め・JSON 誤投入を拒否。ADR-0006 改訂 |
 | 2b-1 | `crates/cz-web`（wasm-bindgen）: `WasmWorld` が `Multiverse` を包み、cursor 方式で `seek` / `step`（head 以前は台帳照合付き再実行、追いつくと head を延伸）、`intervene(json)`、`events_at`、`snapshot_bytes`、`state_hash_hex`。`web/` の `kernel.worker.ts` がモックを置換（`?mock=1` で旧モック） | 済 (2026-10-17) | `tests/native.rs`（wrapper = カーネル、seek→step の合流、介入は head のみ）、`tests/wasm.rs` を **`wasm-pack test --node` で実行し native のゴールデンハッシュと一致**（CI）。wasm 205 KB（wasm-opt -O3）。`npm run build` が wasm ビルドを含む。**ブラウザで確認**: Play で tick 600・1,303 体、タイムラインで tick 300 / 100 に戻したときの state hash が native の `cz run --ticks 300 / 100`（`0x821ac350e76261c0` / `0x7068a87e706be374`）と一致、再度戻しても同一 |
-| 2a-3, 2b-3 〜 2b-7 | Store/Transfer + `Acted`、実測表示、巻き戻し UI の目標計測、介入 UI、分岐比較、配信 | 未 | — |
+| 2b-3 | 実測表示: Worker が `step` の所要時間をフレームに載せ、UI が直近 1 秒の sim tick/s・描画 fps・Worker ms/tick を表示。スパークラインを人口 + 食料の 2 系列に | 済 (2026-10-17) | **ブラウザ実測（M1、内蔵ブラウザ、約 1,330 体）**: 4 tick/フレームで 240 tick/s・60 fps、30 tick/フレームで **1,802 tick/s・60 fps**、Worker 0.22 ms/tick（165 ns/体·tick。native の 1.65 倍）。目標 ≥ 60 tick/s |
+| 2b-4 | 巻き戻し: Worker が `seek` の所要時間を計測、UI に「last seek: N ms（re-ran M）」を表示。ドラッグ中のシークは最新のみ処理（間引き）。任意 tick への `Go` 入力 | 済 (2026-10-17) | 最悪ケース（間隔 250 → 249 tick 再実行）**45〜56 ms**、124 tick 再実行 30 ms、スナップショット上 0 ms。目標 ≤ 200 ms |
+| 2b-5 | 介入パネル（干ばつ・資源量スケール・個体追加・個体除去）、プロトコルに `intervene` / `history`、履歴は **台帳から読み戻し**（`WasmWorld::interventions_json`）。head 以外では Apply 無効（分岐は 2b-6） | 済 (2026-10-17) | UI で tick 300 に干ばつ（regrow 0 / 10）を適用 → 履歴「tick 300 drought」→ tick 600 / 900 のハッシュが native `cz run --drought-at 300 --drought-amount 0 --drought-interval 10` と一致（`0x4392fb01743338c5` / `0x4be57883bb1d1a06`）。`tests/native.rs::intervention_history_comes_from_the_ledger` |
+| 2a-3, 2b-6, 2b-7 | Store/Transfer + `Acted`、分岐比較（fork API + 2 ワーカー）、配信とチュートリアル | 未 | — |
 
 ## 計測値（Apple M1, rustc 1.99.1, release, 2026-10-17）
 
@@ -79,7 +82,17 @@
 | 同上、ADR-0011 前（本日朝の基準） | 5,000 | 152 |
 | sweep 20,000 tick × 10 seed、ADR-0011 後（前: 4,850〜5,400） | 7,190〜7,890 | — |
 
-### ブラウザ内 wasm（ADR-0009、`--profile wasm`、73.7 KB）
+### ブラウザ内 wasm — Toy 1 UI（`crates/cz-web`、wasm-opt -O3、205 KB、ADR-0011 後のカーネル）
+
+| 条件 | 計測値 |
+|---|---|
+| 再生 30 tick/フレーム、約 1,330 体 | **1,802 tick/s、60 fps**、Worker 0.22 ms/tick（165 ns/体·tick） |
+| 再生 4 tick/フレーム | 240 tick/s、60 fps（フレーム律速）、Worker 0.45 ms/tick |
+| 巻き戻し、249 tick 再実行（間隔 250 の最悪） | 45〜56 ms |
+| 巻き戻し、124 tick 再実行 / スナップショット上 | 30 ms / 0 ms |
+| 0 → 300 tick の延伸（`Go`） | 185 ms（出生の多い序盤、0.6 ms/tick） |
+
+### ブラウザ内 wasm — 計測プローブ（ADR-0009、`--profile wasm`、73.7 KB、ADR-0011 前のカーネル）
 
 | 条件 | tick/s | ns/体·tick |
 |---|---|---|

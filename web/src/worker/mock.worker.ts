@@ -248,6 +248,7 @@ function frame(): Frame {
     alive: s.alive,
     foodTotal,
     frontier,
+    snapshotEvery: SNAP_EVERY,
   };
 }
 
@@ -272,9 +273,17 @@ self.onmessage = (ev: MessageEvent<Envelope<Request>>) => {
       case "frame":
         if (!state) throw new Error("init first");
         break;
+      case "intervene":
+        throw new Error("the mock world has no interventions: use the kernel worker");
+      case "history":
+        if (!state) throw new Error("init first");
+        break;
     }
     const f = frame();
-    post({ id, body: { type: "frame", frame: f } }, [f.food.buffer, f.agents.buffer]);
+    post({ id, body: { type: "frame", frame: f, history: body.type === "history" ? [] : undefined } }, [
+      f.food.buffer,
+      f.agents.buffer,
+    ]);
   } catch (err) {
     post({ id, body: { type: "error", message: err instanceof Error ? err.message : String(err) } });
   }

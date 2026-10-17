@@ -85,7 +85,7 @@ wasm32 と native の一致は ADR-0009 で計測。
 
 Phase 1: ファイル（trace JSON）のみ。ビューアは静的 HTML（ADR-0007）。
 Phase 2（Toy 1）: カーネルを wasm としてブラウザ内で実行し、Web Worker 1 つ = 世界 1 つ（`WasmWorld`）。サーバーは置かない（ADR-0009, 0010）。
-UI ↔ Worker は `web/src/protocol.ts`（`init / step / seek / frame`、各要求に現フレームで応答。フレームは食料 `Uint8Array` + 個体 `Int32Array` を Transferable で転送）。
+UI ↔ Worker は `web/src/protocol.ts`（`init / step / seek / frame / intervene / history`、各要求に現フレームで応答。フレームは食料 `Uint8Array` + 個体 `Int32Array` を Transferable で転送し、Worker の計測値（step ms、seek ms）を載せる）。介入は台帳の `Intervention` と同じ JSON で、履歴は台帳から読み戻す。
 巻き戻しは Worker 内の cursor（`state_at` の復元ビュー）で、head 以前の `step` は台帳照合付きの再実行。
 
 ## テスト構成

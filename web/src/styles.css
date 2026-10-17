@@ -104,6 +104,15 @@ main {
   font-variant-numeric: tabular-nums;
   min-width: 80px;
 }
+.goto {
+  width: 90px;
+  font: inherit;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--ink);
+}
 button,
 select {
   font: inherit;
@@ -135,6 +144,62 @@ aside {
 }
 .card.placeholder {
   border-style: dashed;
+}
+.card h2.sub {
+  margin-top: 10px;
+}
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.row select {
+  flex: 1;
+}
+.hint {
+  margin: 6px 0;
+}
+.fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 10px;
+  margin: 6px 0;
+}
+.fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.fields input,
+.fields select {
+  font: inherit;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--ink);
+  width: 100%;
+}
+.history {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.history li {
+  padding: 2px 0;
+  border-top: 1px solid var(--line);
+}
+.history .when {
+  color: var(--muted);
+  margin-right: 6px;
+}
+.rates {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
 }
 .card.error {
   border-color: #dc2626;

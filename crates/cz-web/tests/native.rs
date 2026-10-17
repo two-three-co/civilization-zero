@@ -104,3 +104,25 @@ fn interventions_apply_at_the_head_only_and_are_logged() {
         "invalid config is reported"
     );
 }
+
+#[test]
+fn intervention_history_comes_from_the_ledger() {
+    let mut ww = WasmWorld::new(7, 64, 64, 200, 5, 50).unwrap();
+    assert_eq!(ww.interventions_json().unwrap(), "[]");
+    ww.step(60).unwrap();
+    ww.intervene(r#"{"op":"drought","regrow_amount":0,"regrow_interval":10}"#)
+        .unwrap();
+    ww.step(40).unwrap();
+    ww.intervene(r#"{"op":"spawn_agents","n":3,"pos":{"x":1,"y":2},"policy":"Random"}"#)
+        .unwrap();
+    let history = ww.interventions_json().unwrap();
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(&history).unwrap();
+    assert_eq!(parsed.len(), 2);
+    assert_eq!(parsed[0]["tick"], 60);
+    assert_eq!(parsed[0]["intervention"]["op"], "drought");
+    assert_eq!(parsed[1]["tick"], 100);
+    assert_eq!(parsed[1]["intervention"]["n"], 3);
+    // Seeking back does not change what the ledger holds.
+    ww.seek(10).unwrap();
+    assert_eq!(ww.interventions_json().unwrap(), history);
+}

@@ -1,13 +1,14 @@
 // The real thing: the kernel and the multiverse runtime compiled to wasm
 // (crates/cz-web), one world per worker. Every frame carries the kernel's
-// state hash. Build the wasm first: `npm run build:wasm` (wasm-pack writes
-// src/wasm/, which is gitignored).
+// state hash and the wall-clock cost of what the worker just did. Build the
+// wasm first: `npm run build:wasm` (wasm-pack writes src/wasm/, gitignored).
 
 import init, { WasmWorld } from "../wasm/cz_web.js";
-import type { Envelope, Frame, Request, Response, WorldInit } from "../protocol";
+import type { Envelope, Frame, InterventionEvent, Request, Response, Timing, WorldInit } from "../protocol";
 
 const ready = init();
 let world: WasmWorld | null = null;
+let timing: Timing = {};
 // Requests are handled strictly in arrival order.
 let queue: Promise<void> = Promise.resolve();
 
@@ -34,6 +35,8 @@ function frame(w: WasmWorld): Frame {
     alive: w.alive(),
     foodTotal: w.food_total(),
     frontier: w.frontier(),
+    snapshotEvery: w.snapshot_every(),
+    timing: { ...timing },
   };
 }
 
@@ -43,21 +46,37 @@ const post = (msg: Envelope<Response>, transfer: Transferable[] = []) =>
 async function handle({ id, body }: Envelope<Request>): Promise<void> {
   try {
     await ready;
+    let event: InterventionEvent | undefined;
+    let history: InterventionEvent[] | undefined;
     switch (body.type) {
       case "init":
         world = create(body.config);
+        timing = {};
         break;
-      case "step":
-        need().step(Math.max(0, Math.floor(body.ticks)));
+      case "step": {
+        const ticks = Math.max(0, Math.floor(body.ticks));
+        const t0 = performance.now();
+        need().step(ticks);
+        timing = { ...timing, stepMs: performance.now() - t0, stepTicks: ticks };
         break;
-      case "seek":
+      }
+      case "seek": {
+        const t0 = performance.now();
         need().seek(Math.max(0, Math.floor(body.tick)));
+        timing = { ...timing, seekMs: performance.now() - t0 };
+        break;
+      }
+      case "intervene":
+        event = JSON.parse(need().intervene(JSON.stringify(body.intervention))) as InterventionEvent;
+        break;
+      case "history":
+        history = JSON.parse(need().interventions_json()) as InterventionEvent[];
         break;
       case "frame":
         break;
     }
     const f = frame(need());
-    post({ id, body: { type: "frame", frame: f } }, [f.food.buffer, f.agents.buffer]);
+    post({ id, body: { type: "frame", frame: f, event, history } }, [f.food.buffer, f.agents.buffer]);
   } catch (err) {
     post({ id, body: { type: "error", message: err instanceof Error ? err.message : String(err) } });
   }

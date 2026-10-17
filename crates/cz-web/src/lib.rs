@@ -198,4 +198,18 @@ impl WasmWorld {
         let branch = self.mv.branch(self.branch).map_err(js)?;
         serde_json::to_string(branch.log().at(tick as u64)).map_err(js)
     }
+
+    /// Every intervention this branch has recorded, oldest first, as a JSON
+    /// array of `Intervened` events: the UI's history is read from the
+    /// ledger, never from its own memory.
+    pub fn interventions_json(&self) -> Result<String, String> {
+        let branch = self.mv.branch(self.branch).map_err(js)?;
+        let events: Vec<&simulation_core::Event> = branch
+            .log()
+            .events()
+            .iter()
+            .filter(|e| matches!(e, simulation_core::Event::Intervened { .. }))
+            .collect();
+        serde_json::to_string(&events).map_err(js)
+    }
 }
