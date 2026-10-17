@@ -32,7 +32,14 @@ Phase 2 の計画は ADR-0010（Toy 1）に従う。
 - [x] 3-9a UI: 社会マーカー（`Frame.social`）・台帳集計（`Frame.ledger`）・インスペクタの記憶/相互作用・世界の方策構成選択（済 2026-10-17: プロトコル v3、cz-web に `social / ledger_json / agent_json / agent_events_json` と `policy` 引数。ローカルと公開 URL で確認済み）
 - [x] 3-9b UI: 交渉スレッド（済 2026-10-17: `crates/cz-web/src/thread.rs` が 2 者間の台帳を台帳順に並べ、各 `Accepted` を取引として窓内の移転から kept / open / broken を判定。`thread_json` / `deals_json`、プロトコル v4（`Watch.partner` → `Watched.thread`、`deals` 要求）、`?seed=`、インスペクタの Thread と Deals カード。判定は cz-web 側、UI は表示のみ。ブラウザは `?policy=mixed&seed=23` の #909 ↔ #363 で確認）
 - [x] 3-9c UI: fixed vs learning 比較（済 2026-10-17: Branches の「Compare: fixed vs learning」= 現 tick で fork + `SetPolicy { All, kind, Default }`（B の kind は Learner 既定、Reflex / Forager / Random も可）、「Compare · A solid, B dashed」の 5 カーブ（人口・摂取量/体/tick・移転/tick・加害/tick・発信/tick、直近 50 tick の台帳差分）、介入パネルの Set policy（All / Fraction / Id × Default / Keep）、cz-web の `policy_mix` に `reflex / learner / mixed-learning`（CLI と同じ割当、evolving mix は突然変異 ON）、`agents()` の policy 列を `policy_code` 0..=3 に、地図 4 色、インスペクタに Learner の last step と Q 行、Learner 世界のゴールデン `cb8bc0a9772c09a4` を native / wasm で固定、プロトコル v5。ブラウザ計測は STATUS）
-- [ ] 3-10 文書（ゴールデン表、STATUS、RISKS 追補、TUTORIAL 追補）
+- [x] 3-10 文書（済 2026-10-17: ADR-0013 の完了判定、STATUS の Phase 3 完了判定、RISKS R8〜R11、TUTORIAL 9 節。**Phase 3 完了**）
+
+## Phase 4: Institutions（Nomos Engine）— 設計 ADR から
+
+- [ ] Phase 4 の設計 ADR: 違反の定義（台帳の `Transferred / Harmed / Proposed / Accepted / Rejected` と `Promised` の不履行から計算する操作的指標）→ 制裁の選択（個体が `Harm` や移転拒否を選ぶ相互作用。物理は変えない、RISKS R4）→ 規範の提案と合意（Institution DSL の最小形）。完了条件に PRODUCT.md Phase 4 のデモ（制度エクスプローラ）を含める。
+- [ ] 前提条件の扱いを ADR に書く: 制裁なしのベースラインが加害死 43%（ε = 5% の探索由来、RISKS R8）、報酬は自己エネルギーのみ（R9）、死の終端報酬なし。
+- [ ] EXP-003 候補の採否（ADR で決める）: 死の終端報酬の有無、ε と `harm_cost` の格子、`--mutate` だけの Forager、立っている食料・総再生量の指標、Q 表の行ごとの訪問回数。
+- [ ] 学習世界の巻き戻し時間（復号 + 再実行）の再計測（RISKS R11）。
 
 ## Phase 6 以降
 

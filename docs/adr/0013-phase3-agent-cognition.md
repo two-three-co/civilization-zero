@@ -1,6 +1,6 @@
 # ADR-0013: Phase 3 — Agent Cognition（他者観測・相互作用・記憶・通信・交渉・学習方策）の設計
 
-- 状態: 提案 → 採用 (2026-10-17)。実装はこの表の順に進め、各タスクの受け入れ基準を満たしたら STATUS.md に移す
+- 状態: 提案 → 採用 (2026-10-17) → **Phase 3 完了 (2026-10-17)**。完了条件の照合は末尾の「完了判定」、各タスクの受け入れ基準の達成は STATUS.md の表
 - 前提: docs/PRODUCT.md（Phase 3 のデモ）、docs/research/RISKS.md（R1, R4, R5）、ADR-0002（二相 tick）、ADR-0003（整数のみ）、ADR-0004（座標関数の乱数）、ADR-0005（方策は純関数）、ADR-0008（イベント形式）、ADR-0010/0012（台帳・fork）
 
 ## 文脈
@@ -198,9 +198,21 @@ Decide の前に一様グリッドのバケット（セル → 個体 index 列�
 | 3-9a ✅ | UI: `Frame.social` マーカー、`Frame.ledger` の集計、インスペクタの記憶・発信・相互作用（台帳から）、世界初期化の方策構成。**済 2026-10-17**: `crates/cz-web` に `social()`（直前 tick の移転・加害を台帳から、発信は各個体の `last_signal` から、ビューの位置に置いた `Int32Array`）、`ledger_json()`、`agent_json(id)`（`recent` と `last_signal` を含む `Agent`）、`agent_events_json(id, from, to)`（D8 の `agent_events`）、コンストラクタの `policy`（`forager / random / mixed`、`cz run --policy` と同じ割当規則）。`web/` はプロトコル v3（`Frame.social / ledger`、要求ごとの `watch`、`WorldInit.policy`）、地図マーカー（0.6 s で消える軌跡）、統計（台帳の累計と直近 1 s の tick あたり xfer / harm / sig）、インスペクタ（記憶を tick 付き、台帳の直近 100 tick）、ヘッダの世界選択。`tests/native.rs` +4、`tests/wasm.rs` +1。ブラウザ確認と計測は STATUS（ローカルと公開 URL の両方で確認済み） | 3-3（UI 骨格は並行可） | 公開 URL で、個体を選ぶと最近の相互作用が tick 付きで見える。移転・加害・発信が地図に出る |
 | 3-9b ✅ | UI: 交渉スレッド表示（2 個体間の Propose/Accept/Transfer の時系列）。**済 2026-10-17**: `crates/cz-web/src/thread.rs`（2 者を名指しする台帳イベントを台帳順に、各 `Accepted` を「取引」として提案 tick〜期限の窓の移転から判定: 両側が渡せば kept、期限を過ぎて不足なら broken（不足側を名指し）、それまでは open。拒否は同じ相手からの直前の提案に紐付け、移転はまだ不足のある最古の取引に帰属）、`WasmWorld::thread_json(a, b, from, to)` と、スレッドを見つけるための `deals_json(from, to)`。`web/` はプロトコル **v4**（`Watch.partner` → `Watched.thread`、`deals` 要求、`?seed=`）、インスペクタの「Thread · with #id」（相手の候補は記憶と台帳の相手、交渉相手を先に）と「Deals · ledger」カード。`tests/native.rs` +6（手組みの台帳で履行 / 不履行 / 拒否の紐付け / 重なる取引、Random 世界で `agent_events_json` との整合とビュー依存、seed 23 の取引と seed 42 に順序どおりの取引が無いことを固定）、`tests/wasm.rs` +1。カーネル不変。ブラウザ確認は STATUS（既定の seed 42 では 4 手順そろった取引が無いので `?seed=23`） | 3-4, 3-9a | 台本方策の世界で提案 → 受諾 → 移転 → 返済のスレッドが読める |
 | 3-9c ✅ | UI: 「Compare: fixed vs learning」（fork + SetPolicy）、人口・摂取量・移転数カーブ、方策選択（世界の初期化）。**済 2026-10-17**: `crates/cz-web` の `policy_mix` に `reflex / learner / mixed-learning`（`cz run --policy` と同じ割当、evolving な mix は突然変異 ON）、`agents()` の policy 列を `policy_code`（0 forager / 1 random / 2 reflex / 3 learner）に、Learner 世界のゴールデン `cb8bc0a9772c09a4`（seed 42、既定 config、tick 200、native = wasm）。`web/` はプロトコル **v5**（`set_policy` 介入、`PolicyKind` 4 種、`AgentDetail.params.table / last_step`）、Branches カードの「Compare: fixed vs learning」= 現 tick で fork + `SetPolicy { All, kind, Default }`、「Compare · A solid, B dashed」の 5 カーブ、介入パネルの Set policy、地図の 4 色、インスペクタの last step と Q 行。ブラウザ: fork 18〜23 ms、A（forager）+ B（学習）の同期再生 15 tick/フレームで **899 tick/s・60 fps**（B 0.55 ms/tick）、Verify = MATCH（143 ms）、A / B の tick 600 のハッシュが CLI と一致。計測は STATUS | 3-5, 3-9a | PRODUCT.md Phase 3 デモ (d)。学習世界で ≥ 60 tick/s を画面に表示。Verify = MATCH |
-| 3-10 | 文書: ゴールデン表、STATUS、RISKS 追補（加害行動が生む退化均衡、報酬ハッキング、解釈可能性）、TUTORIAL 追補 | 全て | 新セッションが STATUS から Phase 3 の状態を再構築できる |
+| 3-10 ✅ | 文書: ゴールデン表、STATUS、RISKS 追補（加害行動が生む退化均衡、報酬ハッキング、解釈可能性）、TUTORIAL 追補。**済 2026-10-17**: この ADR に「完了判定」、STATUS に Phase 3 完了判定表と「状態の区別」の更新、RISKS R8〜R11（EXP-002 の計測値付き）、TUTORIAL 9 節（見どころ）と制限の追記、README / ARCHITECTURE / PRODUCT / TODO の Phase 表記 | 全て | 新セッションが STATUS から Phase 3 の状態を再構築できる |
 
 並行可能: 3-9a は 3-2 以降 UI 側で先行できる。3-6 と 3-7 は 3-5 の後で並行できる。3-8 は 3-6/3-7 のどちらかが終わり次第その腕から始められる。
+
+## 完了判定（2026-10-17）
+
+| 完了条件 | 状態 | 根拠 |
+|---|---|---|
+| 1. ブラウザのデモ (a) 記憶・最後の発信・受けた提案、(b) 移転・加害・発信の地図、(c) 交渉スレッド、(d) 固定 vs 学習の比較 | **満たす** | (a)(b) 3-9a（8fa9ac1、公開 URL 確認 ee1dbf5: 個体 #399 の記憶と last signal、3 種のマーカー）、(c) 3-9b（c338945、公開 URL 確認 c06e624: `?policy=mixed&seed=23` の #909 ↔ #363 のスレッド、取引の判定）、(d) 3-9c（2fca897、公開 URL 確認 0fa9628: tick 300 の Compare、A/B の tick 600 ハッシュが CLI と一致、Verify = MATCH）。受けた提案は記憶の `ProposalFrom` として (a) のインスペクタに出る |
+| 2. 計測: 学習世界 1,300 体でブラウザ内 ≥ 60 tick/s を画面に表示、バイナリスナップショット ≤ 1 MB | **満たす** | `?policy=learner` 単独 30 tick/フレームで 1,100〜1,248 tick/s（37〜42 fps、0d65b97）、Compare の 2 世界同期 15 tick/フレームで 895 tick/s・60 fps（公開 URL）。スナップショット（tick 1,000）: Learner 32 行 540,313 B（1,443 体）、Reflex 進化後 335,473 B、Forager 61,391 B。Learner 128 行は 1 MB を超えるので既定にしない（D6） |
+| 3. EXP-002 を 10 シード以上で実施し、結果と限界を記録 | **満たす** | 7 腕 × 10 シード、仕様コミット da4bcab → 実行 → 結果 be3052f。事前登録 18 項目のうち支持 14、反証 2、一部反証 2 を明記（D9）。創発の主張はしていない |
+| 4. 決定論: Forager 世界のゴールデン不変、学習世界に別のゴールデン、CI の wasm 照合 | **満たす** | `0x658ee873d1866501` は 3-1〜3-9c を通して不変（3-1 / 3-2 は旧符号化の再計算、3-3 以降は「非空のときだけ符号化」の規約で証明。STATUS のゴールデン表）。学習世界のゴールデン `0xcb8bc0a9772c09a4`（native = wasm、CI）。Verify = MATCH を学習世界でも確認 |
+| 5. 台帳: 相互作用（移転・加害・発信・提案）は常にイベントとして台帳に載り、再生で照合。`Acted` は設定で ON、サイズを計測 | **満たす（発信は D3 の定義で）** | `Transferred` / `Harmed` / `Proposed` / `Accepted` / `Rejected` は常時記録され、再生（再実行）で照合される。**発信 `Signaled` は D3 のとおり `record_signals`（既定 OFF）**で、地図の輪は各個体の `last_signal` から描く（再生は再実行なので照合には不要）。この条件文の「発信」は D3 の定義に読み替える。`Acted` は 1,000 体 × 2,000 tick で 2,634,945 イベント・220 MB を計測し診断用に限定 |
+
+**Phase 3 完了（2026-10-17）。** Phase 4（制度）の設計 ADR は、EXP-002 が示した前提条件 — 制裁のない世界が既に Learner の死因の 43% を加害死で占めること（源は ε = 5% の探索）、報酬が自己エネルギーのみなので分かち合いは出ないこと、死に終端報酬がないこと — をベースラインの設計に織り込む（RISKS R8〜R10）。
 
 ## 却下した / 先送りした案
 
@@ -221,3 +233,4 @@ Decide の前に一様グリッドのバケット（セル → 個体 index 列�
 
 - 遷移関数が拡張される。Forager 世界のゴールデンは保つ設計だが、符号化変更は起きる（記憶・Q 表のハッシュ化）。各タスクで理由を STATUS の表に記録する。
 - Phase 4 は、3-2〜3-4 の台帳（移転・加害・提案・履行/不履行）の上に「違反の定義 → 制裁の選択 → 規範の提案と合意」を載せる。Phase 3 の設計はそれを前提に、物理と社会的事実の境界を越えない。
+- EXP-002 の帰結（2026-10-17）: 学習方策は既定世界で Forager の帯域を上回った（D9 の予測は反証）が、その機構は「集団が刈り取る」側にあり、1 体の効率ではない。制度の実験では、個体数ではなく事前登録した指標（H1 の先占者以外の採取率と制裁の条件付き確率）で判定する。EXP-003 候補（終端報酬、ε と `harm_cost` の格子、`--mutate` だけの Forager、立っている食料の指標）は Phase 4 の設計 ADR で採否を決める。

@@ -1,4 +1,4 @@
-# Architecture（Phase 1 完了時点）
+# Architecture（Phase 3 完了時点）
 
 > 実装と一致している内容のみを書く。未実装の層は「予定」と明記する。製品ゴールは docs/PRODUCT.md。
 
