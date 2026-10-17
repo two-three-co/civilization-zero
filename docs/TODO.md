@@ -25,7 +25,7 @@ Phase 2 の計画は ADR-0010（Toy 1）に従う。
 - [x] 3-3 `Signal(Say)`、`last_signal` の観測、記憶リング `recent[K]` のカーネル更新（済 2026-10-17: `Agent.recent` は `memory` の兄弟フィールド、空なら符号化に入らずゴールデン不変、スナップショット形式 5）
 - [x] 3-4 交渉メッセージ `Propose / Accept / Reject`（済 2026-10-17: `signal_radius` 内の宛先にだけ届き、受諾は記憶の `ProposalFrom` が要件、`Promised` は約束した量、`Proposed / Accepted / Rejected` を常時記録。履行は強制しない。スナップショット形式 6、ゴールデン不変）
 - [x] 3-5 `PolicyKind::{Reflex, Learner}` の枠、`Intervention::SetPolicy`、CLI の方策拡張（済 2026-10-17: 枠のみ。`PolicyParams.table`（重み 16×8 i32 / Q `learner_states`×8 i16）、`SetPolicy { All | Id | Fraction }`、`--policy reflex|learner|mixed-learning`、`--set-policy`、スナップショット形式 7。両 kind の決定は 3-6 / 3-7 まで Forager に委譲）
-- [x] 3-6 Reflex 方策（済 2026-10-17: 16 特徴 × 8 行動の線形スコア、Forager 等価の初期重みで全決定が一致、重みの突然変異。decide 147 ns（初期重み、基準内）/ 182 ns（進化後、基準 150 超過 → 3-8 前に基準の扱いを決める））
+- [x] 3-6 Reflex 方策（済 2026-10-17: 16 特徴 × 8 行動の線形スコア、Forager 等価の初期重みで全決定が一致、重みの突然変異。decide 147 ns（初期重み、基準内）/ 182 ns（進化後、当初基準 150 超過 → 2026-10-17 に進化後・Learner は ≤ 200 へ改定、ADR-0013 D6））
 - [x] 3-7 Learner 方策（表形式 Q、整数、継承）（済 2026-10-17: `policy/learner.rs`。7 ビット 128 状態（hungry / has_food / food_here / food_in_sight / adjacent / upper / heard）を `learner_states` で折る（既定 32 = 下位 5 ビット）、ε-greedy（config `learner_epsilon_permille` 既定 50）、Q 更新はカーネルの Apply Phase 5a で `Intent.state` と `Agent.last_step` から（報酬 = Upkeep までのエネルギー差分 /100、出生の移転は差し引かない、固定小数点 16、i16 飽和）、スナップショット形式 8、Forager のゴールデン不変。計測は STATUS）
 - [ ] 3-8 EXP-002 事前登録 → 実行 → 記録
 - [x] 3-9a UI: 社会マーカー（`Frame.social`）・台帳集計（`Frame.ledger`）・インスペクタの記憶/相互作用・世界の方策構成選択（済 2026-10-17: プロトコル v3、cz-web に `social / ledger_json / agent_json / agent_events_json` と `policy` 引数。ローカルと公開 URL で確認済み）
