@@ -5,6 +5,7 @@
 //! line) without translation. Phase 2 will add `Acted { agent, intent,
 //! outcome }` next to these; nothing here should need to change for that.
 
+use crate::action::{Action, Outcome};
 use crate::agent::AgentId;
 use crate::intervention::Intervention;
 use crate::space::Pos;
@@ -17,10 +18,13 @@ pub enum DeathCause {
     Starvation,
     /// `age >= max_age`.
     OldAge,
+    /// Health reached zero in a tick in which the agent was harmed
+    /// (ADR-0013 D3); takes precedence over starvation.
+    Violence,
 }
 
 impl DeathCause {
-    pub const COUNT: usize = 2;
+    pub const COUNT: usize = 3;
 
     pub fn index(self) -> usize {
         self as usize
@@ -54,6 +58,29 @@ pub enum Event {
         tick: u64,
         intervention: Intervention,
     },
+    /// Food handed from one agent to an adjacent one (`Action::Transfer`).
+    Transferred {
+        tick: u64,
+        from: AgentId,
+        to: AgentId,
+        amount: u32,
+    },
+    /// Health taken from an adjacent agent (`Action::Harm`).
+    Harmed {
+        tick: u64,
+        by: AgentId,
+        target: AgentId,
+        damage: i64,
+    },
+    /// What an agent tried and what came of it. Recorded for every agent of
+    /// every tick when `record_actions` is on (ADR-0013 D3): the raw material
+    /// for defining rule violations in Phase 4 (R5).
+    Acted {
+        tick: u64,
+        agent: AgentId,
+        action: Action,
+        outcome: Outcome,
+    },
 }
 
 impl Event {
@@ -61,7 +88,10 @@ impl Event {
         match self {
             Event::Born { tick, .. }
             | Event::Died { tick, .. }
-            | Event::Intervened { tick, .. } => *tick,
+            | Event::Intervened { tick, .. }
+            | Event::Transferred { tick, .. }
+            | Event::Harmed { tick, .. }
+            | Event::Acted { tick, .. } => *tick,
         }
     }
 }

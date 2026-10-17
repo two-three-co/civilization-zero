@@ -40,6 +40,18 @@ pub struct WorldConfig {
     /// Health restored by Rest when energy > 0.
     pub rest_heal: i64,
 
+    // --- interaction (ADR-0013 D3) ---
+    /// Paid on every Transfer attempt.
+    pub transfer_cost: i64,
+    /// Paid on every Harm attempt. High by default so that violence is not
+    /// free (RISKS.md R6).
+    pub harm_cost: i64,
+    /// Health taken from the target by one Harm.
+    pub harm_damage: i64,
+    /// Record `Event::Acted` for every agent every tick. Off by default: it
+    /// multiplies ledger size by the population.
+    pub record_actions: bool,
+
     // --- life cycle (ADR-0008) ---
     /// A surviving agent whose energy is at or above this value after upkeep
     /// produces one child. `None` disables reproduction.
@@ -119,6 +131,10 @@ impl Default for WorldConfig {
             gather_amount: 2,
             starvation_damage: 5,
             rest_heal: 1,
+            transfer_cost: 100,
+            harm_cost: 2_000,
+            harm_damage: 20,
+            record_actions: false,
             birth_threshold: Some(80_000),
             child_energy: 40_000,
             max_age: Some(3_000),
@@ -165,7 +181,10 @@ impl WorldConfig {
                     && self.move_cost >= 0
                     && self.gather_cost >= 0
                     && self.starvation_damage >= 0
-                    && self.rest_heal >= 0,
+                    && self.rest_heal >= 0
+                    && self.transfer_cost >= 0
+                    && self.harm_cost >= 0
+                    && self.harm_damage >= 0,
                 "costs must be non-negative",
             ),
             (self.gather_amount > 0, "gather_amount must be > 0"),

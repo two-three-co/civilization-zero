@@ -7,7 +7,7 @@
 use cz_web::WasmWorld;
 use wasm_bindgen_test::*;
 
-const GOLDEN_200_HEX: &str = "b7b914705736f95f";
+const GOLDEN_200_HEX: &str = "658ee873d1866501";
 
 #[wasm_bindgen_test]
 fn wasm_reaches_the_native_golden_hash() {

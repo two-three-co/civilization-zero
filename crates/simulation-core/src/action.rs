@@ -1,16 +1,22 @@
 //! Actions and their outcomes.
 //!
-//! | Action   | Precondition                                   | Cost           | Effect                                   | Failure                         |
-//! |----------|------------------------------------------------|----------------|------------------------------------------|---------------------------------|
-//! | Move(d)  | target cell inside the grid                    | `move_cost`    | position := neighbour                    | `OutOfBounds` (no cost)         |
-//! | Gather   | cell food > 0, inventory not full              | `gather_cost`  | food moves cell -> inventory (contended) | `NoResource`, `InventoryFull`, `LostContention` (cost paid) |
-//! | Consume(n)| inventory > 0, room for >= 1 food of energy   | 0              | inventory -> energy                      | `EmptyInventory`, `EnergyFull`  |
-//! | Rest     | -                                              | 0              | health += `rest_heal` if energy > 0      | -                               |
+//! | Action            | Precondition                                              | Cost                               | Effect                                                             | Failure                                                      |
+//! |-------------------|-----------------------------------------------------------|------------------------------------|--------------------------------------------------------------------|--------------------------------------------------------------|
+//! | Move(d)           | target cell inside the grid                               | `move_cost`                        | position := neighbour                                              | `OutOfBounds` (no cost)                                      |
+//! | Gather            | cell food > 0, inventory not full                         | `gather_cost`                      | food moves cell -> inventory (contended)                           | `NoResource`, `InventoryFull`, `LostContention` (cost paid)  |
+//! | Consume(n)        | inventory > 0, room for >= 1 food of energy               | 0                                  | inventory -> energy                                                | `EmptyInventory`, `EnergyFull`                               |
+//! | Rest              | -                                                         | 0                                  | health += `rest_heal` if energy > 0                                | -                                                            |
+//! | Transfer{to, n}   | `to` alive, not self, adjacent at S(t) (Manhattan <= 1), inventory > 0 | `transfer_cost` (paid on attempt) | min(n, inventory, `to`'s free space) food moves to `to`; actors resolved in id order | `NoSuchTarget`, `NotAdjacent`, `EmptyInventory`, `TargetFull` (cost paid) |
+//! | Store(n)          | inventory > 0                                             | 0                                  | min(n, inventory) food onto the own cell (no capacity cap)         | `EmptyInventory`                                             |
+//! | Harm{target}      | target alive, not self, adjacent at S(t)                  | `harm_cost` (paid on attempt)      | target.health -= `harm_damage`; stacks; a death this tick is `Violence` | `NoSuchTarget`, `NotAdjacent` (cost paid)                   |
 //!
 //! `metabolism_cost` is paid every tick regardless of action. Failures here
 //! are *physical* infeasibility; rule violations (Phase 4) are a different
-//! concept and will never be represented by `Failure`.
+//! concept and will never be represented by `Failure`. The social actions
+//! (ADR-0013 D3) are deliberately generic primitives: nothing here is named
+//! after an institution.
 
+use crate::agent::AgentId;
 use crate::space::Dir;
 use serde::{Deserialize, Serialize};
 
@@ -21,10 +27,21 @@ pub enum Action {
     /// Consume up to `n` food units from inventory.
     Consume(u32),
     Rest,
+    /// Give up to `n` food units to an adjacent agent.
+    Transfer {
+        to: AgentId,
+        n: u32,
+    },
+    /// Put up to `n` food units from the inventory onto the current cell.
+    Store(u32),
+    /// Take `harm_damage` health from an adjacent agent.
+    Harm {
+        target: AgentId,
+    },
 }
 
 impl Action {
-    pub const KIND_COUNT: usize = 4;
+    pub const KIND_COUNT: usize = 7;
 
     pub fn kind_index(self) -> usize {
         match self {
@@ -32,6 +49,9 @@ impl Action {
             Action::Gather => 1,
             Action::Consume(_) => 2,
             Action::Rest => 3,
+            Action::Transfer { .. } => 4,
+            Action::Store(_) => 5,
+            Action::Harm { .. } => 6,
         }
     }
 }
@@ -45,10 +65,16 @@ pub enum Failure {
     LostContention,
     EmptyInventory,
     EnergyFull,
+    /// The target is more than one cell away (at the tick's start positions).
+    NotAdjacent,
+    /// The target's inventory had no room, so nothing moved.
+    TargetFull,
+    /// No *other* living agent has that id.
+    NoSuchTarget,
 }
 
 impl Failure {
-    pub const COUNT: usize = 6;
+    pub const COUNT: usize = 9;
 
     pub fn index(self) -> usize {
         self as usize
@@ -58,7 +84,7 @@ impl Failure {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Outcome {
     Ok,
-    /// Gather that obtained fewer units than requested but more than zero.
+    /// Gather or Transfer that moved fewer units than requested but more than zero.
     Partial,
     Failed(Failure),
 }

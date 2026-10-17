@@ -108,7 +108,7 @@ fn old_age_death_is_recorded_with_cause_and_drops_food() {
     w.agents[i].age = 49;
     let r = w.apply(intents(&[Action::Rest]));
     assert_eq!(r.deaths, 1);
-    assert_eq!(r.deaths_by_cause, [0, 1]);
+    assert_eq!(r.deaths_by_cause, [0, 1, 0]);
     assert_eq!(
         r.events,
         vec![Event::Died {
@@ -123,7 +123,7 @@ fn old_age_death_is_recorded_with_cause_and_drops_food() {
     );
     assert_eq!(w.resources.food_at(p), 6);
     assert!(w.agents.is_empty());
-    assert_eq!(w.ledger.deaths_by_cause, [0, 1]);
+    assert_eq!(w.ledger.deaths_by_cause, [0, 1, 0]);
     assert_eq!(w.ledger.energy_written_off, 30_000 - c.metabolism_cost);
     w.check_invariants().unwrap();
 }
@@ -137,7 +137,7 @@ fn starvation_takes_precedence_over_old_age() {
     let i = add_agent(&mut w, Pos::new(0, 0), 0, 0);
     w.agents[i].age = 49;
     let r = w.apply(intents(&[Action::Rest]));
-    assert_eq!(r.deaths_by_cause, [1, 0]);
+    assert_eq!(r.deaths_by_cause, [1, 0, 0]);
     assert!(matches!(
         r.events[0],
         Event::Died {

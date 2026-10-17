@@ -4,7 +4,7 @@
 //!             [--policy forager|random|mixed] [--check]
 //!             [--trace PATH --every K] [--snapshot PATH]
 //!             [--drought-at TICK [--drought-amount N] [--drought-interval N]]
-//!             [--log PATH]
+//!             [--log PATH] [--record-actions]
 //!   cz resume --snapshot PATH [--ticks N] [--check]
 //!   cz log    --path PATH [--from TICK] [--to TICK] [--limit N]
 //!   cz replay --snapshot PATH --log PATH [--to TICK]
@@ -89,6 +89,7 @@ fn build_world(seed: u64, o: &Opts) -> Result<World, Box<dyn std::error::Error>>
         initial_agents: get(o, "agents", 1_000)?,
         patch_count: get(o, "patches", ((side as u32 * side as u32) / 700).max(1))?,
         mutation_enabled: o.contains_key("mutate"),
+        record_actions: o.contains_key("record-actions"),
         ..WorldConfig::default()
     };
     let policy = o.get("policy").map(String::as_str).unwrap_or("forager");
@@ -177,12 +178,23 @@ fn simulate(mut world: World, o: &Opts) -> R {
         do_check
     );
     println!(
-        "{:>6} {:>6} {:>6} {:>7} {:>7} {:>9} {:>9} {:>9}",
-        "tick", "alive", "births", "d.starv", "d.age", "gathered", "consumed", "food"
+        "{:>6} {:>6} {:>6} {:>7} {:>6} {:>6} {:>5} {:>5} {:>9} {:>9} {:>9}",
+        "tick",
+        "alive",
+        "births",
+        "d.starv",
+        "d.age",
+        "d.viol",
+        "xfer",
+        "harm",
+        "gathered",
+        "consumed",
+        "food"
     );
     let mut step_time = Duration::ZERO;
     let mut agent_steps = 0u64;
     let (mut gathered, mut consumed, mut births) = (0u64, 0u64, 0u64);
+    let (mut xfers, mut harms) = (0u64, 0u64);
     let mut deaths = [0u64; DeathCause::COUNT];
     for _ in 0..ticks {
         if let Some(t) = trace.as_mut() {
@@ -207,6 +219,8 @@ fn simulate(mut world: World, o: &Opts) -> R {
         gathered += r.food_gathered;
         consumed += r.food_consumed;
         births += r.births as u64;
+        xfers += r.transfers as u64;
+        harms += r.harms as u64;
         for (acc, d) in deaths.iter_mut().zip(r.deaths_by_cause) {
             *acc += d as u64;
         }
@@ -215,17 +229,21 @@ fn simulate(mut world: World, o: &Opts) -> R {
         }
         if world.tick % 100 == 0 {
             println!(
-                "{:>6} {:>6} {:>6} {:>7} {:>7} {:>9} {:>9} {:>9}",
+                "{:>6} {:>6} {:>6} {:>7} {:>6} {:>6} {:>5} {:>5} {:>9} {:>9} {:>9}",
                 world.tick,
                 world.agents.len(),
                 births,
                 deaths[DeathCause::Starvation.index()],
                 deaths[DeathCause::OldAge.index()],
+                deaths[DeathCause::Violence.index()],
+                xfers,
+                harms,
                 gathered,
                 consumed,
                 world.resources.total_food()
             );
-            (gathered, consumed, births, deaths) = (0, 0, 0, [0; DeathCause::COUNT]);
+            (gathered, consumed, births, xfers, harms, deaths) =
+                (0, 0, 0, 0, 0, [0; DeathCause::COUNT]);
         }
     }
     let secs = step_time.as_secs_f64();
@@ -395,6 +413,9 @@ fn cmd_log(o: &Opts) -> R {
             Event::Born { .. } => "born",
             Event::Died { .. } => "died",
             Event::Intervened { .. } => "intervened",
+            Event::Transferred { .. } => "transferred",
+            Event::Harmed { .. } => "harmed",
+            Event::Acted { .. } => "acted",
         };
         *counts.entry(kind).or_default() += 1;
     }

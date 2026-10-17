@@ -48,8 +48,8 @@ fn different_seed_different_history() {
     assert_ne!(a.state_hash(), b.state_hash());
 }
 
-/// Golden fingerprint of the dynamics (`dynamics_hash`: everything but the
-/// config). If this changes, the transition function changed: record why in
+/// Golden fingerprint of the dynamics (`dynamics_hash`: tick, ids, resources
+/// and agents — not the config, not the ledger). If this changes, the transition function changed: record why in
 /// docs/STATUS.md (and an ADR if it was a design change). Adding a config
 /// field does not change it.
 #[test]
@@ -64,7 +64,7 @@ fn golden_hash_is_stable() {
     println!("golden dynamics hash after 200 ticks: {h:#018x}");
     assert_eq!(h, GOLDEN_200);
 }
-const GOLDEN_200: u64 = 0xb7b9_1470_5736_f95f;
+const GOLDEN_200: u64 = 0x658e_e873_d186_6501;
 
 #[test]
 fn snapshot_roundtrip_then_continue_is_identical() {

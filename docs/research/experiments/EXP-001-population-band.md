@@ -100,6 +100,12 @@ cargo run --release -p cz-cli -- sweep --seeds 10 --ticks 20000 --policy random 
 Random は走査を使わないので軌跡が完全に同一で、絶滅 tick も初回と一致した（564〜693）。
 データ: `data/EXP-001/rerun-two-pass-scan/`。
 
+## 注記（2026-10-17、ADR-0013 3-2 以降）
+
+Random 方策は 3-2 で社会行動（`Transfer` / `Store` / `Harm`）も一様に抽選するようになった。上の Random の数値は 3-2 以前の
+7 行動版のもの。3-2 以降の Random は加害の試行コスト（既定 2,000）で急速に消耗し、1,000 体が tick 100 で約 200 体、tick 300 で絶滅する
+（`cz run --policy random`、seed 42）。Forager の結果は影響を受けない（ゴールデン不変）。
+
 ## データ
 
 `data/EXP-001/forager_summary.csv`, `forager_series.csv`, `random_summary.csv`, `random_series.csv`（series は 100 tick ごとの個体数と食料総量）。

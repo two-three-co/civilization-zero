@@ -120,11 +120,27 @@ pub fn decide(obs: &Observation<'_>, rng: &mut RngStream) -> Intent {
 }
 
 fn random(obs: &Observation<'_>, rng: &mut RngStream) -> Intent {
-    let action = match rng.below(7) {
+    // Uniform over the whole vocabulary, social actions included (ADR-0013
+    // D3): the null model must be able to do everything a learner can.
+    // Targets are drawn from adjacent agents; with nobody in reach the agent
+    // rests instead.
+    let adjacent = |rng: &mut RngStream| {
+        let near: Vec<AgentId> = obs
+            .neighbors()
+            .into_iter()
+            .filter(|n| n.distance <= 1)
+            .map(|n| n.id)
+            .collect();
+        (!near.is_empty()).then(|| near[rng.below(near.len() as u64) as usize])
+    };
+    let action = match rng.below(10) {
         0..=3 => Action::Move(Dir::ALL[rng.below(4) as usize]),
         4 => Action::Gather,
         5 => Action::Consume(1),
-        _ => Action::Rest,
+        6 => Action::Rest,
+        7 => adjacent(rng).map_or(Action::Rest, |to| Action::Transfer { to, n: 1 }),
+        8 => Action::Store(1),
+        _ => adjacent(rng).map_or(Action::Rest, |target| Action::Harm { target }),
     };
     Intent {
         action,

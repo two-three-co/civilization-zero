@@ -1,6 +1,6 @@
 # 実装進捗（新しいセッションはまずここを読む）
 
-最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · **Phase 2 = Toy 1 完了（配信中: https://two-three-co.github.io/civilization-zero/ ）。Phase 3（Agent Cognition, ADR-0013）進行中: 3-1 済**（ADR-0010）· カーネル版 `simulation-core 0.1.0`
+最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · **Phase 2 = Toy 1 完了（配信中: https://two-three-co.github.io/civilization-zero/ ）。Phase 3（Agent Cognition, ADR-0013）進行中: 3-1, 3-2 済**（ADR-0010）· カーネル版 `simulation-core 0.1.0`
 リポジトリ: https://github.com/two-three-co/civilization-zero（private）· CI: GitHub Actions（fmt / clippy / test debug+release / wasm ビルド）
 
 ## 状態の区別
@@ -73,7 +73,8 @@
 | # | タスク | 状態 | 根拠 |
 |---|---|---|---|
 | 3-1 | 空間インデックス（`src/spatial.rs`、tick 開始時に `agents` から計数ソートで構築、派生状態で保存しない）、`Observation::neighbors()`（`social_radius` 内を (距離, id) 順、自分を除く）、`Perception { social_radius, see_policy, see_inventory, see_energy }`（既定 2 / off / on / off、`serde(default)` で旧 config も読める） | 済 (2026-10-17) | `tests/neighbors.rs`（4 テスト + proptest 64 ケースで総当たりと一致）、`spatial.rs` 単体 2 本。**既定世界の遷移は不変**（旧符号化で state_hash を再計算し `0xf16cb4be6e7ed69b` に一致）。計測: 構築 **10 µs**（1,310 体, 128²）、step 132 → **147〜154 µs/tick（+11〜16%、2 回計測、基準 +20% 以内）**、decide 0.97 → 1.10〜1.18 ms/10 tick |
-| 3-2 〜 3-10 | 相互作用行動、記憶、通信・交渉、方策の枠と SetPolicy、Reflex、Learner、EXP-002、UI、文書 | 未 | — |
+| 3-2 | 行動 `Transfer { to, n }` / `Store(n)` / `Harm { target }`（S(t) の位置で隣接判定、行為者 id 順、試行コスト）、失敗 `NotAdjacent` / `TargetFull` / `NoSuchTarget`、`DeathCause::Violence`（加害を受けた tick の死、餓死より優先）、イベント `Transferred` / `Harmed`（常時）/ `Acted`（`record_actions`）、台帳 `transfers` / `food_transferred` / `food_stored` / `harms`、config `transfer_cost` 100 / `harm_cost` 2,000 / `harm_damage` 20。Random 方策は 10 行動を一様に抽選（社会行動の対象は隣接個体）。`cz run --record-actions`、表に d.viol / xfer / harm 列。スナップショット形式 4（先頭の `format` だけ先に読んで旧版を `Format(n)` で拒否） | 済 (2026-10-17) | `tests/interaction.rs`（8 テスト: 移転・部分移転・4 種の失敗と試行コスト・S(t) 隣接と id 順・貯蔵・加害の累積と Violence・Acted の記録と JSON・Random 世界の不変条件）。**Forager 世界の遷移は不変**（旧定義のハッシュを再計算して `0xb7b914705736f95f` に一致）。計測: step 148 µs/tick（3-1 と同じ）、**`Acted` 台帳は 1,000 体 × 2,000 tick で 2,634,945 イベント・220 MB（84 B/イベント、記録なし 680 KB の 324 倍）** → 診断用。Random は加害コストで tick 300 までに絶滅 |
+| 3-3 〜 3-10 | 記憶、通信・交渉、方策の枠と SetPolicy、Reflex、Learner、EXP-002、UI、文書 | 未 | — |
 
 ## 計測値（Apple M1, rustc 1.99.1, release, 2026-10-17）
 
@@ -151,7 +152,7 @@ ADR-0011 で走査を行スライス化（ハッシュ不変、-16%）→ 2 パ�
 
 ## ゴールデンハッシュ
 
-`World::new(seed 42, default).run(200).dynamics_hash()`（2026-10-17 の 3-1 以降。それ以前は `state_hash` = config を含む値）。遷移関数を意図的に変えたときはこの値を更新し、ここに日付と理由を残す。config のフィールド追加では変わらない。
+`World::new(seed 42, default).run(200).dynamics_hash()`（tick・id・資源・個体のみ。3-2 以降。3-1 時点は台帳込み、それ以前は `state_hash` = config も含む値）。遷移関数を意図的に変えたときはこの値を更新し、ここに日付と理由を残す。config や台帳のフィールド追加では変わらない。
 
 | 日付 | 値 | 理由 |
 |---|---|---|
@@ -160,6 +161,7 @@ ADR-0011 で走査を行スライス化（ハッシュ不変、-16%）→ 2 パ�
 | 2026-10-17 | 0x6e767bd160525c8e | ADR-0010 2a-1: `state_hash` の符号化に台帳の `food_intervened` / `energy_intervened` / `interventions` を追加、スナップショット形式 3。**遷移関数は不変**（旧符号化で再計算すると前行の値に一致することを確認済み） |
 | 2026-10-17 | 0xf16cb4be6e7ed69b | ADR-0011: Forager の視界走査を 2 パス化。勝者の分布は不変（`tests/forager.rs` の一様性テスト）、乱数の消費列だけが変わる。行スライス化（commit ee515f4）はハッシュ不変だった |
 | 2026-10-17 | 0xb7b914705736f95f | ADR-0013 3-1: ゴールデンを **config を含まない `dynamics_hash`** に再定義（config に `perception` を追加したため `state_hash` は変わる）。**遷移は不変**: 旧符号化（perception なしの config JSON）で `state_hash` を再計算すると前行の値に一致 |
+| 2026-10-17 | 0x658ee873d1866501 | ADR-0013 3-2: `dynamics_hash` を **台帳も含まない**物理状態（tick・id・資源・個体）だけに再定義（台帳に社会行動の集計と死因 `Violence` を追加したため）。**遷移は不変**: 3-1 時点の定義で再計算すると前行の値に一致。以後、config と台帳の追加はゴールデンを変えない |
 
 ## 次のタスク
 

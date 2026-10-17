@@ -49,6 +49,11 @@ pub struct Ledger {
     pub births: u64,
     pub deaths: u64,
     pub deaths_by_cause: [u64; DeathCause::COUNT],
+    /// Social actions (ADR-0013 D3): counts and food moved.
+    pub transfers: u64,
+    pub food_transferred: u64,
+    pub food_stored: u64,
+    pub harms: u64,
     /// Net food added (+) or removed (-) by interventions.
     pub food_intervened: i64,
     /// Net energy added (+) or removed (-) by interventions.
@@ -68,8 +73,13 @@ pub struct TickReport {
     pub failures: [u32; Failure::COUNT],
     pub food_gathered: u64,
     pub food_consumed: u64,
-    /// Lifecycle events in the order they happened: deaths in id order,
-    /// then births in parent-id order.
+    pub transfers: u32,
+    pub food_transferred: u64,
+    pub food_stored: u64,
+    pub harms: u32,
+    /// Events in the order they happened: transfers and harms in actor
+    /// order, `Acted` (if recorded), then deaths in id order, then births
+    /// in parent-id order.
     pub events: Vec<Event>,
 }
 
@@ -310,6 +320,82 @@ impl World {
             };
         }
 
+        // --- Phase 3b: transfer / store / harm (ADR-0013 D3) -------------
+        // Resolved at S(t) positions in actor (id) order. Targets are named
+        // by id; `agents` is sorted, so the lookup is a binary search.
+        let mut harmed = vec![false; n];
+        for (i, it) in intents.iter().enumerate() {
+            match it.action {
+                Action::Transfer { to, n: want } => {
+                    outcomes[i] = match self.target_index(i, to) {
+                        Err(f) => Outcome::Failed(f),
+                        Ok(j) => {
+                            let have = self.agents[i].inventory;
+                            let space = cfg.inventory_capacity - self.agents[j].inventory;
+                            if have == 0 {
+                                Outcome::Failed(Failure::EmptyInventory)
+                            } else if space == 0 {
+                                Outcome::Failed(Failure::TargetFull)
+                            } else {
+                                let q = want.min(have).min(space);
+                                self.agents[i].inventory -= q;
+                                self.agents[j].inventory += q;
+                                if q > 0 {
+                                    self.ledger.transfers += 1;
+                                    self.ledger.food_transferred += q as u64;
+                                    report.transfers += 1;
+                                    report.food_transferred += q as u64;
+                                    report.events.push(Event::Transferred {
+                                        tick,
+                                        from: self.agents[i].id,
+                                        to,
+                                        amount: q,
+                                    });
+                                }
+                                if q < want.min(have) {
+                                    Outcome::Partial
+                                } else {
+                                    Outcome::Ok
+                                }
+                            }
+                        }
+                    };
+                }
+                Action::Store(want) => {
+                    let a = &mut self.agents[i];
+                    outcomes[i] = if a.inventory == 0 {
+                        Outcome::Failed(Failure::EmptyInventory)
+                    } else {
+                        let q = want.min(a.inventory);
+                        a.inventory -= q;
+                        self.resources.food[bounds.index(a.pos)] += q;
+                        self.ledger.food_stored += q as u64;
+                        report.food_stored += q as u64;
+                        Outcome::Ok
+                    };
+                }
+                Action::Harm { target } => {
+                    outcomes[i] = match self.target_index(i, target) {
+                        Err(f) => Outcome::Failed(f),
+                        Ok(j) => {
+                            self.agents[j].health -= cfg.harm_damage;
+                            harmed[j] = true;
+                            self.ledger.harms += 1;
+                            report.harms += 1;
+                            report.events.push(Event::Harmed {
+                                tick,
+                                by: self.agents[i].id,
+                                target,
+                                damage: cfg.harm_damage,
+                            });
+                            Outcome::Ok
+                        }
+                    };
+                }
+                _ => {}
+            }
+        }
+
         // --- Phase 4: move ------------------------------------------------
         let mut moved = vec![false; n];
         for (i, it) in intents.iter().enumerate() {
@@ -329,6 +415,8 @@ impl World {
             let action_cost = match intents[i].action {
                 Action::Move(_) if moved[i] => cfg.move_cost,
                 Action::Gather => cfg.gather_cost,
+                Action::Transfer { .. } => cfg.transfer_cost,
+                Action::Harm { .. } => cfg.harm_cost,
                 _ => 0,
             };
             let cost = (cfg.metabolism_cost + action_cost).min(a.energy);
@@ -348,6 +436,16 @@ impl World {
                 report.failures[f.index()] += 1;
             }
         }
+        if cfg.record_actions {
+            for (i, it) in intents.iter().enumerate() {
+                report.events.push(Event::Acted {
+                    tick,
+                    agent: self.agents[i].id,
+                    action: it.action,
+                    outcome: outcomes[i],
+                });
+            }
+        }
 
         // --- Phase 6: death -----------------------------------------------
         let before = self.agents.len();
@@ -355,9 +453,16 @@ impl World {
         let (resources, ledger) = (&mut self.resources, &mut self.ledger);
         let events = &mut report.events;
         let mut deaths_by_cause = [0u32; DeathCause::COUNT];
+        let mut visiting = 0usize;
         self.agents.retain(|a| {
+            let i = visiting;
+            visiting += 1;
             let cause = if a.health <= 0 {
-                DeathCause::Starvation
+                if harmed[i] {
+                    DeathCause::Violence
+                } else {
+                    DeathCause::Starvation
+                }
             } else if max_age.is_some_and(|m| a.age >= m) {
                 DeathCause::OldAge
             } else {
@@ -430,6 +535,22 @@ impl World {
         self.tick += 1;
         report.alive = self.agents.len() as u32;
         report
+    }
+
+    /// Resolves the target of a social action: another living agent, adjacent
+    /// to the actor at the tick's start positions.
+    fn target_index(&self, actor: usize, id: AgentId) -> Result<usize, Failure> {
+        let j = self
+            .agents
+            .binary_search_by_key(&id, |a| a.id)
+            .map_err(|_| Failure::NoSuchTarget)?;
+        if j == actor {
+            return Err(Failure::NoSuchTarget);
+        }
+        if self.agents[actor].pos.manhattan(self.agents[j].pos) > 1 {
+            return Err(Failure::NotAdjacent);
+        }
+        Ok(j)
     }
 
     /// Applies an external change between ticks (ADR-0010 2a-1) and returns
@@ -592,24 +713,25 @@ impl World {
     /// Stable 64-bit fingerprint of the full state (FNV-1a over a canonical
     /// encoding). Independent of platform pointer width and of `std::hash`.
     pub fn state_hash(&self) -> u64 {
-        self.hash_with(true)
+        let mut h = Fnv64::new();
+        h.bytes(&serde_json::to_vec(&self.config).expect("config serialises"));
+        self.hash_ledger(&mut h);
+        self.hash_dynamics(&mut h);
+        h.finish()
     }
 
-    /// `state_hash` without the config: a fingerprint of the dynamics only.
-    /// Golden tests pin this one, so adding a config field (an encoding
+    /// Fingerprint of the physical state only: tick, ids, resources and
+    /// agents — not the config and not the ledger's bookkeeping. Golden
+    /// tests pin this one, so adding a config or ledger field (an encoding
     /// change) cannot be mistaken for a change of the transition function,
     /// while any change in what agents did or where food is shows up.
     pub fn dynamics_hash(&self) -> u64 {
-        self.hash_with(false)
+        let mut h = Fnv64::new();
+        self.hash_dynamics(&mut h);
+        h.finish()
     }
 
-    fn hash_with(&self, include_config: bool) -> u64 {
-        let mut h = Fnv64::new();
-        if include_config {
-            h.bytes(&serde_json::to_vec(&self.config).expect("config serialises"));
-        }
-        h.u64(self.tick);
-        h.u64(self.next_agent_id);
+    fn hash_ledger(&self, h: &mut Fnv64) {
         let l = &self.ledger;
         for v in [
             l.food_initial,
@@ -617,6 +739,10 @@ impl World {
             l.food_consumed,
             l.births,
             l.deaths,
+            l.transfers,
+            l.food_transferred,
+            l.food_stored,
+            l.harms,
         ] {
             h.u64(v);
         }
@@ -634,6 +760,11 @@ impl World {
         ] {
             h.u64(v as u64);
         }
+    }
+
+    fn hash_dynamics(&self, h: &mut Fnv64) {
+        h.u64(self.tick);
+        h.u64(self.next_agent_id);
         h.u64(self.resources.food.len() as u64);
         for (&f, &c) in self.resources.food.iter().zip(&self.resources.capacity) {
             h.u64(((f as u64) << 32) | c as u64);
@@ -653,7 +784,6 @@ impl World {
                 None => h.u64(0),
             }
         }
-        h.finish()
     }
 
     /// JSON snapshot: readable, for debugging and tests. `to_bytes` is the
@@ -663,6 +793,11 @@ impl World {
     }
 
     pub fn from_snapshot(bytes: &[u8]) -> Result<Self, SnapshotError> {
+        let header: SnapshotHeader =
+            serde_json::from_slice(bytes).map_err(|e| SnapshotError::Decode(e.to_string()))?;
+        if header.format != SNAPSHOT_FORMAT {
+            return Err(SnapshotError::Format(header.format));
+        }
         let snap: Snapshot =
             serde_json::from_slice(bytes).map_err(|e| SnapshotError::Decode(e.to_string()))?;
         Self::validate_snapshot(snap)
@@ -680,6 +815,13 @@ impl World {
         let body = bytes
             .strip_prefix(&SNAPSHOT_MAGIC)
             .ok_or_else(|| SnapshotError::Decode("not a binary snapshot (bad magic)".into()))?;
+        // The format is the first field: read it alone first, so an old
+        // snapshot is reported as such instead of as garbage.
+        let (format, _) = postcard::take_from_bytes::<u32>(body)
+            .map_err(|e| SnapshotError::Decode(e.to_string()))?;
+        if format != SNAPSHOT_FORMAT {
+            return Err(SnapshotError::Format(format));
+        }
         let snap: Snapshot =
             postcard::from_bytes(body).map_err(|e| SnapshotError::Decode(e.to_string()))?;
         Self::validate_snapshot(snap)
@@ -717,8 +859,9 @@ impl World {
 pub const SNAPSHOT_MAGIC: [u8; 4] = *b"CZS\0";
 
 /// Bumped whenever `World`'s serialised shape changes. 2: life cycle fields
-/// (ADR-0008). 3: intervention ledger fields (ADR-0010 2a-1).
-pub const SNAPSHOT_FORMAT: u32 = 3;
+/// (ADR-0008). 3: intervention ledger fields (ADR-0010 2a-1). 4: perception
+/// config, social-action ledger fields, `DeathCause::Violence` (ADR-0013 3-1/3-2).
+pub const SNAPSHOT_FORMAT: u32 = 4;
 
 /// Written form: borrows the world instead of cloning it.
 #[derive(Serialize)]
@@ -733,6 +876,12 @@ struct Snapshot {
     format: u32,
     state_hash: u64,
     world: World,
+}
+
+/// Just the leading field of a snapshot, for the early format check.
+#[derive(Deserialize)]
+struct SnapshotHeader {
+    format: u32,
 }
 
 #[derive(Debug, PartialEq, Eq)]

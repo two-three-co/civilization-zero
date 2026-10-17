@@ -92,7 +92,7 @@ Decide の前に一様グリッドのバケット（セル → 個体 index 列�
 | # | タスク | 依存 | 受け入れ基準 |
 |---|---|---|---|
 | 3-1 ✅ | 空間インデックス + `Observation::neighbors()` + `Perception` 設定。**済 2026-10-17**: `src/spatial.rs`（計数ソート、O(n + cells)）、`tests/neighbors.rs`（順序・半径・端のクリップ・情報制限・proptest で総当たりと一致）。計測: インデックス構築 10 µs、step 132 → 147〜154 µs/tick（+11〜16%、2 回計測）。ゴールデンは config を含まない `dynamics_hash` に再定義（旧符号化の再計算で遷移不変を証明） | – | 近傍が (距離, id) 順で決定論的。serial = parallel。既定世界のゴールデン不変。ベンチ: 1.3k 体で step +20% 以内（計測） |
-| 3-2 | `Transfer` / `Store` / `Harm` 行動、`DeathCause::Violence`、`Transferred` / `Harmed` イベント、`Acted` 記録（設定） | 3-1 | 保存則テスト（移転・貯蔵で食料不変、加害コストは `energy_spent`）、隣接判定は S(t)、相手が満杯で部分移転、ゴールデン不変。`record_actions` ON の台帳サイズを 20,000 tick で計測 |
+| 3-2 ✅ | `Transfer` / `Store` / `Harm` 行動、`DeathCause::Violence`、`Transferred` / `Harmed` イベント、`Acted` 記録（設定）。**済 2026-10-17**: `tests/interaction.rs` 8 本、Forager のゴールデン不変（旧定義で証明）、`Acted` は 1,000 体 × 2,000 tick で 220 MB（20,000 tick なら約 2.2 GB → 診断用に限定）。ゴールデンは台帳も除いた物理状態のみに再定義 | 3-1 | 保存則テスト（移転・貯蔵で食料不変、加害コストは `energy_spent`）、隣接判定は S(t)、相手が満杯で部分移転、ゴールデン不変。`record_actions` ON の台帳サイズを計測 |
 | 3-3 | `Signal(Say)`、`last_signal` の観測、記憶リング `recent[K]` とカーネル更新（受領・被害・目撃・聴取） | 3-2 | 記憶の内容が決定論的（proptest）、スナップショットの増分を計測（≤ 2 倍）、ゴールデン不変（符号化のみの変更は旧符号化で証明） |
 | 3-4 | 交渉メッセージ `Propose / Accept / Reject` の配達と台帳、`Promised` 記憶 | 3-3 | 単体テストで「提案 → 受諾 → 移転 → 返済」が台帳と記憶に正しく並ぶ。台本方策（正直な互恵者）で再現。履行は強制されないことのテスト（不履行が起きても物理は進む） |
 | 3-5 | `PolicyKind::{Reflex, Learner}` の枠、`PolicyParams` の拡張（重みベクトル / Q 表）、`Intervention::SetPolicy`、CLI `--policy reflex|learner|mixed-learning` | 3-2 | SetPolicy を同一 tick で 2 回 fork してハッシュ一致。スナップショット形式の版上げと互換テスト |
