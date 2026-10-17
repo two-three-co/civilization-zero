@@ -703,7 +703,7 @@ fn snapshots_carry_claims_and_open_deals_and_invariants_bind_them_to_the_switch(
     assert_eq!(World::from_snapshot(&json).unwrap(), w);
     let v: serde_json::Value = serde_json::from_slice(&json).unwrap();
     assert_eq!(v["format"], SNAPSHOT_FORMAT);
-    assert_eq!(SNAPSHOT_FORMAT, 10);
+    assert_eq!(SNAPSHOT_FORMAT, 11);
     assert!(v["world"]["agents"]
         .as_array()
         .unwrap()
@@ -716,10 +716,10 @@ fn snapshots_carry_claims_and_open_deals_and_invariants_bind_them_to_the_switch(
     assert_eq!(v["world"]["config"]["nomos"], true);
     assert!(v["world"]["ledger"]["encroachments"].is_u64());
     let mut old = v.clone();
-    old["format"] = serde_json::json!(9);
+    old["format"] = serde_json::json!(10);
     assert_eq!(
         World::from_snapshot(&serde_json::to_vec(&old).unwrap()).err(),
-        Some(SnapshotError::Format(9))
+        Some(SnapshotError::Format(10))
     );
 
     // The tracked state is part of the dynamics: forgetting a deal or a

@@ -329,70 +329,110 @@ impl World {
         }
     }
 
-    /// The read-only view `agent` decides from, given this tick's index.
-    pub fn observation<'a>(&'a self, agent: &'a Agent, index: &'a SpatialIndex) -> Observation<'a> {
+    /// The read-only view `agent` decides from, given this tick's indices
+    /// (ADR-0013 D2, ADR-0014 D6). `agent` is normally an element of
+    /// `agents` — then `observation_at`, which skips the id lookup, is the
+    /// kernel's path; a copy that is not in the slice (a test deciding "as
+    /// if") is observed as standing where `agents` has its id, or as a
+    /// stranger with no standing when no agent carries it.
+    pub fn observation<'a>(
+        &'a self,
+        agent: &'a Agent,
+        index: &'a SpatialIndex,
+        norms: &'a NormIndex,
+    ) -> Observation<'a> {
+        let me = self
+            .agents
+            .binary_search_by_key(&agent.id, |a| a.id)
+            .unwrap_or(self.agents.len());
+        self.observe(agent, me, index, norms)
+    }
+
+    /// The view `self.agents[i]` decides from.
+    pub fn observation_at<'a>(
+        &'a self,
+        i: usize,
+        index: &'a SpatialIndex,
+        norms: &'a NormIndex,
+    ) -> Observation<'a> {
+        self.observe(&self.agents[i], i, index, norms)
+    }
+
+    fn observe<'a>(
+        &'a self,
+        agent: &'a Agent,
+        me: usize,
+        index: &'a SpatialIndex,
+        norms: &'a NormIndex,
+    ) -> Observation<'a> {
         Observation {
             agent,
+            me,
             resources: &self.resources,
             bounds: self.bounds(),
             config: &self.config,
             tick: self.tick,
             agents: &self.agents,
             index,
+            norms,
         }
     }
 
-    fn decide_one(&self, a: &Agent, index: &SpatialIndex) -> Intent {
-        let obs = self.observation(a, index);
-        let mut rng = RngStream::new(self.config.seed, self.tick, a.id.0, Stream::Decide);
+    fn decide_one(&self, i: usize, index: &SpatialIndex, norms: &NormIndex) -> Intent {
+        let obs = self.observation_at(i, index, norms);
+        let mut rng = RngStream::new(self.config.seed, self.tick, obs.agent.id.0, Stream::Decide);
         decide(&obs, &mut rng)
     }
 
     /// Phase 1 of a tick: compute every agent's intent without mutating state.
     pub fn decide_all(&self) -> Vec<Intent> {
         let index = self.spatial_index();
-        self.decide_all_with(&index)
+        let norms = self.norm_index();
+        self.decide_all_with(&index, &norms)
     }
 
-    /// `decide_all` over an index already built for this tick.
-    pub fn decide_all_with(&self, index: &SpatialIndex) -> Vec<Intent> {
-        self.agents
-            .iter()
-            .map(|a| self.decide_one(a, index))
+    /// `decide_all` over the indices already built for this tick.
+    pub fn decide_all_with(&self, index: &SpatialIndex, norms: &NormIndex) -> Vec<Intent> {
+        (0..self.agents.len())
+            .map(|i| self.decide_one(i, index, norms))
             .collect()
     }
 
     #[cfg(feature = "parallel")]
     pub fn decide_all_parallel(&self) -> Vec<Intent> {
         let index = self.spatial_index();
-        self.decide_all_parallel_with(&index)
+        let norms = self.norm_index();
+        self.decide_all_parallel_with(&index, &norms)
     }
 
     #[cfg(feature = "parallel")]
-    pub fn decide_all_parallel_with(&self, index: &SpatialIndex) -> Vec<Intent> {
+    pub fn decide_all_parallel_with(&self, index: &SpatialIndex, norms: &NormIndex) -> Vec<Intent> {
         use rayon::prelude::*;
         // `collect` on an indexed parallel iterator preserves input order;
-        // the index is built once and only read.
-        self.agents
-            .par_iter()
-            .map(|a| self.decide_one(a, index))
+        // both indices are built once and only read.
+        (0..self.agents.len())
+            .into_par_iter()
+            .map(|i| self.decide_one(i, index, norms))
             .collect()
     }
 
     /// Advance one tick with the serial decision phase. The tick's spatial
-    /// index is built once and shared by Decide and Apply.
+    /// index and norm index are built once, right after each other, and
+    /// shared by Decide and Apply (ADR-0014 D2).
     pub fn step(&mut self) -> TickReport {
         let index = self.spatial_index();
-        let intents = self.decide_all_with(&index);
-        self.apply_with(intents, &index)
+        let norms = self.norm_index();
+        let intents = self.decide_all_with(&index, &norms);
+        self.apply_with(intents, &index, &norms)
     }
 
     /// Advance one tick deciding in parallel. Must equal `step` bit-for-bit.
     #[cfg(feature = "parallel")]
     pub fn step_parallel(&mut self) -> TickReport {
         let index = self.spatial_index();
-        let intents = self.decide_all_parallel_with(&index);
-        self.apply_with(intents, &index)
+        let norms = self.norm_index();
+        let intents = self.decide_all_parallel_with(&index, &norms);
+        self.apply_with(intents, &index, &norms)
     }
 
     pub fn run(&mut self, ticks: u64) {
@@ -402,17 +442,28 @@ impl World {
     }
 
     /// Phases 2-8. `intents[i]` belongs to `self.agents[i]`. Builds the
-    /// tick's spatial index itself; `step` shares one with Decide.
+    /// tick's indices itself; `step` shares them with Decide.
     pub fn apply(&mut self, intents: Vec<Intent>) -> TickReport {
         let index = self.spatial_index();
-        self.apply_with(intents, &index)
+        let norms = self.norm_index();
+        self.apply_with(intents, &index, &norms)
     }
 
-    /// `apply` with the index of the tick's start positions, which locates
-    /// the witnesses of a harm and the listeners of a signal.
-    pub fn apply_with(&mut self, intents: Vec<Intent>, index: &SpatialIndex) -> TickReport {
+    /// `apply` with the indices of the tick's start: the spatial index
+    /// locates the witnesses of a harm and the listeners of a signal, the
+    /// norm index says who stood accused at S(t) (ADR-0014 D4).
+    pub fn apply_with(
+        &mut self,
+        intents: Vec<Intent>,
+        index: &SpatialIndex,
+        norms: &NormIndex,
+    ) -> TickReport {
         assert_eq!(intents.len(), self.agents.len(), "one intent per agent");
         assert_eq!(index.len(), self.agents.len(), "index built for this tick");
+        debug_assert!(
+            norms.is_empty() || norms.len() == self.agents.len(),
+            "norm index built for this tick"
+        );
         let cfg = &self.config;
         let bounds = self.resources.bounds;
         let tick = self.tick;
@@ -458,7 +509,6 @@ impl World {
         // Institutions (ADR-0014 D2, D4): who stood accused at S(t) — the
         // view a sanction is judged against — and the rules in force,
         // which no phase of a tick changes. Empty and free without rules.
-        let norms = self.norm_index();
         let rule_encroach = norms.rule(NormKind::Encroach).copied();
         let rule_promise = norms.rule(NormKind::BrokenPromise).copied();
         let rule_harm = norms.rule(NormKind::Harm).copied();
@@ -1985,7 +2035,11 @@ pub const SNAPSHOT_MAGIC: [u8; 4] = *b"CZS\0";
 /// SanctionedBy, SawSanction}`; ledger `violations` / `sanctions` /
 /// `episodes_closed` / `episodes_sanctioned`; config `charter` /
 /// `record_violations` (ADR-0014 4-2).
-pub const SNAPSHOT_FORMAT: u32 = 10;
+/// 11: the reflex weight table grows from 16 × 8 to 21 × 8 (a 128-long
+/// table no longer fits), the learner's row index changes meaning (bits
+/// 5–7 are now `OCCUPIED` / `VIOLATOR_ADJACENT` / `ACCUSED`, `UPPER` /
+/// `HEARD` move to 8–9), config `perception.see_standing` (ADR-0014 4-3).
+pub const SNAPSHOT_FORMAT: u32 = 11;
 
 /// Written form: borrows the world instead of cloning it.
 #[derive(Serialize)]

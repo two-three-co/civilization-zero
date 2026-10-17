@@ -154,6 +154,17 @@ pub struct Perception {
     pub see_policy: bool,
     pub see_inventory: bool,
     pub see_energy: bool,
+    /// Whether the normative facts of ADR-0014 D6 are perceived: the rules
+    /// in force, who stands accused (`Observation::my_standing` /
+    /// `adjacent_violator` / `rule` / `open_motion` / `i_voted`) and the
+    /// memory of having been sanctioned. Off, a learning policy's norm
+    /// features read 0 and its Harm actuator aims as it did without rules
+    /// (the "blind" null model of EXP-004, ADR-0014 D11). `occupied()` is
+    /// unaffected: who arrived first on the agent's own cell is a physical
+    /// fact, not an institution. Not part of `dynamics_hash`. `default`
+    /// so configs written before the field existed load as seeing.
+    #[serde(default = "default_true")]
+    pub see_standing: bool,
 }
 
 impl Default for Perception {
@@ -164,6 +175,7 @@ impl Default for Perception {
             see_policy: false,
             see_inventory: true,
             see_energy: false,
+            see_standing: true,
         }
     }
 }

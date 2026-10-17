@@ -5,10 +5,12 @@
 //! The index holds one flag byte per agent index of `World.agents`:
 //! `ACCUSED` (some episode is open), `HARMABLE` / `REJECTABLE` (open under
 //! a rule whose sanction set allows that answer) and `VOTED` (has voted on
-//! the open motion; motions arrive with task 4-5). Decide reads it (from
-//! 4-3 on, through `Observation`) and Apply reads it to tell a sanction
-//! from an ordinary harm or rejection: what counts is who stood accused at
-//! S(t), not what this tick's violations add. With no rule in force and no
+//! the open motion; motions arrive with task 4-5), plus the rule in force
+//! per kind and the kind of the open motion. Decide reads it through
+//! `Observation.norms` (4-3: the norm features of the learning policies
+//! and the Harm actuator) and Apply reads it to tell a sanction from an
+//! ordinary harm or rejection: what counts is who stood accused at S(t),
+//! not what this tick's violations add. With no rule in force and no
 //! motion open the index is empty, holds no per-agent bytes, and every
 //! query answers "no" in constant time.
 //!
@@ -16,7 +18,7 @@
 //! agent id) and `agents` (ascending by id): O(agents + episodes), no hash
 //! map, no binary search per episode.
 
-use super::{Nomos, NormKind, Rule, Sanction, Via};
+use super::{MotionKind, Nomos, NormKind, Rule, Sanction, Via};
 use crate::agent::Agent;
 
 pub struct NormIndex {
@@ -24,6 +26,8 @@ pub struct NormIndex {
     flags: Vec<u8>,
     /// The rule in force per kind (index = `NormKind::index`).
     rules: [Option<Rule>; NormKind::COUNT],
+    /// What the open motion asks for, if one is open.
+    motion: Option<MotionKind>,
 }
 
 impl NormIndex {
@@ -41,6 +45,7 @@ impl NormIndex {
         Self {
             flags: Vec::new(),
             rules: [None; NormKind::COUNT],
+            motion: None,
         }
     }
 
@@ -50,10 +55,12 @@ impl NormIndex {
         for r in &nomos.rules {
             rules[r.norm.kind.index()] = Some(*r);
         }
-        if nomos.rules.is_empty() && nomos.motion.is_none() {
+        let motion = nomos.motion.as_ref().map(|m| m.kind);
+        if nomos.rules.is_empty() && motion.is_none() {
             return Self {
                 flags: Vec::new(),
                 rules,
+                motion,
             };
         }
         let mut flags = vec![0u8; agents.len()];
@@ -100,12 +107,27 @@ impl NormIndex {
                 }
             }
         }
-        Self { flags, rules }
+        Self {
+            flags,
+            rules,
+            motion,
+        }
     }
 
     /// Nothing in force: no rule, no open motion.
     pub fn is_empty(&self) -> bool {
         self.flags.is_empty()
+    }
+
+    /// Number of agents the index was built over (0 when nothing is in
+    /// force, whatever the population).
+    pub fn len(&self) -> usize {
+        self.flags.len()
+    }
+
+    /// What the open motion asks for, if one is open.
+    pub fn motion(&self) -> Option<MotionKind> {
+        self.motion
     }
 
     /// Some rule is in force.
@@ -237,6 +259,8 @@ mod tests {
         });
         let ix = NormIndex::build(&agents, &n);
         assert!(!ix.is_empty() && ix.any_rule());
+        assert_eq!(ix.len(), agents.len());
+        assert_eq!(ix.motion(), Some(MotionKind::Repeal { rule: 0 }));
         assert_eq!(ix.flags(0), NormIndex::VOTED);
         assert_eq!(ix.flags(1), NormIndex::ACCUSED | NormIndex::HARMABLE);
         assert_eq!(ix.flags(2), NormIndex::ACCUSED | NormIndex::REJECTABLE);
@@ -259,6 +283,8 @@ mod tests {
         let n = Nomos::default();
         let ix = NormIndex::build(&agents, &n);
         assert!(ix.is_empty() && !ix.any_rule());
+        assert_eq!(ix.len(), 0);
+        assert_eq!(ix.motion(), None);
         for i in 0..5 {
             assert_eq!(ix.flags(i), 0);
             assert!(!ix.accused(i) && !ix.harmable(i) && !ix.rejectable(i) && !ix.voted(i));

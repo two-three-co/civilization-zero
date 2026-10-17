@@ -15,7 +15,8 @@ fn say(symbol: u8) -> Action {
 
 fn seen_signal(w: &World, observer: usize, other: u64) -> Option<Message> {
     let index = w.spatial_index();
-    w.observation(&w.agents[observer], &index)
+    let norms = w.norm_index();
+    w.observation(&w.agents[observer], &index, &norms)
         .neighbors()
         .into_iter()
         .find(|n| n.id == AgentId(other))

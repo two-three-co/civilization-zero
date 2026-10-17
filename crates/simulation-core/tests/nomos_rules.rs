@@ -1066,7 +1066,7 @@ fn snapshots_carry_the_institutions_and_inconsistent_states_are_rejected() {
     assert_eq!(World::from_snapshot(&json).unwrap(), w);
     let v: serde_json::Value = serde_json::from_slice(&json).unwrap();
     assert_eq!(v["format"], SNAPSHOT_FORMAT);
-    assert_eq!(SNAPSHOT_FORMAT, 10);
+    assert_eq!(SNAPSHOT_FORMAT, 11);
     assert_eq!(v["world"]["nomos"]["rules"].as_array().unwrap().len(), 2);
     assert_eq!(v["world"]["nomos"]["rules"][1]["norm"]["kind"], "harm");
     assert_eq!(v["world"]["nomos"]["standing"][0]["agent"], 1);
@@ -1080,10 +1080,10 @@ fn snapshots_carry_the_institutions_and_inconsistent_states_are_rejected() {
         "memory kinds render in snake case"
     );
     let mut old = v.clone();
-    old["format"] = serde_json::json!(9);
+    old["format"] = serde_json::json!(10);
     assert_eq!(
         World::from_snapshot(&serde_json::to_vec(&old).unwrap()).err(),
-        Some(SnapshotError::Format(9))
+        Some(SnapshotError::Format(10))
     );
 
     // Rules, episodes and the charter are state: the hash sees them.
@@ -1201,6 +1201,11 @@ fn snapshots_carry_the_institutions_and_inconsistent_states_are_rejected() {
 
 #[test]
 fn rules_change_no_decision_of_forager_or_learner_worlds_only_their_readings() {
+    // Blind to standing (ADR-0014 D6, 4-3): a seeing learner's Harm aims at
+    // an accused neighbour first, so under rules its targets differ
+    // (`tests/nomos_policy.rs`); with `see_standing` off the policies read
+    // nothing of the rules and the claim below holds as in 4-2. Foragers
+    // never harm, so for them it holds either way.
     for kind in [PolicyKind::Forager, PolicyKind::Learner] {
         let base = WorldConfig {
             seed: 7,
@@ -1209,6 +1214,10 @@ fn rules_change_no_decision_of_forager_or_learner_worlds_only_their_readings() {
             initial_agents: 150,
             patch_count: 6,
             nomos: true,
+            perception: simulation_core::Perception {
+                see_standing: false,
+                ..Default::default()
+            },
             ..WorldConfig::default()
         };
         let mut plain = World::generate(base.clone(), |_| kind).unwrap();

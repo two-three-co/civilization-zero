@@ -9,7 +9,8 @@ use simulation_core::{policy, Action, Dir, Intent, Pos, World, WorldConfig};
 
 fn decide_at(w: &World, tick: u64) -> Intent {
     let index = w.spatial_index();
-    let obs = w.observation(&w.agents[0], &index);
+    let norms = w.norm_index();
+    let obs = w.observation(&w.agents[0], &index, &norms);
     let mut rng = RngStream::new(w.config.seed, tick, w.agents[0].id.0, Stream::Decide);
     policy::decide(&obs, &mut rng)
 }

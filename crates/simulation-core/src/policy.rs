@@ -12,11 +12,19 @@
 //! row it decided in, the kernel does the Q update in Apply). 3-5 provides
 //! the kinds, their heritable tables, their serialisation and the
 //! `SetPolicy` intervention that switches a running world over to them.
+//! Phase 4 (ADR-0014 D6) adds the normative facts to the observation —
+//! `Observation.norms` and its queries, filtered by
+//! `Perception.see_standing` — five reflex features and three learner
+//! state bits that read them, and a Harm actuator that aims at an accused
+//! neighbour first. Nothing here names an institution as an action: the
+//! vocabulary is still the eight kinds, and whether to harm is the
+//! policy's choice.
 
 use crate::action::Action;
 use crate::agent::{Agent, AgentId, Memory};
 use crate::config::WorldConfig;
 use crate::memory::{InteractionKind, Message};
+use crate::nomos::{self, MotionKind, NormIndex, NormKind, Rule};
 use crate::resources::ResourceGrid;
 use crate::rng::RngStream;
 use crate::space::{Bounds, Dir, Pos};
@@ -81,15 +89,19 @@ impl PolicyKind {
     }
 }
 
-/// Number of integer features a `Reflex` policy scores (ADR-0013 D6). Their
+/// Number of integer features a `Reflex` policy scores (ADR-0013 D6: 16;
+/// ADR-0014 D6: 21, the last five reading the normative facts). Their
 /// meaning is fixed by `feature`; the count fixes the weight vector's shape.
-pub const REFLEX_FEATURES: usize = 16;
+pub const REFLEX_FEATURES: usize = 21;
 
-/// Indices into a reflex policy's feature vector (ADR-0013 D6, 3-6). Every
-/// feature is a small non-negative integer computed from the observation
-/// alone: the agent's body, its cell and sight, its neighbours, what it
-/// heard last tick and what its memory holds. Nothing here names an
-/// institution; the weights decide what any of it means.
+/// Indices into a reflex policy's feature vector (ADR-0013 D6, 3-6;
+/// ADR-0014 D6, 4-3). Every feature is a small non-negative integer
+/// computed from the observation alone: the agent's body, its cell and
+/// sight, its neighbours, what it heard last tick, what its memory holds,
+/// and — from 16 on — the social and institutional facts the norm index
+/// exposes. Nothing here names an institution as an action; the weights
+/// decide what any of it means, and the five norm features start at zero
+/// weight (`forager_weights`).
 pub mod feature {
     /// Always 1: the per-action bias.
     pub const BIAS: usize = 0;
@@ -127,6 +139,20 @@ pub mod feature {
     /// Energy in eighths of `max_energy`: `min(8, energy / max(1, max_energy / 8))`,
     /// 0 (empty) to 8 (full).
     pub const ENERGY_LEVEL: usize = 15;
+    /// `Observation::occupied()`: someone on the agent's own cell arrived
+    /// earlier, so gathering here would be an encroachment (ADR-0014 D3).
+    /// A physical fact of the cell: read whatever `see_standing` says,
+    /// always 0 with `nomos` off.
+    pub const OCCUPIED: usize = 16;
+    /// Some rule is in force (`Observation::rule` of any kind).
+    pub const RULE_ACTIVE: usize = 17;
+    /// The agent itself stands accused (`Observation::accused`).
+    pub const ACCUSED: usize = 18;
+    /// `Observation::adjacent_violator()` finds someone: an agent within
+    /// distance 1 stands accused under a rule that lets a harm answer it.
+    pub const VIOLATOR_ADJACENT: usize = 19;
+    /// A `SanctionedBy` entry within `MEMORY_HORIZON` ticks.
+    pub const SANCTIONED_RECENTLY: usize = 20;
     /// How far back the memory flags look, in ticks.
     pub const MEMORY_HORIZON: u64 = 16;
     /// Cap of the count features.
@@ -162,8 +188,11 @@ const KIND_SIGNAL: usize = 7;
 /// - Gather: `food_here − pack_full − 0.5 > 0`, the forager's rule 2.
 /// - Move: always 0; the actuator then applies the forager's rules 4 and 5.
 ///
-/// Fresh reflex agents and `SetPolicy`'s `Default` start here, so evolution
-/// begins at the forager and every reflex test has a known baseline.
+/// The five norm features (ADR-0014 D6) weigh zero for every kind: a fresh
+/// reflex agent decides as the forager whatever the rules say, and only
+/// mutation can make it read them. Fresh reflex agents and `SetPolicy`'s
+/// `Default` start here, so evolution begins at the forager and every
+/// reflex test has a known baseline.
 pub fn forager_weights() -> Vec<i32> {
     use feature::*;
     let k = Action::KIND_COUNT;
@@ -190,11 +219,12 @@ pub fn forager_weights() -> Vec<i32> {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PolicyTable {
-    /// `REFLEX_FEATURES × Action::KIND_COUNT` fixed-point weights
-    /// (`REFLEX_UNIT` = 1.0), row-major by feature: the weight of feature
-    /// `f` for action kind `k` is `weights[f * KIND_COUNT + k]`. Heritable;
-    /// every weight moves by up to `mutation_step_permille` units at birth
-    /// when `mutation_enabled`. Fresh agents start from `forager_weights()`.
+    /// `REFLEX_FEATURES × Action::KIND_COUNT` (21 × 8 = 168) fixed-point
+    /// weights (`REFLEX_UNIT` = 1.0), row-major by feature: the weight of
+    /// feature `f` for action kind `k` is `weights[f * KIND_COUNT + k]`.
+    /// Heritable; every weight moves by up to `mutation_step_permille`
+    /// units at birth when `mutation_enabled`. Fresh agents start from
+    /// `forager_weights()`.
     Reflex { weights: Vec<i32> },
     /// `learner_states × Action::KIND_COUNT` Q values (i16 fixed point,
     /// `learner::Q_UNIT` = one reward unit = 100 milli-energy), row-major by
@@ -310,7 +340,12 @@ impl PolicyParams {
     /// weight moves by a uniform integer in `[-step, step]` (1/1024 units),
     /// clamped to `±REFLEX_WEIGHT_MAX`. One draw per value, in field then
     /// table order, so a child's parameters are a function of its id's
-    /// `Mutation` stream alone. A Q table is inherited unchanged.
+    /// `Mutation` stream alone. The table is row-major by feature, so the
+    /// 128 weights of the sixteen Phase 3 features are drawn before the 40
+    /// of the five norm features (ADR-0014 D6): on the counter-based
+    /// stream their values are what they were before the table grew, and
+    /// a `nomos`-off reflex world evolves along the same trajectory. A Q
+    /// table is inherited unchanged.
     pub fn mutated(self, step: u16, rng: &mut RngStream) -> Self {
         let draw = |rng: &mut RngStream| rng.below(2 * step as u64 + 1) as i64 - step as i64;
         let hunger_permille =
@@ -333,9 +368,16 @@ impl PolicyParams {
 }
 
 /// Read-only view an agent is allowed to see. Kept narrow on purpose: it is
-/// the seam where Phase 3 cognition (and its information limits) plugs in.
+/// the seam where Phase 3 cognition (and its information limits) plugs in,
+/// and where Phase 4 adds the normative facts (ADR-0014 D6: `norms` and
+/// the queries `occupied` / `my_standing` / `adjacent_violator` / `rule` /
+/// `open_motion` / `i_voted`), filtered by `Perception.see_standing`.
 pub struct Observation<'a> {
     pub agent: &'a Agent,
+    /// Position of `agent` in `agents` — the key into `norms` and the
+    /// spatial index — or `agents.len()` for an agent that is not in the
+    /// slice (then it has no standing).
+    pub me: usize,
     pub resources: &'a ResourceGrid,
     pub bounds: Bounds,
     pub config: &'a WorldConfig,
@@ -344,6 +386,10 @@ pub struct Observation<'a> {
     /// All agents of the tick (id order) and the index built over them.
     pub agents: &'a [Agent],
     pub index: &'a SpatialIndex,
+    /// Who stood accused at the tick's start and the rules in force
+    /// (ADR-0014 D2), read-only for the whole Decide phase. Empty — and
+    /// every query "no" — with nothing in force.
+    pub norms: &'a NormIndex,
 }
 
 /// Another agent as seen through `Perception`: position and distance are
@@ -399,6 +445,82 @@ impl Observation<'_> {
             .crowd(self.agent.pos, self.config.perception.social_radius);
         // The observer stands in its own cell, which the diamond includes.
         ((near as i64 - 1).max(0), (adjacent as i64 - 1).max(0))
+    }
+
+    // --- normative facts (ADR-0014 D6) ----------------------------------
+
+    /// Another agent on the observer's own cell arrived strictly earlier
+    /// (`nomos::encroaches`): gathering here would encroach on the cell's
+    /// first occupant. A physical fact of the cell, so `see_standing` does
+    /// not hide it; always false with `nomos` off, where nobody has an
+    /// arrival, and then free (no walk).
+    pub fn occupied(&self) -> bool {
+        if !self.config.nomos {
+            return false;
+        }
+        let me = self.agent;
+        self.index.cell(me.pos).iter().any(|&i| {
+            let o = &self.agents[i as usize];
+            o.id != me.id && nomos::encroaches(o.arrived, me.arrived)
+        })
+    }
+
+    /// Whether there are institutional facts to see: something is in force
+    /// and the perception lets the agent see standing.
+    fn sees_norms(&self) -> bool {
+        !self.norms.is_empty() && self.config.perception.see_standing
+    }
+
+    /// The observer's own flags of the norm index (`NormIndex::ACCUSED` /
+    /// `HARMABLE` / `REJECTABLE` / `VOTED`); 0 with nothing in force or
+    /// `see_standing` off.
+    pub fn my_standing(&self) -> u8 {
+        if self.sees_norms() {
+            self.norms.flags(self.me)
+        } else {
+            0
+        }
+    }
+
+    /// The observer stands accused under some rule.
+    pub fn accused(&self) -> bool {
+        self.my_standing() & NormIndex::ACCUSED != 0
+    }
+
+    /// The first agent within distance 1 — in the order of `neighbors()`,
+    /// distance then id, the same walk as `nearest_adjacent` — that stands
+    /// accused under a rule whose sanction set lets a harm answer it.
+    /// `None` with nothing in force, with `see_standing` off, or when
+    /// nobody that close qualifies.
+    pub fn adjacent_violator(&self) -> Option<AgentId> {
+        if !self.sees_norms() {
+            return None;
+        }
+        first_adjacent(self, |i| self.norms.harmable(i))
+    }
+
+    /// The rule in force for `kind`, if one is and standing is seen.
+    pub fn rule(&self, kind: NormKind) -> Option<&Rule> {
+        if self.sees_norms() {
+            self.norms.rule(kind)
+        } else {
+            None
+        }
+    }
+
+    /// What the open motion asks for, if one is open and standing is seen
+    /// (motions arrive with task 4-5).
+    pub fn open_motion(&self) -> Option<MotionKind> {
+        if self.sees_norms() {
+            self.norms.motion()
+        } else {
+            None
+        }
+    }
+
+    /// The observer has voted on the open motion.
+    pub fn i_voted(&self) -> bool {
+        self.my_standing() & NormIndex::VOTED != 0
     }
 }
 
@@ -485,6 +607,16 @@ fn features(
         x[NEIGHBOURS] = near.min(COUNT_CAP);
         x[ADJACENT] = adjacent.min(COUNT_CAP);
     }
+    // The normative facts (ADR-0014 D6): the cell's first occupancy is
+    // physical and always read (free with `nomos` off); the rest is 0
+    // unless something is in force and the perception shows standing.
+    x[OCCUPIED] = obs.occupied() as i64;
+    if obs.sees_norms() {
+        x[RULE_ACTIVE] = obs.norms.any_rule() as i64;
+        x[ACCUSED] = (obs.norms.flags(obs.me) & NormIndex::ACCUSED != 0) as i64;
+        x[VIOLATOR_ADJACENT] = obs.adjacent_violator().is_some() as i64;
+    }
+    let sees_standing = cfg.perception.see_standing as i64;
     // One pass over the memory, oldest first: the newest symbol heard last
     // tick wins, and each flag is set by any entry inside the horizon.
     for e in &a.recent {
@@ -493,8 +625,18 @@ fn features(
             InteractionKind::Heard if e.tick + 1 == obs.tick => x[HEARD] = e.value + 1,
             InteractionKind::HarmedBy => x[HARMED_RECENTLY] |= fresh,
             InteractionKind::ReceivedFrom => x[RECEIVED_RECENTLY] |= fresh,
-            InteractionKind::SawHarm => x[SAW_HARM_RECENTLY] |= fresh,
+            // A witnessed sanction is a witnessed harm (ADR-0014 D6).
+            InteractionKind::SawHarm | InteractionKind::SawSanction => {
+                x[SAW_HARM_RECENTLY] |= fresh
+            }
             InteractionKind::Promised => x[PROMISED_RECENTLY] |= fresh,
+            // Being sanctioned by a harm (the kernel records the damage as
+            // the value; a rejection's is 0) is the harm it physically
+            // was, and — when standing is perceived — a sanction.
+            InteractionKind::SanctionedBy => {
+                x[HARMED_RECENTLY] |= fresh & (e.value > 0) as i64;
+                x[SANCTIONED_RECENTLY] |= fresh & sees_standing;
+            }
             _ => {}
         }
     }
@@ -546,9 +688,24 @@ pub fn argmax_kind(scores: &[i64; Action::KIND_COUNT], rng: &mut RngStream) -> u
 /// off the index without building the sorted list. `None` when nobody is
 /// that close or the social radius does not reach them.
 pub fn nearest_adjacent(obs: &Observation<'_>) -> Option<AgentId> {
+    first_adjacent(obs, |_| true)
+}
+
+/// The first agent within distance 1 that `keep` (over indices into
+/// `obs.agents`) accepts, in the order of `Observation::neighbors()`:
+/// someone on the observer's own cell (lowest id) before someone on an
+/// adjacent cell (lowest id), never the observer itself. Read straight off
+/// the index; `None` when nobody that close qualifies or the social radius
+/// does not reach the adjacent cells. `nearest_adjacent` keeps everyone,
+/// `Observation::adjacent_violator` the accused (ADR-0014 D6).
+fn first_adjacent(obs: &Observation<'_>, keep: impl Fn(usize) -> bool) -> Option<AgentId> {
     let me = obs.agent;
     let here = obs.index.cell(me.pos);
-    if let Some(&i) = here.iter().find(|&&i| obs.agents[i as usize].id != me.id) {
+    // `keep` first: a flag byte is cheaper than the agent's id.
+    if let Some(&i) = here
+        .iter()
+        .find(|&&i| keep(i as usize) && obs.agents[i as usize].id != me.id)
+    {
         return Some(obs.agents[i as usize].id);
     }
     if obs.config.perception.social_radius == 0 {
@@ -557,7 +714,7 @@ pub fn nearest_adjacent(obs: &Observation<'_>) -> Option<AgentId> {
     let mut best: Option<u32> = None;
     for d in Dir::ALL {
         if let Some(p) = obs.bounds.step(me.pos, d) {
-            if let Some(&i) = obs.index.cell(p).first() {
+            if let Some(&i) = obs.index.cell(p).iter().find(|&&i| keep(i as usize)) {
                 best = Some(best.map_or(i, |b| b.min(i)));
             }
         }
@@ -565,7 +722,11 @@ pub fn nearest_adjacent(obs: &Observation<'_>) -> Option<AgentId> {
     best.map(|i| obs.agents[i as usize].id)
 }
 
-/// Fills in the parameters of the chosen kind (see `reflex`).
+/// Fills in the parameters of the chosen kind (see `reflex`). Harm aims at
+/// an accused neighbour first (`Observation::adjacent_violator`, ADR-0014
+/// D6: the one actuator that reads the norms) and otherwise, as before, at
+/// the nearest adjacent agent; with nothing in force or `see_standing` off
+/// the two coincide. Transfer and Signal are unchanged.
 fn reflex_act(
     obs: &Observation<'_>,
     rng: &mut RngStream,
@@ -588,7 +749,10 @@ fn reflex_act(
             nearest_adjacent().map_or(Action::Rest, |to| Action::Transfer { to, n: 1 })
         }
         KIND_STORE => Action::Store(1),
-        KIND_HARM => nearest_adjacent().map_or(Action::Rest, |target| Action::Harm { target }),
+        KIND_HARM => obs
+            .adjacent_violator()
+            .or_else(nearest_adjacent)
+            .map_or(Action::Rest, |target| Action::Harm { target }),
         _ => Action::Signal(Message::Say((heard - 1).clamp(0, 7) as u8)),
     };
     Intent {
@@ -902,7 +1066,7 @@ mod tests {
             learned.refit(PolicyKind::Reflex, &cfg).table,
             PolicyTable::blank(PolicyKind::Reflex, &cfg)
         );
-        assert_eq!(PolicyTable::REFLEX_LEN, 128);
+        assert_eq!(PolicyTable::REFLEX_LEN, 168);
         assert_eq!(PolicyTable::learner_len(&cfg), 32 * Action::KIND_COUNT);
         assert_eq!(PolicyKind::parse("learner"), Some(PolicyKind::Learner));
         assert_eq!(PolicyKind::parse("Learner"), None);
@@ -962,6 +1126,43 @@ mod tests {
             // n = 4000, p = 1/6: mean 667, sd 23.6, 5 sd = 118.
             assert!((549..=785).contains(&counts[k]), "{counts:?}");
         }
+    }
+
+    #[test]
+    fn mutation_draws_the_phase_3_rows_before_the_norm_rows() {
+        // ADR-0014 D6: the 128 weights of the sixteen Phase 3 features are
+        // drawn first, so on the counter-based stream they take the values
+        // they took before the table grew; the 40 norm weights follow.
+        let cfg = WorldConfig::default();
+        let full = PolicyParams::for_kind(PolicyKind::Reflex, &cfg);
+        let Some(PolicyTable::Reflex { weights }) = &full.table else {
+            panic!("reflex table");
+        };
+        assert_eq!(weights.len(), 168);
+        assert!(
+            weights[128..].iter().all(|&w| w == 0),
+            "norm rows start at 0"
+        );
+        let old = PolicyParams {
+            table: Some(PolicyTable::Reflex {
+                weights: weights[..128].to_vec(),
+            }),
+            ..full.clone()
+        };
+        let mut a = RngStream::new(4, 5, 6, Stream::Mutation);
+        let mut b = RngStream::new(4, 5, 6, Stream::Mutation);
+        let (ma, mb) = (full.mutated(50, &mut a), old.mutated(50, &mut b));
+        assert_eq!(ma.hunger_permille, mb.hunger_permille);
+        let (Some(PolicyTable::Reflex { weights: wa }), Some(PolicyTable::Reflex { weights: wb })) =
+            (&ma.table, &mb.table)
+        else {
+            panic!("reflex tables");
+        };
+        assert_eq!(&wa[..128], &wb[..], "the first 128 draws are the same");
+        assert!(
+            wa[128..].iter().any(|&w| w != 0),
+            "the norm rows mutate too"
+        );
     }
 
     #[test]

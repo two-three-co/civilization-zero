@@ -11,7 +11,8 @@ use simulation_core::{Agent, AgentId, Perception, PolicyKind, Pos, World, WorldC
 
 fn neighbors_of(w: &World, i: usize) -> Vec<(u32, u64)> {
     let index = w.spatial_index();
-    w.observation(&w.agents[i], &index)
+    let norms = w.norm_index();
+    w.observation(&w.agents[i], &index, &norms)
         .neighbors()
         .iter()
         .map(|n| (n.distance, n.id.0))
@@ -69,7 +70,8 @@ fn perception_limits_what_is_visible() {
     add_agent_with(&mut w, Pos::new(3, 2), 7_000, 4, PolicyKind::Random, params);
     let look = |w: &World| {
         let index = w.spatial_index();
-        w.observation(&w.agents[0], &index).neighbors()[0]
+        let norms = w.norm_index();
+        w.observation(&w.agents[0], &index, &norms).neighbors()[0]
     };
     let n = look(&w); // defaults: inventory yes, policy and energy no
     assert_eq!((n.id, n.pos, n.distance), (AgentId(1), Pos::new(3, 2), 1));
@@ -82,6 +84,7 @@ fn perception_limits_what_is_visible() {
         see_policy: true,
         see_inventory: false,
         see_energy: true,
+        see_standing: true,
     };
     let n = look(&w);
     assert_eq!(n.policy, Some(PolicyKind::Random));
@@ -153,9 +156,10 @@ proptest! {
             add_agent(&mut w, Pos::new(px, py), 1_000, 0);
         }
         let index = w.spatial_index();
+        let norms = w.norm_index();
         prop_assert_eq!(index.len(), w.agents.len());
         for (i, me) in w.agents.iter().enumerate() {
-            let got: Vec<(u32, u64)> = w.observation(me, &index).neighbors().iter().map(|nb| (nb.distance, nb.id.0)).collect();
+            let got: Vec<(u32, u64)> = w.observation(me, &index, &norms).neighbors().iter().map(|nb| (nb.distance, nb.id.0)).collect();
             let mut expected: Vec<(u32, u64)> = w.agents.iter()
                 .filter(|a: &&Agent| a.id != me.id)
                 .map(|a| (me.pos.manhattan(a.pos), a.id.0))

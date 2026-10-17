@@ -57,25 +57,61 @@ fn first_occupant_rule() -> Intervention {
     }
 }
 
-/// A forager world with `nomos` on and the first-occupancy rule in force
-/// from tick 0, warmed like the others (ADR-0014 4-2: the judging, the
+/// A world with `nomos` on and the first-occupancy rule in force from
+/// tick 0, warmed like the others (ADR-0014 4-2: the judging, the
 /// episodes and the per-tick `NormIndex` are the cost over `step/nomos`).
 /// Foragers never harm, so no sanction happens; every encroachment
 /// (~19 per tick, 4-1) is a violation and most of the population stands
-/// accused at any time.
-fn ruled_world(agents: u32, side: u16, kind: PolicyKind) -> World {
+/// accused at any time. With mutation and the learner's row count chosen
+/// it is the shape of the EXP-004 world (ADR-0014 D11; the 4-3 decide
+/// budget: ≤ 200 ns per agent-step with 21 features or 128 rows, rules in
+/// force, agents standing accused and — among learners — sanctioning).
+fn ruled_world_of(
+    agents: u32,
+    side: u16,
+    kind: PolicyKind,
+    mutation: bool,
+    learner_states: u16,
+) -> World {
+    ruled_world_warmed(agents, side, kind, mutation, learner_states, 1_000)
+}
+
+/// `ruled_world_of` warmed for `warm` ticks: the 128-row learner is still
+/// in its founding dip at tick 1,000 (EXP-002: L128 recovers between
+/// ticks 1,600 and 2,900), so its gate world is warmed 3,000 ticks to
+/// reach the ~1,300 agents the budget is stated for.
+fn ruled_world_warmed(
+    agents: u32,
+    side: u16,
+    kind: PolicyKind,
+    mutation: bool,
+    learner_states: u16,
+    warm: u64,
+) -> World {
     let cfg = WorldConfig {
         seed: 42,
         width: side,
         height: side,
         initial_agents: agents,
         patch_count: (side as u32 * side as u32) / 700,
+        mutation_enabled: mutation,
+        learner_states,
         nomos: true,
         ..WorldConfig::default()
     };
     let mut w = World::generate(cfg, |_| kind).unwrap();
     w.intervene(first_occupant_rule()).unwrap();
-    w.run(1_000);
+    w.run(warm);
+    w
+}
+
+/// The same world with `see_standing` off (ADR-0014 D6; EXP-004's N-blind):
+/// the norm index is built and the sanctions are read, but the policies'
+/// norm queries answer "no" without walking. Deciding over the same
+/// states as the seeing variant isolates what the norm queries cost from
+/// what a different population costs.
+fn blinded(mut w: World) -> World {
+    w.config.perception.see_standing = false;
     w
 }
 
@@ -158,11 +194,14 @@ fn bench_step(c: &mut Criterion) {
     // The same two worlds with the first-occupancy rule in force (ADR-0014
     // 4-2, acceptance: the Nomos cost — index, judging, episodes — within
     // the step budget of ≤ 20%, D9 completion condition 2).
-    for (name, kind) in [
-        ("nomos_rules", PolicyKind::Forager),
-        ("learner_nomos_rules", PolicyKind::Learner),
+    for (name, kind, rows) in [
+        ("nomos_rules", PolicyKind::Forager, 32),
+        ("learner_nomos_rules", PolicyKind::Learner, 32),
+        // The EXP-004 shape (ADR-0014 4-3): 128 rows see the norm bits.
+        ("learner128_nomos_rules", PolicyKind::Learner, 128),
     ] {
-        let w = ruled_world(1_000, 128, kind);
+        let warm = if rows == 128 { 3_000 } else { 1_000 };
+        let w = ruled_world_warmed(1_000, 128, kind, false, rows, warm);
         g.throughput(Throughput::Elements(w.agents.len() as u64 * 10));
         g.bench_with_input(BenchmarkId::new(name, 1_000), &w, |b, base| {
             b.iter_batched_ref(
@@ -233,15 +272,57 @@ fn bench_norm_index(c: &mut Criterion) {
 /// 1,000 ticks (ADR-0013 3-6 budget: ≤ 150 ns per agent-step).
 /// `learner/1000` is a learner world after 1,000 ticks of learning (ADR-0013
 /// 3-7 budget: ≤ 200 ns per agent-step; the Q update itself is in apply).
+/// `reflex_evolved_rules/1000` and `learner128_rules/1000` are the ADR-0014
+/// 4-3 budget's worlds: `nomos` on, the first-occupancy rule in force since
+/// tick 0, agents standing accused (and, among learners, sanctioning), 21
+/// features / 128 rows reading the norm index — ≤ 200 ns per agent-step.
 fn bench_decide(c: &mut Criterion) {
     let mut g = c.benchmark_group("decide");
-    for (name, kind, mutation) in [
-        ("serial/1000", PolicyKind::Forager, false),
-        ("reflex/1000", PolicyKind::Reflex, false),
-        ("reflex_evolved/1000", PolicyKind::Reflex, true),
-        ("learner/1000", PolicyKind::Learner, false),
-    ] {
-        let mut w = warmed_world_of(1_000, 128, kind, mutation);
+    type Build = fn() -> World;
+    let worlds: [(&str, Build); 8] = [
+        ("serial/1000", || {
+            warmed_world_of(1_000, 128, PolicyKind::Forager, false)
+        }),
+        ("reflex/1000", || {
+            warmed_world_of(1_000, 128, PolicyKind::Reflex, false)
+        }),
+        ("reflex_evolved/1000", || {
+            warmed_world_of(1_000, 128, PolicyKind::Reflex, true)
+        }),
+        ("learner/1000", || {
+            warmed_world_of(1_000, 128, PolicyKind::Learner, false)
+        }),
+        ("reflex_evolved_rules/1000", || {
+            ruled_world_of(1_000, 128, PolicyKind::Reflex, true, 32)
+        }),
+        ("reflex_evolved_rules_blind/1000", || {
+            blinded(ruled_world_of(1_000, 128, PolicyKind::Reflex, true, 32))
+        }),
+        ("learner128_rules/3000", || {
+            ruled_world_warmed(1_000, 128, PolicyKind::Learner, false, 128, 3_000)
+        }),
+        ("learner128_rules_blind/3000", || {
+            blinded(ruled_world_warmed(
+                1_000,
+                128,
+                PolicyKind::Learner,
+                false,
+                128,
+                3_000,
+            ))
+        }),
+    ];
+    for (name, build) in worlds {
+        let mut w = build();
+        if w.config.nomos {
+            eprintln!(
+                "decide/{name}: {} agents, {} open episodes, {} sanctions so far, see_standing {}",
+                w.agents.len(),
+                w.nomos.standing.len(),
+                w.ledger.sanctions.iter().sum::<u64>(),
+                w.config.perception.see_standing
+            );
+        }
         let states: Vec<World> = (0..10)
             .map(|_| {
                 let s = w.clone();

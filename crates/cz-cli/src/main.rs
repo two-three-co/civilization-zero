@@ -1023,7 +1023,7 @@ fn cmd_sweep(o: &Opts) -> R {
     let decrees = decrees(o)?;
     let mut series = format!("seed,tick,alive,food,{}\n", Tally::COUNT_COLUMNS);
     let mut qpolicy = String::from(
-        "seed,row,hungry,has_food,food_here,food_in_sight,adjacent,upper,heard,learners,move,gather,consume,rest,transfer,store,harm,signal,tie,visits,visits_window\n",
+        "seed,row,hungry,has_food,food_here,food_in_sight,adjacent,occupied,violator_adjacent,accused,upper,heard,learners,move,gather,consume,rest,transfer,store,harm,signal,tie,visits,visits_window\n",
     );
     let mut any_learners = false;
     println!(
@@ -1241,13 +1241,18 @@ fn cmd_sweep(o: &Opts) -> R {
             {
                 let bit = |b: u16| u8::from(r as u16 & b != 0);
                 let learners: u32 = counts.iter().sum();
+                // The row's bits in the order of `learner::state` (ADR-0014
+                // D6: the norm bits sit below `UPPER` / `HEARD`).
                 let mut line = format!(
-                    "{seed},{r},{},{},{},{},{},{},{},{learners}",
+                    "{seed},{r},{},{},{},{},{},{},{},{},{},{},{learners}",
                     bit(state::HUNGRY),
                     bit(state::HAS_FOOD),
                     bit(state::FOOD_HERE),
                     bit(state::FOOD_IN_SIGHT),
                     bit(state::ADJACENT),
+                    bit(state::OCCUPIED),
+                    bit(state::VIOLATOR_ADJACENT),
+                    bit(state::ACCUSED),
                     bit(state::UPPER),
                     bit(state::HEARD)
                 );

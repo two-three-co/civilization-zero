@@ -57,16 +57,18 @@ fn set_q(w: &mut World, i: usize, row: u16, kind: usize, value: i16) {
 
 fn decide(w: &World, i: usize, tick: u64) -> Intent {
     let index = w.spatial_index();
-    let obs = w.observation(&w.agents[i], &index);
+    let norms = w.norm_index();
+    let obs = w.observation(&w.agents[i], &index, &norms);
     let mut rng = RngStream::new(w.config.seed, tick, w.agents[i].id.0, Stream::Decide);
     policy::decide(&obs, &mut rng)
 }
 
-/// The fine (7-bit) state `w.agents[i]` is in right now.
+/// The fine (10-bit) state `w.agents[i]` is in right now.
 fn fine_of(w: &World, i: usize) -> u16 {
     let index = w.spatial_index();
+    let norms = w.norm_index();
     let a = &w.agents[i];
-    let obs = w.observation(a, &index);
+    let obs = w.observation(a, &index, &norms);
     let scan = (a.inventory < w.config.inventory_capacity).then(|| scan_best(&obs));
     learner_state(&obs, scan.as_ref(), heard_last_tick(&obs))
 }
@@ -252,8 +254,8 @@ fn the_greedy_choice_follows_the_row_and_actuators_fill_in_the_parameters() {
     assert_eq!(it.action, Action::Move(Dir::North));
     assert_eq!(it.memory.target, Some(Pos::new(4, 1)));
 
-    // HEARD is bit 6: with 32 rows it folds onto the same row, and the
-    // Signal actuator echoes the symbol.
+    // HEARD is bit 9 (ADR-0014 D6): with 32 rows it folds onto the same
+    // row, and the Signal actuator echoes the symbol.
     w.agents[a].recent = vec![Interaction {
         tick: 4,
         other: other_id,
@@ -264,14 +266,17 @@ fn the_greedy_choice_follows_the_row_and_actuators_fill_in_the_parameters() {
     assert_eq!(row_of(&w, a), row3);
     set_q(&mut w, a, row3, SIGNAL, 300);
     assert_eq!(decide(&w, a, 5).action, Action::Signal(Message::Say(5)));
-    // A 128-row table keeps the bit.
+    // Only the full 1,024-row table keeps the bit; 128 rows (the norm bits
+    // and nothing above them) fold it away like 32 do.
     w.config.learner_states = 128;
+    assert_eq!(row_of(&w, a), row3);
+    w.config.learner_states = 1024;
     for i in 0..w.agents.len() {
         w.agents[i].params =
             std::mem::take(&mut w.agents[i].params).refit(PolicyKind::Learner, &w.config);
     }
     assert_eq!(row_of(&w, a), row3 | state::HEARD);
-    assert_eq!(q(&w, a).len(), 128 * K);
+    assert_eq!(q(&w, a).len(), 1024 * K);
     w.check_invariants().unwrap();
 }
 
@@ -519,10 +524,10 @@ fn snapshots_carry_the_pending_step_in_both_encodings_and_reject_what_does_not_f
     let json = w.to_snapshot();
     assert_eq!(World::from_bytes(&bin).unwrap(), w);
     assert_eq!(World::from_snapshot(&json).unwrap(), w);
-    assert_eq!(SNAPSHOT_FORMAT, 10);
+    assert_eq!(SNAPSHOT_FORMAT, 11);
     assert!(std::str::from_utf8(&json)
         .unwrap()
-        .starts_with("{\"format\":10"));
+        .starts_with("{\"format\":11"));
     println!(
         "mixed-learning snapshot after learning: {} bytes binary, {} bytes json, {} agents",
         bin.len(),
@@ -532,10 +537,10 @@ fn snapshots_carry_the_pending_step_in_both_encodings_and_reject_what_does_not_f
 
     let v: serde_json::Value = serde_json::from_slice(&json).unwrap();
     let mut old = v.clone();
-    old["format"] = serde_json::json!(9);
+    old["format"] = serde_json::json!(10);
     assert_eq!(
         World::from_snapshot(&serde_json::to_vec(&old).unwrap()).err(),
-        Some(SnapshotError::Format(9))
+        Some(SnapshotError::Format(10))
     );
     let agents = v["world"]["agents"].as_array().unwrap();
     let learner_ix = agents
@@ -589,7 +594,9 @@ fn snapshots_carry_the_pending_step_in_both_encodings_and_reject_what_does_not_f
 
 #[test]
 fn children_inherit_the_credited_table_unmutated_and_rows_follow_learner_states() {
-    for (states, seed) in [(8u16, 3u64), (128, 4)] {
+    // 1,024 rows, not 128: with `nomos` off the norm bits 5–7 are always 0
+    // (ADR-0014 D6), so only `UPPER` / `HEARD` can take a row past 31.
+    for (states, seed) in [(8u16, 3u64), (1024, 4)] {
         let cfg = WorldConfig {
             learner_states: states,
             mutation_enabled: true,
@@ -623,8 +630,8 @@ fn children_inherit_the_credited_table_unmutated_and_rows_follow_learner_states(
             }
         }
         assert!(births > 0, "{states} states: generations passed");
-        if states == 128 {
-            assert!(max_row >= 32, "the fine bits are visited: {max_row}");
+        if states == 1024 {
+            assert!(max_row >= 256, "the UPPER bit is visited: {max_row}");
         } else {
             assert!((4..8).contains(&max_row), "{max_row}");
         }

@@ -9,8 +9,12 @@
 //! Apply it credits the *previous* step — `Q[s, a] += (r + γ·max Q[s'] − Q[s, a]) >> 4`
 //! with the row just decided in as `s'` — and records this step
 //! (`Agent.last_step`, kernel-owned like `recent`) for the next tick to
-//! credit. Rewards are the agent's own energy change (ADR-0013 D6), so
-//! nothing here knows about institutions, sharing or norms.
+//! credit. Rewards are the agent's own energy change (ADR-0013 D6; plus
+//! the health term of ADR-0014 D3), never an institution's verdict. What
+//! the learner can *see* of institutions is three state bits (ADR-0014
+//! D6: `OCCUPIED`, `VIOLATOR_ADJACENT`, `ACCUSED`), placed below `UPPER`
+//! and `HEARD` so that a 64-, 128- or 256-row table sees them one by one
+//! while the default 32 rows stay exactly the Phase 3 grid.
 
 use super::{argmax_kind, reflex_act, scan_best, Intent, Observation, PolicyTable, Scan};
 use crate::action::Action;
@@ -19,15 +23,20 @@ use crate::rng::RngStream;
 use crate::space::Dir;
 use serde::{Deserialize, Serialize};
 
-/// Rows of the fine grid: every `state` bit in use (7 bits). A table with
-/// fewer rows folds the grid with `state_row`; one with more never visits the
-/// rows beyond this.
-pub const FINE_STATES: u16 = 128;
+/// Rows of the fine grid: every `state` bit in use (10 bits = 1,024 =
+/// `WorldConfig::MAX_LEARNER_STATES`). A table with fewer rows folds the
+/// grid with `state_row`; none has more.
+pub const FINE_STATES: u16 = 1024;
 
 /// Bits of the fine state index, most important first, so that a table of
 /// `2^k` rows (`state_row`) keeps the `k` most important ones: 32 rows (the
-/// default) see the five body-and-sight bits, 128 all seven. Each bit is a
-/// 0/1 fact about the observation; none names an institution.
+/// default) see the five body-and-sight bits of Phase 3 — unchanged, so
+/// the learner golden hash holds — 64 rows add `OCCUPIED` (what compliance
+/// needs), 128 `VIOLATOR_ADJACENT` (what sanctioning needs), 256
+/// `ACCUSED`, 512 `UPPER` and 1,024 `HEARD` (ADR-0014 D6). With `nomos`
+/// off bits 5–7 are always 0, so a 64- to 256-row table decides exactly
+/// as the 32-row one. Each bit is a 0/1 fact about the observation; none
+/// names an action.
 pub mod state {
     /// `energy * 1000 < max_energy * hunger_permille` (the forager's rule 1
     /// threshold; the same `HUNGRY` as the reflex feature).
@@ -43,13 +52,23 @@ pub mod state {
     /// Another agent within distance 1 and within `social_radius`: exactly
     /// when `nearest_adjacent` finds a Transfer / Harm target.
     pub const ADJACENT: u16 = 1 << 4;
+    /// `Observation::occupied()`: someone on the agent's cell arrived
+    /// earlier, so gathering here would encroach (ADR-0014 D3). Physical;
+    /// not hidden by `see_standing`; always 0 with `nomos` off.
+    pub const OCCUPIED: u16 = 1 << 5;
+    /// `Observation::adjacent_violator()` finds someone: an agent within
+    /// distance 1 stands accused under a rule that lets a harm answer it
+    /// — exactly when the Harm actuator aims at an accused agent.
+    pub const VIOLATOR_ADJACENT: u16 = 1 << 6;
+    /// The agent itself stands accused (`Observation::accused()`).
+    pub const ACCUSED: u16 = 1 << 7;
     /// The upper half of the agent's hunger band, which with `HUNGRY` makes
     /// four energy levels: hungry and below half the threshold (starving),
     /// hungry above it, fed below the midpoint between the threshold and
     /// `max_energy`, fed above it.
-    pub const UPPER: u16 = 1 << 5;
+    pub const UPPER: u16 = 1 << 8;
     /// A `Say` was heard last tick.
-    pub const HEARD: u16 = 1 << 6;
+    pub const HEARD: u16 = 1 << 9;
 }
 
 /// Reward unit: milli-energy / 100 (ADR-0013 D6). A consumed food unit of
@@ -80,9 +99,25 @@ pub struct LearnerStep {
     pub reward: i16,
 }
 
-/// The fine (7-bit) state of `obs`, given pass 1 of the sight scan (`None`
+/// The fine (10-bit) state of `obs`, given pass 1 of the sight scan (`None`
 /// with a full pack) and the symbol heard last tick + 1 (0 when none).
 pub fn learner_state(obs: &Observation<'_>, scan: Option<&Scan>, heard: i64) -> u16 {
+    learner_state_masked(obs, scan, heard, u16::MAX)
+}
+
+/// `learner_state` restricted to the bits of `mask`: the bits outside it
+/// read 0 and, for the ones that cost a walk over the index (`ADJACENT`,
+/// `OCCUPIED`, `VIOLATOR_ADJACENT`, `ACCUSED`), the walk is skipped. A
+/// table of `2^k` rows folds every higher bit away (`state_row`), so
+/// `decide` passes `rows - 1` and the default 32-row learner never walks
+/// its cell for `OCCUPIED`; any other row count aliases every bit and
+/// gets them all.
+pub fn learner_state_masked(
+    obs: &Observation<'_>,
+    scan: Option<&Scan>,
+    heard: i64,
+    mask: u16,
+) -> u16 {
     let a = obs.agent;
     let cfg = obs.config;
     // i128 so that arbitrary (validated) i64 energies cannot overflow.
@@ -99,10 +134,23 @@ pub fn learner_state(obs: &Observation<'_>, scan: Option<&Scan>, heard: i64) -> 
     s |= state::HAS_FOOD * (a.inventory > 0) as u16;
     s |= state::FOOD_HERE * (obs.food_here() > 0) as u16;
     s |= state::FOOD_IN_SIGHT * (scan.is_some_and(|s| s.food() > 0)) as u16;
-    s |= state::ADJACENT * someone_adjacent(obs) as u16;
+    if mask & state::ADJACENT != 0 {
+        s |= state::ADJACENT * someone_adjacent(obs) as u16;
+    }
+    // The normative bits (ADR-0014 D6): free with `nomos` off (no arrival
+    // to compare) and with nothing in force (an empty index).
+    if mask & state::OCCUPIED != 0 {
+        s |= state::OCCUPIED * obs.occupied() as u16;
+    }
+    if mask & state::VIOLATOR_ADJACENT != 0 {
+        s |= state::VIOLATOR_ADJACENT * obs.adjacent_violator().is_some() as u16;
+    }
+    if mask & state::ACCUSED != 0 {
+        s |= state::ACCUSED * obs.accused() as u16;
+    }
     s |= state::UPPER * upper as u16;
     s |= state::HEARD * (heard > 0) as u16;
-    s
+    s & mask
 }
 
 /// The row of a table with `rows` rows that a fine state falls into: the
@@ -160,7 +208,17 @@ pub(super) fn decide(obs: &Observation<'_>, rng: &mut RngStream) -> Intent {
     let rows = q.len() / k;
     let scan = (a.inventory < cfg.inventory_capacity).then(|| scan_best(obs));
     let heard = heard_last_tick(obs);
-    let s = state_row(learner_state(obs, scan.as_ref(), heard), rows as u16);
+    // A power-of-two table keeps the low bits only, so the rest are not
+    // computed; any other row count aliases every bit (`state_row`).
+    let mask = if rows.is_power_of_two() {
+        (rows - 1) as u16
+    } else {
+        u16::MAX
+    };
+    let s = state_row(
+        learner_state_masked(obs, scan.as_ref(), heard, mask),
+        rows as u16,
+    );
     let row = &q[s as usize * k..(s as usize + 1) * k];
     let eps = cfg.learner_epsilon_permille as u64;
     let kind = if eps > 0 && rng.chance(eps, 1000) {
@@ -335,5 +393,46 @@ mod tests {
         assert_eq!(state_row(0b101_0110, 1024), 0b101_0110);
         assert_eq!(state_row(100, 3), 1);
         assert_eq!(state_row(5, 0), 0, "a rowless table never indexes");
+        // ADR-0014 D6: the ten bits in order, the norm bits below the
+        // Phase 3 UPPER / HEARD, the fine grid as large as the largest table.
+        let bits = [
+            state::HUNGRY,
+            state::HAS_FOOD,
+            state::FOOD_HERE,
+            state::FOOD_IN_SIGHT,
+            state::ADJACENT,
+            state::OCCUPIED,
+            state::VIOLATOR_ADJACENT,
+            state::ACCUSED,
+            state::UPPER,
+            state::HEARD,
+        ];
+        for (k, b) in bits.iter().enumerate() {
+            assert_eq!(*b, 1 << k);
+        }
+        assert_eq!(FINE_STATES, 1 << bits.len());
+        assert_eq!(FINE_STATES, crate::config::WorldConfig::MAX_LEARNER_STATES);
+        let all = bits.iter().fold(0, |a, b| a | b);
+        assert_eq!(state_row(all, 32), 31, "32 rows: the Phase 3 bits only");
+        assert_eq!(state_row(all, 64), 63);
+        assert_eq!(state_row(all, 128), 127);
+        assert_eq!(state_row(all, 256), 255);
+        assert_eq!(state_row(all, 1024), all);
+    }
+
+    #[test]
+    fn a_power_of_two_row_count_masks_the_bits_it_folds_away() {
+        // What `decide` passes as the mask for each table size: the folded
+        // row of the masked state must equal the folded row of the full one.
+        for rows in [1u16, 2, 8, 32, 64, 128, 256, 1024] {
+            let mask = rows - 1;
+            for fine in 0..FINE_STATES {
+                assert_eq!(state_row(fine & mask, rows), state_row(fine, rows));
+            }
+        }
+        assert!(
+            !300u16.is_power_of_two(),
+            "300 rows alias and need every bit"
+        );
     }
 }

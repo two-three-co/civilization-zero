@@ -20,17 +20,19 @@ use simulation_core::{
 /// (with the fresh table of that kind), everything else being equal.
 fn decide_as(w: &World, i: usize, kind: PolicyKind, tick: u64) -> Intent {
     let index = w.spatial_index();
+    let norms = w.norm_index();
     let mut a = w.agents[i].clone();
     a.policy = kind;
     a.params = std::mem::take(&mut a.params).refit(kind, &w.config);
-    let obs = w.observation(&a, &index);
+    let obs = w.observation(&a, &index, &norms);
     let mut rng = RngStream::new(w.config.seed, tick, a.id.0, Stream::Decide);
     policy::decide(&obs, &mut rng)
 }
 
 fn decide(w: &World, i: usize, tick: u64) -> Intent {
     let index = w.spatial_index();
-    let obs = w.observation(&w.agents[i], &index);
+    let norms = w.norm_index();
+    let obs = w.observation(&w.agents[i], &index, &norms);
     let mut rng = RngStream::new(w.config.seed, tick, w.agents[i].id.0, Stream::Decide);
     policy::decide(&obs, &mut rng)
 }
@@ -146,7 +148,8 @@ fn features_reflect_body_sight_crowd_and_memory() {
         note(9, InteractionKind::Heard, 3),
     ];
     let index = w.spatial_index();
-    let obs = w.observation(&w.agents[me], &index);
+    let norms = w.norm_index();
+    let obs = w.observation(&w.agents[me], &index, &norms);
     let x = reflex_features(&obs, Some(&scan_best(&obs)));
     let mut expected = [0i64; policy::REFLEX_FEATURES];
     expected[BIAS] = 1;
@@ -173,7 +176,7 @@ fn features_reflect_body_sight_crowd_and_memory() {
     w.agents[me].energy = 100_000;
     w.agents[me].inventory = w.config.inventory_capacity;
     w.agents[me].memory.target = Some(Pos::new(4, 2));
-    let obs = w.observation(&w.agents[me], &index);
+    let obs = w.observation(&w.agents[me], &index, &norms);
     let x = reflex_features(&obs, None); // a full pack: no scan
     assert_eq!(x[HARMED_RECENTLY], 0);
     assert_eq!(x[FOOD_IN_SIGHT], 0);
@@ -280,8 +283,9 @@ fn weights_change_the_decision_and_actuators_fill_in_the_targets() {
     // The target is the first neighbour within distance 1 in (distance, id)
     // order, exactly as `Observation::neighbors()` lists them.
     let index = w.spatial_index();
+    let norms = w.norm_index();
     for i in 0..w.agents.len() {
-        let obs = w.observation(&w.agents[i], &index);
+        let obs = w.observation(&w.agents[i], &index, &norms);
         let listed = obs
             .neighbors()
             .into_iter()
@@ -291,20 +295,20 @@ fn weights_change_the_decision_and_actuators_fill_in_the_targets() {
     }
     let same_cell = reflex_agent(&mut w, Pos::new(4, 4), 50_000, 0);
     let index = w.spatial_index();
-    let obs = w.observation(&w.agents[a], &index);
+    let obs = w.observation(&w.agents[a], &index, &norms);
     assert_eq!(
         nearest_adjacent(&obs),
         Some(w.agents[same_cell].id),
         "same cell first"
     );
-    let obs = w.observation(&w.agents[same_cell], &index);
+    let obs = w.observation(&w.agents[same_cell], &index, &norms);
     assert_eq!(
         nearest_adjacent(&obs),
         Some(w.agents[a].id),
         "and never oneself"
     );
     w.config.perception.social_radius = 0;
-    let obs = w.observation(&w.agents[far_i(&w, far)], &index);
+    let obs = w.observation(&w.agents[far_i(&w, far)], &index, &norms);
     assert_eq!(
         nearest_adjacent(&obs),
         None,
