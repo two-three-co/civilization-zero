@@ -252,6 +252,30 @@ impl WorldConfig {
     /// Largest Q table: 1,024 rows × 8 actions × 2 B = 16 KB per agent.
     pub const MAX_LEARNER_STATES: u16 = 1024;
 
+    /// The institution world's baseline (ADR-0014 D10, `cz --preset nomos`):
+    /// the default world with social facts tracked and the three values
+    /// EXP-003's pre-registered decision rule fixed on 2026-10-17
+    /// (docs/research/experiments/EXP-003-baseline-grid.md). Of the 12
+    /// cells ε ∈ {0, 10, 50}‰ × harm cost ∈ {2,000, 8,000} × health weight
+    /// ∈ {0, 2}, the eight with ε ≤ 10 met the rule's gates (no extinction
+    /// in 10 seeds, a window band ≥ 70% of the forager's, violence ≤ 10% of
+    /// the window's deaths; ε 50 is at 34–43% violence); the rule then takes
+    /// the largest ε, and since neither health weight removed the "rest
+    /// while hungry" row (row 9 stays Rest in 9–10 of 10 seeds either way)
+    /// it keeps the default weight and the default harm cost. Rows stay 32:
+    /// EXP-004 and the institution golden set `learner_states` per world.
+    /// `default()` is untouched, so EXP-001 / EXP-002 and both golden hashes
+    /// are unchanged.
+    pub fn nomos_preset() -> Self {
+        Self {
+            nomos: true,
+            learner_epsilon_permille: 10,
+            harm_cost: 2_000,
+            learner_health_weight: 0,
+            ..Self::default()
+        }
+    }
+
     pub fn validate(&self) -> Result<(), ConfigError> {
         let checks: [(bool, &'static str); 20] = [
             (

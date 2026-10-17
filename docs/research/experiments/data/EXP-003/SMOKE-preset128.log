@@ -1,0 +1,11 @@
+# EXP-003 smoke: nomos_preset × 128 rows, 3 seeds × 20,000 ticks (pre-registered: no extinction before EXP-004's spec commit)
+date: 2026-10-17T14:22:31Z UTC / 2026-10-17 23:22:31 JST
+binary: target/release/cz (built from the working tree with WorldConfig::nomos_preset(); sha256 95dad383be6cbeb6…)
+## cz sweep --preset nomos --policy learner --learner-states 128 --seeds 3 --ticks 20000 --window 50 --sample 100 --out out/EXP-003/smoke_preset128
+ seed   final  extinct  win_mean     min     max max/min   births  d.starv   d.age  d.viol  cons/at  xfer/t  harm/t   sig/t  encr/g  ticks/s
+    0    1586        -    1574.3    1514    1620    1.070    38623    29541     322    8174   0.1612    0.55    3.87   81.96  0.0737     2536
+    1    1470        -    1449.5    1412    1509    1.069    34354    25756     329    7799   0.1619    0.51    3.81   80.61  0.0751     2756
+    2    1567        -    1540.8    1479    1598    1.080    38480    28893     288    8732   0.1625    0.50    4.14   82.99  0.0751     2557
+window = last 50% of 20000 ticks; across 3 seeds: mean of window means 1521.5, sd 52.8, cv 0.035, extinct 0/3
+wrote out/EXP-003/smoke_preset128_summary.csv and out/EXP-003/smoke_preset128_series.csv and out/EXP-003/smoke_preset128_qpolicy.csv
+wall time: 23 s

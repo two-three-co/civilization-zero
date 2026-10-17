@@ -1,6 +1,6 @@
 //! `cz` — run Civilization Zero worlds from the command line.
 //!
-//!   cz run    [--seed N] [--agents N] [--side N] [--ticks N]
+//!   cz run    [--seed N] [--agents N] [--side N] [--ticks N] [--preset nomos]
 //!             [--policy forager|random|mixed|reflex|learner|mixed-learning] [--check]
 //!             [--mutate | --no-mutate] [--learner-states N] [--learner-epsilon PERMILLE]
 //!             [--harm-cost COST] [--nomos] [--learner-health-weight W] [--record-violations]
@@ -28,6 +28,10 @@
 //! `--nomos` switches the tracking of social facts on (ADR-0014 4-1: first
 //! occupancy, encroachments, the audit of accepted deals) and
 //! `--learner-health-weight W` adds `W × Δhealth` to a learner's reward.
+//! `--preset nomos` starts from `WorldConfig::nomos_preset()` instead of
+//! the default config (ADR-0014 D10: the institution world's baseline,
+//! fixed by EXP-003 — `nomos` on and its ε / Harm cost / health term);
+//! every other flag still overrides the field it names.
 //! Institutions (ADR-0014 4-2, need `--nomos`): `--enact
 //! KIND[:STANDING[:SANCTION[:EXCEPT]]]` puts a norm in force by decree at
 //! `--enact-at` (default 0) — KIND is `encroach`, `broken_promise` or
@@ -96,7 +100,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  cz run [--seed N] [--agents N] [--side N] [--ticks N]\n         [--policy forager|random|mixed|reflex|learner|mixed-learning] [--mutate | --no-mutate]\n         [--learner-states N] [--learner-epsilon PERMILLE] [--harm-cost COST] [--nomos] [--learner-health-weight W]\n         [--enact KIND[:STANDING[:SANCTION[:EXCEPT]]] [--enact-at TICK]] [--repeal ID [--repeal-at TICK]]\n         [--charter Q,TH,TICKS,AMENDABLE] [--record-violations]\n         [--check] [--trace PATH --every K] [--snapshot PATH]\n         [--drought-at TICK [--drought-amount N] [--drought-interval N]]\n         [--set-policy KIND [--set-policy-at TICK]] [--log PATH] [--record-actions]\n  cz log --path PATH [--from TICK] [--to TICK] [--limit N]\n  cz resume --snapshot PATH [--ticks N] [--check]\n  cz replay --snapshot PATH --log PATH [--to TICK]\n  cz fork [--seed N] [--agents N] [--side N] [--ticks N] [--at TICK] [--every K]\n          [--scale-food PERMILLE] [--drought-amount N --drought-interval N] [--set-policy KIND]\n          [--enact SPEC] [--repeal ID]\n  cz sweep [--seeds N] [--seed-start S] [--ticks N] [--policy ...] [--window PCT]\n           [--sample K] [--out PREFIX] [--check]\n  (run, fork and sweep also take --harm-cost COST, --nomos, --learner-health-weight W, --charter, --record-violations;\n   --enact KIND is encroach | broken_promise | harm, SANCTION is harm | reject | harm+reject | none)"
+        "usage:\n  cz run [--seed N] [--agents N] [--side N] [--ticks N] [--preset nomos]\n         [--policy forager|random|mixed|reflex|learner|mixed-learning] [--mutate | --no-mutate]\n         [--learner-states N] [--learner-epsilon PERMILLE] [--harm-cost COST] [--nomos] [--learner-health-weight W]\n         [--enact KIND[:STANDING[:SANCTION[:EXCEPT]]] [--enact-at TICK]] [--repeal ID [--repeal-at TICK]]\n         [--charter Q,TH,TICKS,AMENDABLE] [--record-violations]\n         [--check] [--trace PATH --every K] [--snapshot PATH]\n         [--drought-at TICK [--drought-amount N] [--drought-interval N]]\n         [--set-policy KIND [--set-policy-at TICK]] [--log PATH] [--record-actions]\n  cz log --path PATH [--from TICK] [--to TICK] [--limit N]\n  cz resume --snapshot PATH [--ticks N] [--check]\n  cz replay --snapshot PATH --log PATH [--to TICK]\n  cz fork [--seed N] [--agents N] [--side N] [--ticks N] [--at TICK] [--every K]\n          [--scale-food PERMILLE] [--drought-amount N --drought-interval N] [--set-policy KIND]\n          [--enact SPEC] [--repeal ID]\n  cz sweep [--seeds N] [--seed-start S] [--ticks N] [--policy ...] [--window PCT]\n           [--sample K] [--out PREFIX] [--check]\n  (run, fork and sweep also take --preset nomos, --harm-cost COST, --nomos, --learner-health-weight W, --charter, --record-violations;\n   --enact KIND is encroach | broken_promise | harm, SANCTION is harm | reject | harm+reject | none)"
     );
     std::process::exit(2)
 }
@@ -135,8 +139,13 @@ fn build_world(seed: u64, o: &Opts) -> Result<World, Box<dyn std::error::Error>>
     // Evolving policies mutate by default (ADR-0013 D6); `--no-mutate` wins.
     let evolving = matches!(policy, "reflex" | "mixed-learning");
     // Every flag defaults to the base config's value, so a flag given
-    // explicitly overrides it and one left out keeps it.
-    let base = WorldConfig::default();
+    // explicitly overrides it and one left out keeps it. `--preset nomos`
+    // is the institution world's baseline (ADR-0014 D10, EXP-003).
+    let base = match o.get("preset").map(String::as_str) {
+        None => WorldConfig::default(),
+        Some("nomos") => WorldConfig::nomos_preset(),
+        Some(other) => return Err(format!("unknown preset {other:?}: expected nomos").into()),
+    };
     let cfg = WorldConfig {
         seed,
         width: side,
