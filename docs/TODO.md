@@ -5,7 +5,7 @@ Phase 2 の計画は ADR-0010（Toy 1）に従う。
 
 ## Phase 1 残り（Phase 2 と並行可）
 
-- [ ] **decide フェーズのプロファイル**: 定常状態で 150 ns/体·tick、`policy::decide` が実行時間の 82%（macOS `sample`）。視界走査（半径 4 = 41 セル）が主因と推定。基準: flamegraph を docs/ に添付し、改善案を ADR に。Toy 1 の 60 tick/s 目標に直結。
+- [ ] `apply` の採集請求ソート（実行時間の約 7%、ADR-0011 後）をセル単位のバケットに置換 — 計測して効果があれば。
 - [ ] **乱数統計検定**: PractRand または TestU01 SmallCrush を `RngStream` に対して実施（ADR-0004）。
 - [ ] EXP-001 のパラメータ格子版（再生量・代謝・出生閾値を振って帯域と絶滅確率を測る）。
 - [ ] `Vec<Intent>` の tick ごとの確保を避ける（`decide_all` のバッファ再利用）— 計測して効果があれば。

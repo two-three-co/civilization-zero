@@ -127,57 +127,41 @@ fn forager(obs: &Observation<'_>, rng: &mut RngStream) -> Intent {
         };
     }
     // 4. Head to the richest visible cell (ties: nearer, then random).
-    //    Lottery keys are drawn lazily, only when a cell ties the current
-    //    best on (food, distance): each member of the winning tie class
-    //    gets exactly one key, so the choice is still uniform among them,
-    //    but a scan costs a handful of draws instead of one per cell.
+    //    Two passes over the diamond (ADR-0011): pass 1 is branch-free and
+    //    finds the best (food, nearness) key and how many cells hold it;
+    //    pass 2 runs only on a tie and draws one lottery key per tied cell,
+    //    in scan order, so the choice is uniform among them. Data-dependent
+    //    branches per cell were the dominant cost of the single-pass scan.
     if a.inventory < cfg.inventory_capacity {
-        let mut best: Option<(u32, u32, Option<u64>, Pos)> = None;
-        // Visits exactly the cells of `Bounds::diamond(a.pos, r)` in the same
-        // row-major order, but walks each row as one contiguous slice of the
-        // food grid: no per-cell bounds check or iterator chain. Because the
-        // order is identical, the winning cell and the number of lottery
-        // keys drawn are identical too (the golden hash proves it).
         let (w, h) = (obs.bounds.width as i32, obs.bounds.height as i32);
         let r = cfg.vision_radius as i32;
         let (cx, cy) = (a.pos.x as i32, a.pos.y as i32);
         let food = &obs.resources.food;
-        for dy in -r..=r {
-            let y = cy + dy;
-            if y < 0 || y >= h {
-                continue;
-            }
-            let span = r - dy.abs();
-            let (x0, x1) = ((cx - span).max(0), (cx + span).min(w - 1));
-            if x0 > x1 {
-                continue;
-            }
-            let row = y as usize * w as usize;
-            for (i, &f) in food[row + x0 as usize..=row + x1 as usize]
-                .iter()
-                .enumerate()
-            {
-                let x = x0 + i as i32;
-                if f == 0 || (dy == 0 && x == cx) {
-                    continue;
-                }
-                let p = Pos::new(x as u16, y as u16);
-                let rank = (f, u32::MAX - ((x - cx).abs() + dy.abs()) as u32);
-                match best {
-                    Some((bf, bd, _, _)) if (bf, bd) > rank => {}
-                    Some((bf, bd, ref mut bkey, ref mut bpos)) if (bf, bd) == rank => {
-                        let bk = *bkey.get_or_insert_with(|| rng.next_u64());
+
+        let (mut best_key, mut best_x, mut best_y, mut ties) = (0u64, cx, cy, 0u32);
+        scan_diamond(food, w, h, r, cx, cy, |x, y, key| {
+            let better = key > best_key;
+            let equal = key == best_key;
+            ties = if better { 1 } else { ties + equal as u32 };
+            best_x = if better { x } else { best_x };
+            best_y = if better { y } else { best_y };
+            best_key = best_key.max(key);
+        });
+
+        if best_key != 0 {
+            let mut target = Pos::new(best_x as u16, best_y as u16);
+            if ties > 1 {
+                let mut win_key: Option<u64> = None;
+                scan_diamond(food, w, h, r, cx, cy, |x, y, key| {
+                    if key == best_key {
                         let k = rng.next_u64();
-                        if k > bk {
-                            *bkey = Some(k);
-                            *bpos = p;
+                        if win_key.is_none_or(|wk| k > wk) {
+                            win_key = Some(k);
+                            target = Pos::new(x as u16, y as u16);
                         }
                     }
-                    _ => best = Some((rank.0, rank.1, None, p)),
-                }
+                });
             }
-        }
-        if let Some((_, _, _, target)) = best {
             memory.target = Some(target);
         } else if memory.target == Some(a.pos) {
             memory.target = None; // arrived and it was depleted
@@ -193,6 +177,44 @@ fn forager(obs: &Observation<'_>, rng: &mut RngStream) -> Intent {
     Intent {
         action: Action::Move(Dir::ALL[rng.below(4) as usize]),
         memory,
+    }
+}
+
+/// Visits exactly the cells of `Bounds::diamond((cx, cy), r)` in the same
+/// row-major order, walking each row as one contiguous slice of the food
+/// grid. `key` ranks a cell by (food, nearness) and is 0 for cells that
+/// cannot be a target (no food, or the agent's own cell).
+#[inline(always)]
+fn scan_diamond(
+    food: &[u32],
+    w: i32,
+    h: i32,
+    r: i32,
+    cx: i32,
+    cy: i32,
+    mut visit: impl FnMut(i32, i32, u64),
+) {
+    for dy in -r..=r {
+        let y = cy + dy;
+        if y < 0 || y >= h {
+            continue;
+        }
+        let span = r - dy.abs();
+        let (x0, x1) = ((cx - span).max(0), (cx + span).min(w - 1));
+        if x0 > x1 {
+            continue;
+        }
+        let row = y as usize * w as usize;
+        for (i, &f) in food[row + x0 as usize..=row + x1 as usize]
+            .iter()
+            .enumerate()
+        {
+            let x = x0 + i as i32;
+            let dist = ((x - cx).abs() + dy.abs()) as u64;
+            let valid = (f != 0) & !((dy == 0) & (x == cx));
+            let key = (((f as u64) << 32) | (u32::MAX as u64 - dist)) * valid as u64;
+            visit(x, y, key);
+        }
     }
 }
 
