@@ -870,6 +870,14 @@ function describeInteraction(r: Interaction): string {
       return `#${r.other} rejected my proposal`;
     case "promised":
       return `promised ${r.value} food to #${r.other}`;
+    case "encroached_by":
+      return `#${r.other} gathered ${r.value} on my cell after I arrived first`;
+    case "sanctioned":
+      return r.value > 0 ? `sanctioned #${r.other} (−${r.value} health)` : `sanctioned #${r.other} (rejected)`;
+    case "sanctioned_by":
+      return r.value > 0 ? `sanctioned by #${r.other} (−${r.value} health)` : `sanctioned by #${r.other} (rejected)`;
+    case "saw_sanction":
+      return `saw #${r.other} sanction #${r.value}`;
     default:
       return `${(r as Interaction).kind} · #${r.other} · ${r.value}`;
   }
@@ -900,6 +908,14 @@ function describeEvent(e: LedgerEvent, id: number): string {
       return "removed by an intervention";
     case "acted":
       return `acted: ${JSON.stringify(e.action)} → ${JSON.stringify(e.outcome)}`;
+    case "sanctioned":
+      return e.by === id
+        ? `sanctioned #${e.target} (${e.via}, rule #${e.rule})`
+        : `sanctioned by #${e.by} (${e.via}, rule #${e.rule})`;
+    case "violated":
+      return e.agent === id
+        ? `violated rule #${e.rule} (${e.norm.replace("_", " ")}) against #${e.against}`
+        : `#${e.agent} violated rule #${e.rule} (${e.norm.replace("_", " ")}) against me`;
   }
 }
 

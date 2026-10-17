@@ -25,11 +25,34 @@
 // include `set_policy` (D7) — "fixed vs learning" is a fork with it — and
 // `AgentDetail` carries a learner's Q table and last step. Nothing else
 // moved: the Transferable arrays and every request keep their v4 shape.
+//
+// v6 brings institutions to the page (ADR-0014 D12, 4-7), read from the
+// kernel and never judged here: `Frame.agents` gains a ninth column
+// `flags` (accused / voted / harmable / rejectable bits of the kernel's
+// NormIndex), `Frame.institution` carries the charter, the rules in force,
+// the open motion (none before 4-5) and how many stand accused, `Ledger`
+// shows the 4-1 / 4-2 counters (gathers, encroachments, promises,
+// violations, sanctions, episodes — the UI draws rates from their
+// deltas), `AgentDetail` its `arrived` tick, open episodes and vote,
+// `Interaction` the kinds the 4-1 / 4-2 memory writes, `LedgerEvent` the
+// `sanctioned` / `violated` records, `Intervention` the decrees `enact` /
+// `repeal` / `charter`, `WorldInit` the `nomos` / `recordViolations`
+// switches, and four requests read the ledger: `institution` (the same
+// object as the frame's), `timeline` (decrees with the rule ids they
+// received), `violations` (recorded ones, or the episodes open now) and
+// `sanctions` (each tied to the episode it answered). Motions (4-5) will
+// join the timeline and the frame without changing these shapes.
 
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 
-/** Fields per agent in `Frame.agents`, matching the kernel's trace layout. */
-export const AGENT_FIELDS = 8; // id, x, y, energy, inventory, policy (index into POLICY_KINDS), health, age
+/** Fields per agent in `Frame.agents`: the kernel's trace layout, then `flags`. */
+export const AGENT_FIELDS = 9; // id, x, y, energy, inventory, policy (index into POLICY_KINDS), health, age, flags
+
+/** Bits of the `flags` column (cz-web `FLAG_*`, from the kernel's NormIndex at the view's tick). */
+export const FLAG_ACCUSED = 1; // some episode of accusation is open
+export const FLAG_VOTED = 2; // has voted on the open motion (none before 4-5)
+export const FLAG_HARMABLE = 4; // a harm reaching the agent now would count as a sanction
+export const FLAG_REJECTABLE = 8; // a rejection reaching the agent now would count as a sanction
 
 /** `PolicyKind` as serde renders it (interventions, `AgentDetail.policy`). */
 export type PolicyKind = "Forager" | "Random" | "Reflex" | "Learner";
@@ -58,6 +81,48 @@ export const MARKER_SIGNAL = 2; // value = the symbol said
 export type PolicyMix = "forager" | "mixed" | "random" | "reflex" | "learner" | "mixed-learning";
 export const POLICY_MIXES: PolicyMix[] = ["forager", "mixed", "random", "reflex", "learner", "mixed-learning"];
 
+// --- Institutions (ADR-0014 D5, as serde renders the kernel's types) ---
+
+/** The three facts a rule can turn into a violation (`NormKind`); the index order of the per-kind counters. */
+export type NormKind = "encroach" | "broken_promise" | "harm";
+export const NORM_KINDS: NormKind[] = ["encroach", "broken_promise", "harm"];
+/** `Sanction`: a bit set over the answers that count as sanctions to an accused agent. */
+export const SANCTION_NONE = 0;
+export const SANCTION_HARM = 1;
+export const SANCTION_REJECT = 2;
+/** How a sanction reached the accused (`Via`): the physical action it is read from. */
+export type Via = "harm" | "reject";
+
+/** A norm (`Norm`): which fact is a violation, how long a violator stands accused, which answers are sanctions. */
+export interface Norm {
+  kind: NormKind;
+  /** A violator stands accused from the tick after each violation through `last + standing_ticks`; 0 = counted, never accused. */
+  standing_ticks: number;
+  /** `SANCTION_*` bits. */
+  sanction: number;
+  /** `harm` rules only: a harm that is a sanction is not a violation. */
+  except_sanction: boolean;
+}
+
+/** A norm in force (`Rule`). Ids are monotonic and never reused. */
+export interface Rule {
+  id: number;
+  norm: Norm;
+  /** Tick the rule came into force. */
+  enacted: number;
+}
+
+/** How the assembly decides (`Charter`); read by motions from 4-5. */
+export interface Charter {
+  quorum_permille: number;
+  threshold_permille: number;
+  vote_ticks: number;
+  amendable: boolean;
+}
+
+/** What a motion asks for (`MotionKind`, externally tagged). */
+export type MotionKind = { enact: { norm: Norm } } | { repeal: { rule: number } } | { charter: { charter: Charter } };
+
 export interface WorldInit {
   seed: number;
   width: number;
@@ -69,6 +134,16 @@ export interface WorldInit {
   snapshotEvery?: number;
   /** Policy mix of the founding population; `forager` when omitted. Foragers alone never interact. */
   policy?: PolicyMix;
+  /**
+   * Institutions on (ADR-0014): the kernel worker builds the world with
+   * `WorldConfig::nomos_preset()` (EXP-003's decision, `cz run --preset
+   * nomos`), so decrees are accepted and the ledger counts encroachments,
+   * violations and sanctions. Off (the default) every decree is rejected
+   * and `Frame.institution` stays empty.
+   */
+  nomos?: boolean;
+  /** Record every violation as a `violated` ledger event (`cz run --record-violations`); off by default (ADR-0014 D9: ~21 per tick). */
+  recordViolations?: boolean;
   /**
    * Fork origin: a binary snapshot exported by another world (`snapshot`
    * request). When set, seed/width/height/agents/patches/policy are ignored
@@ -89,7 +164,11 @@ export type Intervention =
   | { op: "spawn_agents"; n: number; pos: { x: number; y: number }; policy: PolicyKind }
   | { op: "remove_agent"; id: number }
   /** Give some living agents another policy; bodies, memories and signals are untouched. "Fixed vs learning" is a fork plus this. */
-  | { op: "set_policy"; who: Who; kind: PolicyKind; params: ParamsMode };
+  | { op: "set_policy"; who: Who; kind: PolicyKind; params: ParamsMode }
+  /** Decrees (ADR-0014 D8): put a norm in force (a rule of the same kind is replaced), take a rule out of force, replace the charter. Rejected unless the world has institutions (`WorldInit.nomos`). "With vs without rule" is a fork plus `enact`. */
+  | { op: "enact"; norm: Norm }
+  | { op: "repeal"; rule: number }
+  | { op: "charter"; charter: Charter };
 
 /** A ledger record of an applied intervention (`Event::Intervened`). */
 export interface InterventionEvent {
@@ -128,6 +207,18 @@ export interface Ledger {
   food_intervened: number;
   energy_intervened: number;
   interventions: number;
+  /** Social facts (ADR-0014 D3, 4-1): gathers that took at least one unit (every world); the rest only with `nomos`. */
+  gathers: number;
+  /** Gathers on a cell whose first occupant arrived strictly earlier: a fact, not a violation. `encroachments / gathers` is the encroachment rate E. */
+  encroachments: number;
+  /** Accepted deals settled at their deadline, and those with a side short. */
+  promises_due: number;
+  promises_broken: number;
+  /** Institutions (ADR-0014 D4, 4-2), by `NORM_KINDS` index; non-zero only with a rule in force. S' = sanctions / violations, S = episodes_sanctioned / episodes_closed. */
+  violations: [number, number, number];
+  sanctions: [number, number, number];
+  episodes_closed: [number, number, number];
+  episodes_sanctioned: [number, number, number];
 }
 
 /** `Message` as serde renders it; `say` is the only one an agent's `last_signal` can hold. */
@@ -138,7 +229,7 @@ export interface Signal {
   message: Message;
 }
 
-/** `InteractionKind` as serde renders it (ADR-0013 D4); the last four arrive with 3-4. */
+/** `InteractionKind` as serde renders it (ADR-0013 D4; `promised` and the three before it with 3-4; `encroached_by` with 4-1; the last three with 4-2). */
 export type InteractionKind =
   | "gave_to"
   | "received_from"
@@ -149,7 +240,15 @@ export type InteractionKind =
   | "proposal_from"
   | "accepted"
   | "rejected"
-  | "promised";
+  | "promised"
+  /** Someone gathered on my cell after I arrived first (`value` = units taken). */
+  | "encroached_by"
+  /** My harm / rejection of `other` counted as a sanction (`value` = damage, 0 for a rejection). */
+  | "sanctioned"
+  /** `other`'s harm / rejection of me counted as a sanction (`value` = damage, 0 for a rejection). */
+  | "sanctioned_by"
+  /** I saw `other` sanction agent `value`. */
+  | "saw_sanction";
 
 /** One entry of an agent's kernel-written memory (`Agent.recent`). */
 export interface Interaction {
@@ -192,6 +291,12 @@ export interface AgentDetail {
   recent: Interaction[];
   /** Learners only, once they have decided; `null` for every other kind, a newborn, or right after a `set_policy`. */
   last_step: LearnerStep | null;
+  /** Tick the agent began standing on its cell (first occupancy, ADR-0014 D3); `null` for a founder or without `nomos`. */
+  arrived: number | null;
+  /** Episodes the agent stands accused in at the view's tick, ascending by rule (4-7). Empty without institutions. */
+  standing: Accused[];
+  /** Has voted on the open motion (always false before 4-5). */
+  voted: boolean;
 }
 
 /** Any ledger record (`Event` as serde renders it, tagged by `kind`). */
@@ -214,7 +319,128 @@ export type LedgerEvent =
   | { kind: "acted"; tick: number; agent: number; action: unknown; outcome: unknown }
   | { kind: "proposed"; tick: number; from: number; to: number; give: number; want: number; by: number }
   | { kind: "accepted"; tick: number; from: number; to: number; offer_tick: number; give: number; want: number; by: number }
-  | { kind: "rejected"; tick: number; from: number; to: number };
+  | { kind: "rejected"; tick: number; from: number; to: number }
+  /** A harm or rejection read as a sanction of `target`, who stood accused under `rule` (ADR-0014 D4); always recorded, right after the physical event. */
+  | { kind: "sanctioned"; tick: number; by: number; target: number; rule: number; via: Via }
+  /** A judged violation; recorded only with `WorldInit.recordViolations`. */
+  | { kind: "violated"; tick: number; agent: number; rule: number; norm: NormKind; against: number; grounds: Grounds };
+
+/** The evidence a `violated` record rests on (`Grounds`, tagged by `fact`). */
+export type Grounds =
+  | { fact: "encroachment"; cell: Pos; amount: number }
+  | { fact: "broken_promise"; offer_tick: number; short: number }
+  | { fact: "harm"; damage: number };
+
+// --- Institutions as cz-web reads them (ADR-0014 D12, 4-7): `WasmWorld::institution_json` / `timeline_json` / `violations_json` / `sanctions_json` ---
+
+/** The open motion, summarised (the voter lists stay in the kernel); none before 4-5. */
+export interface OpenMotion {
+  id: number;
+  by: number;
+  opened: number;
+  kind: MotionKind;
+  ayes: number;
+  nays: number;
+}
+
+/** The institution of the view's tick (`Frame.institution`, `institution` request). */
+export interface Institution {
+  /** Whether the world has institutions at all (`WorldInit.nomos`); off, everything below is empty and every decree is rejected. */
+  nomos: boolean;
+  /** Whether `violations` reads the ledger (true) or the open episodes (false). */
+  record_violations: boolean;
+  charter: Charter;
+  /** Rules in force, ascending by id (at most one per kind). */
+  rules: Rule[];
+  motion: OpenMotion | null;
+  /** Episodes of accusation open at this tick: in all, distinct agents, and by the kind of the rule (`NORM_KINDS` order). */
+  accused: { episodes: number; agents: number; by_kind: [number, number, number] };
+}
+
+/** One open episode of accusation: the kernel's `Standing` with the rule's kind and the last tick it lasts (`last + standing_ticks`). */
+export interface Accused {
+  agent: number;
+  rule: number;
+  norm: NormKind;
+  /** Tick of the first violation of the episode. */
+  since: number;
+  /** Tick of the latest violation. */
+  last: number;
+  /** The last tick the agent stands accused for this episode. */
+  until: number;
+  /** The other party of the latest violation. */
+  against: number;
+  violations: number;
+  sanctions: number;
+}
+
+/** Who put a rule or charter in place: a decree (an intervention). Motions add their own value with 4-5. */
+export type By = "decree";
+
+/** One thing that happened to the institution, as the ledger says it (rule ids recovered by replaying the decrees from the branch's origin). */
+export type TimelineEntry =
+  /** `norm` came into force as rule `rule`; `replaced` is the rule of the same kind it took out of force, if any. */
+  | { kind: "enacted"; tick: number; rule: number; norm: Norm; replaced: number | null; by: By }
+  /** Rule `rule` went out of force (`norm` is what it said). */
+  | { kind: "repealed"; tick: number; rule: number; norm: Norm | null; by: By }
+  | { kind: "chartered"; tick: number; charter: Charter; by: By };
+
+/** The institution's history over ticks `from..now` (`now` = the request's `to` capped at the view's tick), ledger order. */
+export interface Timeline {
+  from: number;
+  now: number;
+  entries: TimelineEntry[];
+}
+
+/** Where a list of violations or an episode was read from: `violated` ledger events, or the episodes open in the state at the view's tick. */
+export type Source = "ledger" | "standing";
+
+/** One violation: a recorded one (who, which rule, against whom, when, on what evidence), or an episode open now (the second path of D12). */
+export type ViolationEntry =
+  | { kind: "violated"; tick: number; agent: number; rule: number; norm: NormKind; against: number; grounds: Grounds }
+  | ({ kind: "accused" } & Accused);
+
+/**
+ * Violations of ticks `from..now` when the world records them (`source:
+ * "ledger"`), else every episode open at `now`, newest `last` first
+ * (`source: "standing"`; `from` does not apply — an agent accused since
+ * before it still stands accused).
+ */
+export interface Violations {
+  source: Source;
+  from: number;
+  now: number;
+  entries: ViolationEntry[];
+}
+
+/** The episode a sanction answered, as of `now`: the one still open at the view, or its reconstruction from the recorded violations once closed. */
+export interface Episode {
+  since: number;
+  last: number;
+  against: number;
+  violations: number;
+  sanctions: number;
+  open: boolean;
+  source: Source;
+}
+
+/** One sanction: the kernel's `sanctioned` record with the rule's kind and the episode it answered (`null` when it cannot be known: the episode closed and violations were not recorded). */
+export interface SanctionEntry {
+  tick: number;
+  by: number;
+  target: number;
+  rule: number;
+  norm: NormKind | null;
+  via: Via;
+  episode: Episode | null;
+}
+
+/** Sanctions of ticks `from..now`, ledger order. */
+export interface Sanctions {
+  from: number;
+  now: number;
+  entries: SanctionEntry[];
+}
 
 /** Ask the worker to attach one agent's detail to every frame it sends. */
 export interface Watch {
@@ -332,6 +558,8 @@ export interface Frame {
   snapshotEvery: number;
   /** Tick this world's history begins at: 0, or the fork tick for a fork. It cannot seek earlier. */
   origin: number;
+  /** The institution at this tick (ADR-0014 D12): empty, with `nomos: false`, in a world without institutions and from the mock. */
+  institution: Institution;
   /** Present when the request carried a `watch`. */
   watched?: Watched;
   timing?: Timing;
@@ -347,7 +575,15 @@ export type Request =
   /** Binary snapshot of the current view, to fork from in another worker. */
   | { type: "snapshot" }
   /** Every deal of ticks `from..to` (capped at the view's tick), judged as of the window's end (3-9b). */
-  | { type: "deals"; from: number; to: number };
+  | { type: "deals"; from: number; to: number }
+  /** The institution of the view (the same object every frame carries; 4-7). */
+  | { type: "institution" }
+  /** Decrees (and, from 4-5, motions) of ticks `from..to` (capped at the view's tick) with the rule ids they received. */
+  | { type: "timeline"; from: number; to: number }
+  /** Recorded violations of ticks `from..to`, or the episodes open at the view's tick. */
+  | { type: "violations"; from: number; to: number }
+  /** Sanctions of ticks `from..to`, each with the episode it answered. */
+  | { type: "sanctions"; from: number; to: number };
 
 export type Response =
   | {
@@ -357,6 +593,10 @@ export type Response =
       history?: InterventionEvent[];
       snapshot?: Uint8Array;
       deals?: Deal[];
+      institution?: Institution;
+      timeline?: Timeline;
+      violations?: Violations;
+      sanctions?: Sanctions;
     }
   | { type: "error"; message: string };
 

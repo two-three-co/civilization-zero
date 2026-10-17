@@ -37,7 +37,7 @@ fn crowded(seed: u64) -> WorldConfig {
 
 #[test]
 fn wrapper_reproduces_the_kernel_exactly() {
-    let mut ww = WasmWorld::new(42, 128, 128, 1000, 24, 100, "forager").unwrap();
+    let mut ww = WasmWorld::new(42, 128, 128, 1000, 24, 100, "forager", "").unwrap();
     ww.step(200).unwrap();
     let d = direct(42, 200);
     assert_eq!(ww.state_hash_hex(), hex(&d));
@@ -59,7 +59,7 @@ fn wrapper_reproduces_the_kernel_exactly() {
 
 #[test]
 fn seek_back_then_step_rejoins_the_head() {
-    let mut ww = WasmWorld::new(42, 128, 128, 1000, 24, 100, "forager").unwrap();
+    let mut ww = WasmWorld::new(42, 128, 128, 1000, 24, 100, "forager", "").unwrap();
     ww.step(300).unwrap();
     ww.seek(120).unwrap();
     assert_eq!((ww.tick(), ww.frontier()), (120, 300));
@@ -82,7 +82,7 @@ fn seek_back_then_step_rejoins_the_head() {
 
 #[test]
 fn interventions_apply_at_the_head_only_and_are_logged() {
-    let mut ww = WasmWorld::new(7, 64, 64, 200, 5, 50, "forager").unwrap();
+    let mut ww = WasmWorld::new(7, 64, 64, 200, 5, 50, "forager", "").unwrap();
     ww.step(100).unwrap();
     let event = ww
         .intervene(r#"{"op":"scale_food","permille":500}"#)
@@ -117,7 +117,7 @@ fn interventions_apply_at_the_head_only_and_are_logged() {
         .is_err());
     assert!(ww.intervene("not json").is_err());
     assert!(
-        WasmWorld::new(1, 0, 0, 1, 1, 1, "forager").is_err(),
+        WasmWorld::new(1, 0, 0, 1, 1, 1, "forager", "").is_err(),
         "invalid config is reported"
     );
 }
@@ -126,7 +126,7 @@ fn interventions_apply_at_the_head_only_and_are_logged() {
 fn a_fork_built_from_a_snapshot_matches_multiverse_fork_and_is_reproducible() {
     use multiverse::{BranchId, Multiverse};
 
-    let mut parent = WasmWorld::new(42, 128, 128, 1000, 24, 100, "forager").unwrap();
+    let mut parent = WasmWorld::new(42, 128, 128, 1000, 24, 100, "forager", "").unwrap();
     parent.step(400).unwrap();
     parent.seek(300).unwrap(); // the view is the state tick 300 starts with
     let bytes = parent.snapshot_bytes();
@@ -191,7 +191,7 @@ fn a_fork_built_from_a_snapshot_matches_multiverse_fork_and_is_reproducible() {
 
 #[test]
 fn intervention_history_comes_from_the_ledger() {
-    let mut ww = WasmWorld::new(7, 64, 64, 200, 5, 50, "forager").unwrap();
+    let mut ww = WasmWorld::new(7, 64, 64, 200, 5, 50, "forager", "").unwrap();
     assert_eq!(ww.interventions_json().unwrap(), "[]");
     ww.step(60).unwrap();
     ww.intervene(r#"{"op":"drought","regrow_amount":0,"regrow_interval":10}"#)
@@ -248,7 +248,7 @@ fn the_policy_mix_is_the_cli_rule_and_foragers_alone_are_socially_inert() {
     let mut hashes = Vec::new();
     for (name, rule, mutates) in rules {
         assert_eq!(evolves(name), mutates, "{name}");
-        let mut ww = WasmWorld::new(9, 32, 32, 200, 3, 25, name).unwrap();
+        let mut ww = WasmWorld::new(9, 32, 32, 200, 3, 25, name, "").unwrap();
         ww.step(60).unwrap();
         let mut d = World::generate(
             WorldConfig {
@@ -298,7 +298,7 @@ fn the_policy_mix_is_the_cli_rule_and_foragers_alone_are_socially_inert() {
     for name in POLICY_MIXES {
         assert!(policy_mix(name).is_ok(), "{name}");
     }
-    assert!(WasmWorld::new(9, 32, 32, 200, 3, 25, "walker").is_err());
+    assert!(WasmWorld::new(9, 32, 32, 200, 3, 25, "walker", "").is_err());
     assert!(policy_mix("").is_err());
     assert_eq!(
         PolicyKind::ALL.map(policy_code),
@@ -321,7 +321,7 @@ fn set_policy_crosses_the_boundary_and_the_compare_fork_is_reproducible() {
     let parse = |s: String| -> Value { serde_json::from_str(&s).unwrap() };
     let codes =
         |w: &WasmWorld| -> Vec<i32> { w.agents().chunks(AGENT_FIELDS).map(|a| a[5]).collect() };
-    let mut parent = WasmWorld::new(9, 32, 32, 200, 3, 25, "forager").unwrap();
+    let mut parent = WasmWorld::new(9, 32, 32, 200, 3, 25, "forager", "").unwrap();
     parent.step(100).unwrap();
     parent.seek(60).unwrap();
     let bytes = parent.snapshot_bytes();
@@ -495,7 +495,7 @@ pub const LEARNER_GOLDEN_200_HEX: &str = "cb8bc0a9772c09a4";
 
 #[test]
 fn the_learner_world_golden_is_pinned_for_the_wasm_check() {
-    let mut ww = WasmWorld::new(42, 128, 128, 1000, 24, 100, "learner").unwrap();
+    let mut ww = WasmWorld::new(42, 128, 128, 1000, 24, 100, "learner", "").unwrap();
     ww.step(200).unwrap();
     let mut d = World::generate(
         WorldConfig {
@@ -522,7 +522,7 @@ fn the_learner_world_golden_is_pinned_for_the_wasm_check() {
 
 #[test]
 fn social_markers_are_the_ledgers_last_tick_placed_in_the_view() {
-    let mut ww = WasmWorld::new(3, 32, 32, 200, 3, 25, "random").unwrap();
+    let mut ww = WasmWorld::new(3, 32, 32, 200, 3, 25, "random", "").unwrap();
     let mut d = World::generate(crowded(3), |_| PolicyKind::Random).unwrap();
     assert!(ww.social().is_empty(), "nothing has happened before tick 0");
     let mut per_tick = vec![Vec::new()];
@@ -606,7 +606,7 @@ fn social_markers_are_the_ledgers_last_tick_placed_in_the_view() {
 
 #[test]
 fn agent_json_is_the_views_agent_with_its_memory_and_last_signal() {
-    let mut ww = WasmWorld::new(3, 32, 32, 200, 3, 25, "random").unwrap();
+    let mut ww = WasmWorld::new(3, 32, 32, 200, 3, 25, "random", "").unwrap();
     ww.step(40).unwrap();
     let mut d = World::generate(crowded(3), |_| PolicyKind::Random).unwrap();
     d.run(40);
@@ -618,8 +618,13 @@ fn agent_json_is_the_views_agent_with_its_memory_and_last_signal() {
         .find(|a| !a.recent.is_empty() && a.last_signal.is_some())
         .expect("in a crowded random world someone remembers something and has spoken");
     let json = ww.agent_json(a.id.0 as u32).unwrap();
-    assert_eq!(json, serde_json::to_string(a).unwrap());
     let v: Value = serde_json::from_str(&json).unwrap();
+    // The kernel's `Agent` as serde renders it, plus the 4-7 fields (no
+    // institutions here: accused of nothing, no motion to vote on).
+    let mut expected = serde_json::to_value(a).unwrap();
+    expected["standing"] = Value::Array(vec![]);
+    expected["voted"] = Value::Bool(false);
+    assert_eq!(v, expected);
     assert_eq!(v["id"], a.id.0);
     assert_eq!(v["pos"]["x"], a.pos.x as u64);
     assert_eq!(v["policy"], "Random");
@@ -650,7 +655,7 @@ fn agent_json_is_the_views_agent_with_its_memory_and_last_signal() {
 
 #[test]
 fn agent_events_json_filters_the_ledger_by_agent_and_window() {
-    let mut ww = WasmWorld::new(3, 32, 32, 200, 3, 25, "random").unwrap();
+    let mut ww = WasmWorld::new(3, 32, 32, 200, 3, 25, "random", "").unwrap();
     ww.step(60).unwrap();
     let all: Vec<Value> = (0..60)
         .flat_map(|t| serde_json::from_str::<Vec<Value>>(&ww.events_at(t).unwrap()).unwrap())
@@ -1041,7 +1046,7 @@ mod threads {
     /// over the same window lists every acceptance the pair threads hold.
     #[test]
     fn thread_json_is_the_pairs_slice_of_the_ledger_read_at_the_view() {
-        let mut ww = WasmWorld::new(3, 32, 32, 200, 3, 25, "random").unwrap();
+        let mut ww = WasmWorld::new(3, 32, 32, 200, 3, 25, "random", "").unwrap();
         ww.step(60).unwrap();
         let all: Vec<Value> = (0..60)
             .flat_map(|t| serde_json::from_str::<Vec<Value>>(&ww.events_at(t).unwrap()).unwrap())
@@ -1238,7 +1243,7 @@ mod threads {
     #[test]
     fn seed_23_holds_the_kept_deal_the_tutorial_names_and_seed_42_none_in_order() {
         let page_world = |seed: u32, mix: &str, ticks: u32| {
-            let mut ww = WasmWorld::new(seed, 128, 128, 1000, 23, 250, mix).unwrap();
+            let mut ww = WasmWorld::new(seed, 128, 128, 1000, 23, 250, mix, "").unwrap();
             ww.step(ticks).unwrap();
             ww
         };
@@ -1373,4 +1378,916 @@ mod threads {
             }
         }
     }
+}
+
+/// Institutions (ADR-0014 D12, 4-7): the readers of `cz_web::institution`
+/// against hand-built ledgers and states, then through the wrapper against
+/// a ruled world run natively — at the head, after a seek, and in a fork.
+mod institutions {
+    use cz_web::institution::{
+        institution, sanctions, standing_of, timeline, violations, voted, Accused, By, Entry,
+        Episode, Origin, Sanction, Source, Violation,
+    };
+    use cz_web::{
+        WasmWorld, WorldOptions, AGENT_FIELDS, FLAG_ACCUSED, FLAG_HARMABLE, FLAG_REJECTABLE,
+        FLAG_VOTED,
+    };
+    use serde_json::Value;
+    use simulation_core::{
+        AgentId, Charter, Event, EventLog, Grounds, Intervention, Motion, MotionKind, Nomos, Norm,
+        NormKind, Pos, Rule, Sanction as SanctionSet, Standing, Via, World, WorldConfig,
+    };
+
+    fn norm(kind: NormKind, standing_ticks: u16, sanction: SanctionSet) -> Norm {
+        Norm {
+            kind,
+            standing_ticks,
+            sanction,
+            except_sanction: false,
+        }
+    }
+
+    fn enact(tick: u64, norm: Norm) -> Event {
+        Event::Intervened {
+            tick,
+            intervention: Intervention::Enact { norm },
+        }
+    }
+
+    fn repeal(tick: u64, rule: u16) -> Event {
+        Event::Intervened {
+            tick,
+            intervention: Intervention::Repeal { rule },
+        }
+    }
+
+    fn sanctioned(tick: u64, by: u64, target: u64, rule: u16) -> Event {
+        Event::Sanctioned {
+            tick,
+            by: AgentId(by),
+            target: AgentId(target),
+            rule,
+            via: Via::Harm,
+        }
+    }
+
+    fn violated(tick: u64, agent: u64, rule: u16, against: u64) -> Event {
+        Event::Violated {
+            tick,
+            agent: AgentId(agent),
+            rule,
+            norm: NormKind::Encroach,
+            against: AgentId(against),
+            grounds: Grounds::Encroachment {
+                cell: Pos::new(1, 2),
+                amount: 1,
+            },
+        }
+    }
+
+    fn standing(
+        agent: u64,
+        rule: u16,
+        since: u64,
+        last: u64,
+        against: u64,
+        violations: u16,
+        sanctions: u16,
+    ) -> Standing {
+        Standing {
+            agent: AgentId(agent),
+            rule,
+            since,
+            last,
+            against: AgentId(against),
+            violations,
+            sanctions,
+        }
+    }
+
+    const ENCROACH: Norm = Norm {
+        kind: NormKind::Encroach,
+        standing_ticks: 32,
+        sanction: SanctionSet::HARM,
+        except_sanction: false,
+    };
+    const ENCROACH_JSON: &str = r#"{"op":"enact","norm":{"kind":"encroach","standing_ticks":32,"sanction":1,"except_sanction":false}}"#;
+    const HARM_JSON: &str = r#"{"op":"enact","norm":{"kind":"harm","standing_ticks":8,"sanction":2,"except_sanction":true}}"#;
+
+    /// Decrees replayed over the origin: ids count on from the origin's
+    /// `next_rule_id`, a replacement names the rule it took out of force,
+    /// a repeal names what the rule said, and the window is `from..now`.
+    #[test]
+    fn the_timeline_recovers_rule_ids_from_the_origin_and_the_decrees() {
+        let encroach = norm(NormKind::Encroach, 16, SanctionSet::HARM);
+        let harm = norm(NormKind::Harm, 8, SanctionSet::REJECT);
+        let promise = norm(NormKind::BrokenPromise, 4, SanctionSet::ALL);
+        let encroach2 = norm(NormKind::Encroach, 64, SanctionSet::NONE);
+        let origin = Origin {
+            rules: vec![
+                Rule {
+                    id: 3,
+                    norm: encroach,
+                    enacted: 10,
+                },
+                Rule {
+                    id: 5,
+                    norm: harm,
+                    enacted: 12,
+                },
+            ],
+            next_rule_id: 6,
+            standing: Vec::new(),
+        };
+        let c = Charter {
+            quorum_permille: 500,
+            ..Charter::default()
+        };
+        let log = [
+            Event::Born {
+                tick: 20,
+                child: AgentId(9),
+                parent: AgentId(1),
+                pos: Pos::new(0, 0),
+                energy: 1,
+            },
+            enact(20, promise),
+            enact(25, encroach2),
+            repeal(30, 5),
+            Event::Intervened {
+                tick: 30,
+                intervention: Intervention::Charter { charter: c },
+            },
+            repeal(31, 99),
+            enact(40, harm),
+        ];
+        let t = timeline(&log, &origin, 0, 100);
+        assert_eq!((t.from, t.now), (0, 100));
+        assert_eq!(
+            t.entries,
+            vec![
+                Entry::Enacted {
+                    tick: 20,
+                    rule: 6,
+                    norm: promise,
+                    replaced: None,
+                    by: By::Decree
+                },
+                Entry::Enacted {
+                    tick: 25,
+                    rule: 7,
+                    norm: encroach2,
+                    replaced: Some(3),
+                    by: By::Decree
+                },
+                Entry::Repealed {
+                    tick: 30,
+                    rule: 5,
+                    norm: Some(harm),
+                    by: By::Decree
+                },
+                Entry::Chartered {
+                    tick: 30,
+                    charter: c,
+                    by: By::Decree
+                },
+                Entry::Repealed {
+                    tick: 31,
+                    rule: 99,
+                    norm: None,
+                    by: By::Decree
+                },
+                Entry::Enacted {
+                    tick: 40,
+                    rule: 8,
+                    norm: harm,
+                    replaced: None,
+                    by: By::Decree
+                },
+            ]
+        );
+        // The window keeps `from <= tick < now`; the replay still starts
+        // at the origin, so ids do not depend on the window.
+        let w = timeline(&log, &origin, 25, 31);
+        assert_eq!(
+            w.entries.iter().map(Entry::tick).collect::<Vec<_>>(),
+            vec![25, 30, 30]
+        );
+        assert!(matches!(w.entries[0], Entry::Enacted { rule: 7, .. }));
+        // A fresh world: the first decree is rule 0.
+        let fresh = timeline(&[enact(0, encroach)], &Origin::default(), 0, 1);
+        assert!(matches!(
+            fresh.entries[..],
+            [Entry::Enacted {
+                tick: 0,
+                rule: 0,
+                replaced: None,
+                ..
+            }]
+        ));
+        let json = serde_json::to_string(&fresh).unwrap();
+        assert!(
+            json.contains(r#""kind":"enacted""#) && json.contains(r#""by":"decree""#),
+            "{json}"
+        );
+    }
+
+    /// Recorded, the violations are the ledger's `Violated` of the window;
+    /// not recorded, they are the episodes open now, newest `last` first.
+    #[test]
+    fn violations_come_from_the_ledger_when_recorded_and_from_the_open_episodes_otherwise() {
+        let mut nomos = Nomos::default();
+        nomos.enact(norm(NormKind::Encroach, 8, SanctionSet::HARM), 0);
+        nomos.enact(norm(NormKind::Harm, 4, SanctionSet::ALL), 0);
+        nomos.standing = vec![
+            standing(2, 0, 10, 12, 7, 2, 1),
+            standing(5, 0, 3, 12, 9, 4, 2),
+            standing(5, 1, 11, 11, 2, 1, 0),
+        ];
+        let log = [
+            violated(9, 2, 0, 7),
+            violated(12, 5, 0, 9),
+            violated(12, 2, 0, 7),
+            violated(13, 5, 0, 9),
+        ];
+        let recorded = violations(&log, &nomos, true, 10, 13);
+        assert_eq!(
+            (recorded.source, recorded.from, recorded.now),
+            (Source::Ledger, 10, 13)
+        );
+        assert_eq!(
+            recorded.entries,
+            vec![
+                Violation::Violated {
+                    tick: 12,
+                    agent: AgentId(5),
+                    rule: 0,
+                    norm: NormKind::Encroach,
+                    against: AgentId(9),
+                    grounds: Grounds::Encroachment {
+                        cell: Pos::new(1, 2),
+                        amount: 1
+                    },
+                },
+                Violation::Violated {
+                    tick: 12,
+                    agent: AgentId(2),
+                    rule: 0,
+                    norm: NormKind::Encroach,
+                    against: AgentId(7),
+                    grounds: Grounds::Encroachment {
+                        cell: Pos::new(1, 2),
+                        amount: 1
+                    },
+                },
+            ]
+        );
+        let json = serde_json::to_string(&recorded).unwrap();
+        assert!(
+            json.contains(r#""kind":"violated""#) && json.contains(r#""fact":"encroachment""#),
+            "{json}"
+        );
+
+        let open = violations(&log, &nomos, false, 10, 13);
+        assert_eq!(open.source, Source::Standing);
+        let accused = |agent: u64,
+                       rule: u16,
+                       since: u64,
+                       last: u64,
+                       until: u64,
+                       against: u64,
+                       v: u16,
+                       s: u16| {
+            Violation::Accused(Accused {
+                agent: AgentId(agent),
+                rule,
+                norm: if rule == 0 {
+                    NormKind::Encroach
+                } else {
+                    NormKind::Harm
+                },
+                since,
+                last,
+                until,
+                against: AgentId(against),
+                violations: v,
+                sanctions: s,
+            })
+        };
+        assert_eq!(
+            open.entries,
+            vec![
+                accused(5, 0, 3, 12, 20, 9, 4, 2),
+                accused(2, 0, 10, 12, 20, 7, 2, 1),
+                accused(5, 1, 11, 11, 15, 2, 1, 0),
+            ],
+            "newest last first, older since first among equals"
+        );
+        let json = serde_json::to_string(&open).unwrap();
+        assert!(
+            json.contains(r#""kind":"accused""#) && json.contains(r#""until":20"#),
+            "{json}"
+        );
+
+        // The inspector's reading of one agent: ascending by rule.
+        let mine = standing_of(&nomos, AgentId(5));
+        assert_eq!(mine.iter().map(|a| a.rule).collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(mine[1].until, 15);
+        assert!(standing_of(&nomos, AgentId(4)).is_empty());
+        assert!(!voted(&nomos, AgentId(5)));
+        nomos.motion = Some(Motion {
+            id: 0,
+            by: AgentId(2),
+            opened: 12,
+            kind: MotionKind::Repeal { rule: 1 },
+            ayes: vec![AgentId(5)],
+            nays: vec![AgentId(9)],
+        });
+        assert!(voted(&nomos, AgentId(5)) && voted(&nomos, AgentId(9)));
+        assert!(!voted(&nomos, AgentId(2)), "moving is not voting");
+    }
+
+    /// A sanction is tied to the episode open at its tick: the `Standing`
+    /// still open at the view, else the episode rebuilt from the recorded
+    /// violations (runs within `standing_ticks` of each other), else none.
+    #[test]
+    fn sanctions_are_tied_to_the_episode_they_answered() {
+        let rule = norm(NormKind::Encroach, 4, SanctionSet::HARM);
+        let log = [
+            enact(0, rule),
+            violated(5, 2, 0, 7),
+            violated(6, 2, 0, 7),
+            sanctioned(7, 9, 2, 0),
+            sanctioned(7, 8, 2, 0),
+            violated(12, 2, 0, 8), // 6 + 4 < 12: a new episode
+            sanctioned(13, 9, 2, 0),
+            violated(20, 3, 0, 1),
+            sanctioned(21, 9, 3, 0),
+        ];
+        let mut nomos = Nomos::default();
+        nomos.enact(rule, 0);
+        nomos.standing = vec![standing(3, 0, 20, 20, 1, 1, 1)];
+        let origin = Origin::default();
+
+        let read = sanctions(&log, &origin, &nomos, true, 0, 25);
+        assert_eq!((read.from, read.now), (0, 25));
+        let brief: Vec<(u64, u64, Option<Episode>)> = read
+            .entries
+            .iter()
+            .map(|s| (s.tick, s.by.0, s.episode))
+            .collect();
+        let closed = |since: u64, last: u64, against: u64, v: u16, s: u16| {
+            Some(Episode {
+                since,
+                last,
+                against: AgentId(against),
+                violations: v,
+                sanctions: s,
+                open: false,
+                source: Source::Ledger,
+            })
+        };
+        assert_eq!(
+            brief,
+            vec![
+                (7, 9, closed(5, 6, 7, 2, 2)),
+                (7, 8, closed(5, 6, 7, 2, 2)),
+                (13, 9, closed(12, 12, 8, 1, 1)),
+                (
+                    21,
+                    9,
+                    Some(Episode {
+                        since: 20,
+                        last: 20,
+                        against: AgentId(1),
+                        violations: 1,
+                        sanctions: 1,
+                        open: true,
+                        source: Source::Standing,
+                    })
+                ),
+            ]
+        );
+        assert!(read
+            .entries
+            .iter()
+            .all(|s| s.norm == Some(NormKind::Encroach) && s.via == Via::Harm && s.rule == 0));
+
+        // Not recorded: only the open episode can be named.
+        let bare = sanctions(&log, &origin, &nomos, false, 0, 25);
+        assert_eq!(
+            bare.entries
+                .iter()
+                .map(|s| s.episode.map(|e| e.since))
+                .collect::<Vec<_>>(),
+            vec![None, None, None, Some(20)]
+        );
+        // The window keeps `from <= tick < now`; the rebuild still reads
+        // the ledger from the origin.
+        let window = sanctions(&log, &origin, &nomos, true, 13, 21);
+        assert_eq!(
+            window.entries.iter().map(|s| s.tick).collect::<Vec<_>>(),
+            vec![13]
+        );
+        assert_eq!(window.entries[0].episode, closed(12, 12, 8, 1, 1));
+        // Read at tick 8: the first episode is still open — but the view's
+        // state is what says so, so with a `nomos` of that tick it is
+        // `standing`, and with the wrong (later) state it is rebuilt.
+        let mut at_8 = Nomos::default();
+        at_8.enact(rule, 0);
+        at_8.standing = vec![standing(2, 0, 5, 6, 7, 2, 2)];
+        let early = sanctions(&log, &origin, &at_8, true, 0, 8);
+        assert_eq!(early.entries.len(), 2);
+        assert!(early
+            .entries
+            .iter()
+            .all(|s| s.episode.is_some_and(|e| e.open)));
+
+        // A fork: the ledger begins at tick 7, the episode it continues
+        // comes from the origin's standing.
+        let forked = Origin {
+            rules: nomos.rules.clone(),
+            next_rule_id: 1,
+            standing: vec![standing(2, 0, 5, 6, 7, 2, 0)],
+        };
+        let fork_log = &log[3..];
+        let read = sanctions(fork_log, &forked, &nomos, true, 7, 25);
+        assert_eq!(read.entries[0].episode, closed(5, 6, 7, 2, 2));
+        assert_eq!(read.entries[2].episode, closed(12, 12, 8, 1, 1));
+        let json = serde_json::to_string(&read).unwrap();
+        assert!(
+            json.contains(r#""via":"harm""#) && json.contains(r#""source":"ledger""#),
+            "{json}"
+        );
+    }
+
+    /// The crowded random world with the first-occupancy norm in force:
+    /// random walkers gather where others arrived earlier and harm their
+    /// neighbours, so violations, episodes and sanctions appear within a
+    /// few ticks.
+    fn ruled_config(record_violations: bool) -> WorldConfig {
+        WorldConfig {
+            seed: 3,
+            width: 32,
+            height: 32,
+            initial_agents: 200,
+            patch_count: 3,
+            record_violations,
+            ..WorldConfig::nomos_preset()
+        }
+    }
+
+    /// Runs `w` for `ticks`, recording every tick into `log` as the
+    /// multiverse does.
+    fn run_logged(w: &mut World, log: &mut EventLog, ticks: u64) {
+        for _ in 0..ticks {
+            let report = w.step();
+            log.record(&report).unwrap();
+        }
+    }
+
+    fn value(json: &str) -> Value {
+        serde_json::from_str(json).unwrap()
+    }
+
+    /// Through the wrapper, every reader equals the expectation built from
+    /// the natively recorded ledger and the native state: at the head,
+    /// after a seek (read at the view's tick), and in a fork built from a
+    /// snapshot (whose ledger starts at the fork tick).
+    #[test]
+    fn a_ruled_world_reads_the_same_through_the_wrapper_after_a_seek_and_in_a_fork() {
+        let mut d =
+            World::generate(ruled_config(true), cz_web::policy_mix("random").unwrap()).unwrap();
+        let mut log = EventLog::new();
+        log.push(d.intervene(Intervention::Enact { norm: ENCROACH }).unwrap())
+            .unwrap();
+        run_logged(&mut d, &mut log, 30);
+        let d30 = d.clone();
+        run_logged(&mut d, &mut log, 30);
+
+        let options = r#"{"nomos":true,"record_violations":true}"#;
+        let mut ww = WasmWorld::new(3, 32, 32, 200, 3, 25, "random", options).unwrap();
+        let event = ww.intervene(ENCROACH_JSON).unwrap();
+        assert!(
+            event.starts_with(r#"{"kind":"intervened","tick":0,"intervention":{"op":"enact""#),
+            "{event}"
+        );
+        ww.step(60).unwrap();
+        assert_eq!(ww.state_hash_hex(), format!("{:016x}", d.state_hash()));
+        let total = |counter: &[u64]| counter.iter().sum::<u64>();
+        assert!(
+            total(&d.ledger.violations) > 0
+                && total(&d.ledger.sanctions) > 0
+                && !d.nomos.standing.is_empty(),
+            "the world must have something to read: {:?} {:?} {}",
+            d.ledger.violations,
+            d.ledger.sanctions,
+            d.nomos.standing.len()
+        );
+
+        // The institution is the state.
+        let inst = value(&ww.institution_json().unwrap());
+        assert_eq!(inst, serde_json::to_value(institution(&d)).unwrap());
+        assert_eq!(inst["nomos"], true);
+        assert_eq!(inst["record_violations"], true);
+        assert_eq!(inst["rules"].as_array().unwrap().len(), 1);
+        assert_eq!(inst["rules"][0]["id"], 0);
+        assert_eq!(inst["rules"][0]["norm"]["kind"], "encroach");
+        assert_eq!(inst["rules"][0]["enacted"], 0);
+        assert_eq!(inst["motion"], Value::Null);
+        assert_eq!(
+            inst["accused"]["episodes"].as_u64().unwrap() as usize,
+            d.nomos.standing.len()
+        );
+        assert_eq!(inst["accused"]["by_kind"][0], inst["accused"]["episodes"]);
+        assert_eq!(inst["accused"]["by_kind"][1], 0);
+        assert_eq!(inst["charter"]["quorum_permille"], 100);
+
+        // The flags column is the kernel's NormIndex.
+        let rows = ww.agents();
+        assert_eq!(rows.len(), d.agents.len() * AGENT_FIELDS);
+        let norms = d.norm_index();
+        let mut accused_seen = 0;
+        for (i, row) in rows.chunks(AGENT_FIELDS).enumerate() {
+            assert_eq!(row[0] as u64, d.agents[i].id.0);
+            let open = !d.nomos.standing_of(d.agents[i].id).is_empty();
+            assert_eq!(row[8] & FLAG_ACCUSED != 0, open);
+            assert_eq!(row[8] & FLAG_ACCUSED != 0, norms.accused(i));
+            assert_eq!(row[8] & FLAG_HARMABLE != 0, open, "the rule allows harm");
+            assert_eq!(row[8] & FLAG_REJECTABLE, 0);
+            assert_eq!(row[8] & FLAG_VOTED, 0);
+            accused_seen += open as usize;
+        }
+        assert_eq!(
+            accused_seen,
+            inst["accused"]["agents"].as_u64().unwrap() as usize
+        );
+
+        // The inspector: the agent plus its episodes.
+        let s0 = d.nomos.standing[0];
+        let a = value(&ww.agent_json(s0.agent.0 as u32).unwrap());
+        assert_eq!(a["id"], s0.agent.0);
+        assert!(a.get("arrived").is_some() && a.get("recent").is_some());
+        assert_eq!(a["voted"], false);
+        assert_eq!(
+            a["standing"],
+            serde_json::to_value(standing_of(&d.nomos, s0.agent)).unwrap()
+        );
+        assert_eq!(a["standing"][0]["since"], s0.since);
+        assert_eq!(a["standing"][0]["until"], s0.last + 32);
+        let free = d
+            .agents
+            .iter()
+            .find(|a| d.nomos.standing_of(a.id).is_empty())
+            .unwrap();
+        let f = value(&ww.agent_json(free.id.0 as u32).unwrap());
+        assert_eq!(f["standing"], Value::Array(vec![]));
+
+        // The ledger readers equal the expectations from the recorded log.
+        let expect_timeline = timeline(log.events(), &Origin::default(), 0, 60);
+        assert_eq!(
+            value(&ww.timeline_json(0, 60).unwrap()),
+            serde_json::to_value(&expect_timeline).unwrap()
+        );
+        assert_eq!(expect_timeline.entries.len(), 1);
+        let expect_violations = violations(log.range(0..60), &d.nomos, true, 0, 60);
+        assert_eq!(
+            value(&ww.violations_json(0, 60).unwrap()),
+            serde_json::to_value(&expect_violations).unwrap()
+        );
+        assert_eq!(
+            expect_violations.entries.len() as u64,
+            total(&d.ledger.violations),
+            "every judged violation is recorded"
+        );
+        let expect_sanctions = sanctions(log.events(), &Origin::default(), &d.nomos, true, 0, 60);
+        assert_eq!(
+            value(&ww.sanctions_json(0, 60).unwrap()),
+            serde_json::to_value(&expect_sanctions).unwrap()
+        );
+        assert_eq!(
+            expect_sanctions.entries.len() as u64,
+            total(&d.ledger.sanctions),
+            "every sanction is recorded"
+        );
+        assert!(
+            expect_sanctions.entries.iter().all(|s| s.episode.is_some()),
+            "recorded, every sanction finds its episode"
+        );
+        let (open, closed): (Vec<&Sanction>, Vec<&Sanction>) = expect_sanctions
+            .entries
+            .iter()
+            .partition(|s| s.episode.unwrap().open);
+        assert!(
+            !open.is_empty() && !closed.is_empty(),
+            "{} / {}",
+            open.len(),
+            closed.len()
+        );
+        assert!(open
+            .iter()
+            .all(|s| s.episode.unwrap().source == Source::Standing));
+        assert!(closed
+            .iter()
+            .all(|s| s.episode.unwrap().source == Source::Ledger));
+        // The rebuild agrees with the kernel's own record: read with an
+        // empty state every episode is rebuilt from the ledger, and the
+        // ones the kernel still holds open come out identical.
+        let rebuilt = sanctions(
+            log.events(),
+            &Origin::default(),
+            &Nomos::default(),
+            true,
+            0,
+            60,
+        );
+        for (a, b) in expect_sanctions.entries.iter().zip(&rebuilt.entries) {
+            let (ea, eb) = (a.episode.unwrap(), b.episode.unwrap());
+            assert_eq!(
+                (ea.since, ea.last, ea.against, ea.violations, ea.sanctions),
+                (eb.since, eb.last, eb.against, eb.violations, eb.sanctions),
+                "sanction at {} on {}",
+                a.tick,
+                a.target.0
+            );
+            assert_eq!((eb.open, eb.source), (false, Source::Ledger));
+        }
+        // A window: `from` bounds the entries, not the rebuild.
+        let late = value(&ww.sanctions_json(50, 60).unwrap());
+        assert_eq!(late["from"], 50);
+        assert!(late["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["tick"].as_u64().unwrap() >= 50 && !s["episode"].is_null()));
+        // The pair thread is untouched by the new events (3-9b).
+        let s = &expect_sanctions.entries[0];
+        let t = value(
+            &ww.thread_json(s.by.0 as u32, s.target.0 as u32, 0, 60)
+                .unwrap(),
+        );
+        assert!(t["entries"].as_array().unwrap().iter().all(|e| {
+            ["proposed", "accepted", "rejected", "transferred", "harmed"]
+                .contains(&e["kind"].as_str().unwrap())
+        }));
+        assert!(t["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["kind"] == "harmed" && e["tick"] == s.tick));
+
+        // After a seek everything is read at the view's tick.
+        ww.seek(30).unwrap();
+        assert_eq!(ww.tick(), 30);
+        assert_eq!(
+            value(&ww.institution_json().unwrap()),
+            serde_json::to_value(institution(&d30)).unwrap()
+        );
+        let rows = ww.agents();
+        assert_eq!(rows.len(), d30.agents.len() * AGENT_FIELDS);
+        for (i, row) in rows.chunks(AGENT_FIELDS).enumerate() {
+            assert_eq!(
+                row[8] & FLAG_ACCUSED != 0,
+                !d30.nomos.standing_of(d30.agents[i].id).is_empty()
+            );
+        }
+        let v30 = value(&ww.violations_json(0, 60).unwrap());
+        assert_eq!(v30["now"], 30);
+        assert_eq!(
+            v30,
+            serde_json::to_value(violations(log.range(0..30), &d30.nomos, true, 0, 30)).unwrap()
+        );
+        assert_eq!(
+            value(&ww.sanctions_json(0, 60).unwrap()),
+            serde_json::to_value(sanctions(
+                log.range(0..30),
+                &Origin::default(),
+                &d30.nomos,
+                true,
+                0,
+                30
+            ))
+            .unwrap()
+        );
+        assert_eq!(value(&ww.timeline_json(0, 60).unwrap())["now"], 30);
+        ww.seek(60).unwrap();
+        assert_eq!(
+            value(&ww.sanctions_json(0, 60).unwrap()),
+            serde_json::to_value(&expect_sanctions).unwrap()
+        );
+
+        // A fork at tick 40: its ledger starts there, so the rule in force
+        // and the episodes open at the fork come from the snapshot.
+        ww.seek(40).unwrap();
+        let bytes = ww.snapshot_bytes();
+        let mut fork = WasmWorld::from_snapshot(&bytes, 25).unwrap();
+        let mut df = World::from_bytes(&bytes).unwrap();
+        let mut flog = EventLog::new();
+        for json in [HARM_JSON, ENCROACH_JSON] {
+            fork.intervene(json).unwrap();
+            let iv: Intervention = serde_json::from_str(json).unwrap();
+            flog.push(df.intervene(iv).unwrap()).unwrap();
+        }
+        let origin = Origin::of(&World::from_bytes(&bytes).unwrap().nomos);
+        assert_eq!(origin.next_rule_id, 1);
+        assert_eq!(origin.rules.len(), 1);
+        let t = value(&fork.timeline_json(0, 100).unwrap());
+        assert_eq!(t["from"], 0);
+        assert_eq!(t["now"], 40);
+        let entries = t["entries"].as_array().unwrap();
+        assert_eq!(
+            entries.len(),
+            0,
+            "decrees at the fork tick are read at now 41+"
+        );
+        fork.step(20).unwrap();
+        run_logged(&mut df, &mut flog, 20);
+        assert_eq!(fork.state_hash_hex(), format!("{:016x}", df.state_hash()));
+        let t = value(&fork.timeline_json(0, 100).unwrap());
+        assert_eq!(
+            t,
+            serde_json::to_value(timeline(flog.events(), &origin, 0, 60)).unwrap()
+        );
+        let entries = t["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            (
+                &entries[0]["kind"],
+                &entries[0]["rule"],
+                &entries[0]["replaced"]
+            ),
+            (&Value::from("enacted"), &Value::from(1), &Value::Null)
+        );
+        assert_eq!(
+            (&entries[1]["rule"], &entries[1]["replaced"]),
+            (&Value::from(2), &Value::from(0))
+        );
+        let inst = value(&fork.institution_json().unwrap());
+        assert_eq!(
+            inst["rules"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["id"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        let fs = sanctions(flog.events(), &origin, &df.nomos, true, 40, 60);
+        assert_eq!(
+            value(&fork.sanctions_json(40, 60).unwrap()),
+            serde_json::to_value(&fs).unwrap()
+        );
+        assert!(fs.entries.iter().all(|s| s.episode.is_some()));
+        // Replacing the rule closed its episodes: nobody is accused under
+        // rule 0 after the fork tick, and the new rule's episodes start
+        // after it.
+        assert!(fs.entries.iter().all(|s| s.rule != 0));
+        assert!(fs.entries.iter().all(|s| s.episode.unwrap().since >= 40));
+        assert!(
+            !fs.entries.is_empty(),
+            "the fork sanctions under its new rules"
+        );
+        assert!(d.nomos.rule(0).is_some(), "the parent keeps rule 0");
+    }
+
+    /// Decrees cross the boundary as the ledger's JSON and need a world
+    /// with institutions; options are checked.
+    #[test]
+    fn decrees_cross_the_boundary_and_need_institutions() {
+        assert_eq!(WorldOptions::parse("").unwrap(), WorldOptions::default());
+        assert_eq!(
+            WorldOptions::parse(" {} ").unwrap(),
+            WorldOptions::default()
+        );
+        assert_eq!(
+            WorldOptions::parse(r#"{"nomos":true}"#).unwrap(),
+            WorldOptions {
+                nomos: true,
+                record_violations: false
+            }
+        );
+        assert!(WorldOptions::parse(r#"{"nomo":true}"#).is_err());
+        assert!(WasmWorld::new(3, 32, 32, 200, 3, 25, "random", "nonsense").is_err());
+
+        let mut plain = WasmWorld::new(3, 32, 32, 200, 3, 25, "random", "").unwrap();
+        let err = plain.intervene(ENCROACH_JSON).unwrap_err();
+        assert!(err.contains("nomos is off"), "{err}");
+        let inst = value(&plain.institution_json().unwrap());
+        assert_eq!(inst["nomos"], false);
+        assert_eq!(inst["rules"], Value::Array(vec![]));
+        assert_eq!(inst["accused"]["episodes"], 0);
+        assert!(plain.agents().chunks(AGENT_FIELDS).all(|a| a[8] == 0));
+        let v = value(&plain.violations_json(0, 10).unwrap());
+        assert_eq!(
+            (&v["source"], &v["entries"]),
+            (&Value::from("standing"), &Value::Array(vec![]))
+        );
+        assert_eq!(
+            value(&plain.sanctions_json(0, 10).unwrap())["entries"],
+            Value::Array(vec![])
+        );
+
+        let mut ruled =
+            WasmWorld::new(3, 32, 32, 200, 3, 25, "random", r#"{"nomos":true}"#).unwrap();
+        ruled.intervene(ENCROACH_JSON).unwrap();
+        let again = ruled.intervene(HARM_JSON).unwrap();
+        assert!(
+            again.contains(r#""op":"enact""#) && again.contains(r#""kind":"harm""#),
+            "{again}"
+        );
+        let repealed = ruled.intervene(r#"{"op":"repeal","rule":0}"#).unwrap();
+        assert!(repealed.contains(r#""op":"repeal""#), "{repealed}");
+        assert!(
+            ruled.intervene(r#"{"op":"repeal","rule":0}"#).is_err(),
+            "already repealed"
+        );
+        let chartered = ruled
+            .intervene(r#"{"op":"charter","charter":{"quorum_permille":250,"threshold_permille":500,"vote_ticks":16,"amendable":false}}"#)
+            .unwrap();
+        assert!(chartered.contains(r#""op":"charter""#), "{chartered}");
+        assert!(ruled
+            .intervene(r#"{"op":"charter","charter":{"quorum_permille":2500,"threshold_permille":500,"vote_ticks":16,"amendable":false}}"#)
+            .is_err());
+        let inst = value(&ruled.institution_json().unwrap());
+        assert_eq!(inst["charter"]["quorum_permille"], 250);
+        assert_eq!(inst["charter"]["amendable"], false);
+        assert_eq!(inst["rules"].as_array().unwrap().len(), 1);
+        assert_eq!(inst["rules"][0]["id"], 1);
+        ruled.step(1).unwrap();
+        let t = value(&ruled.timeline_json(0, 1).unwrap());
+        let kinds: Vec<&str> = t["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, vec!["enacted", "enacted", "repealed", "chartered"]);
+        assert_eq!(t["entries"][2]["norm"]["kind"], "encroach");
+        // The history is still the plain `Intervened` list.
+        let h = value(&ruled.interventions_json().unwrap());
+        assert_eq!(h.as_array().unwrap().len(), 4);
+    }
+
+    /// The ruled world's `dynamics_hash` and counts, computed natively, which
+    /// `tests/wasm.rs::institutions_read_the_same_under_wasm` must reach
+    /// under wasm (the world is the one above, violations not recorded).
+    #[test]
+    fn the_ruled_world_golden_is_pinned_for_the_wasm_check() {
+        let mut ww = WasmWorld::new(3, 32, 32, 200, 3, 25, "random", r#"{"nomos":true}"#).unwrap();
+        ww.intervene(ENCROACH_JSON).unwrap();
+        ww.step(40).unwrap();
+        let ledger = value(&ww.ledger_json().unwrap());
+        let inst = value(&ww.institution_json().unwrap());
+        let s = value(&ww.sanctions_json(0, 40).unwrap());
+        let v = value(&ww.violations_json(0, 40).unwrap());
+        assert_eq!(
+            (
+                ww.dynamics_hash_hex().as_str(),
+                ledger["violations"][0].as_u64().unwrap(),
+                ledger["sanctions"][0].as_u64().unwrap(),
+                inst["accused"]["episodes"].as_u64().unwrap(),
+                s["entries"].as_array().unwrap().len() as u64,
+                v["entries"].as_array().unwrap().len() as u64,
+            ),
+            (
+                RULED_HASH_40,
+                RULED_VIOLATIONS_40,
+                RULED_SANCTIONS_40,
+                RULED_ACCUSED_40,
+                RULED_SANCTIONS_40,
+                RULED_ACCUSED_40
+            )
+        );
+        let mut d =
+            World::generate(ruled_config(false), cz_web::policy_mix("random").unwrap()).unwrap();
+        d.intervene(Intervention::Enact { norm: ENCROACH }).unwrap();
+        d.run(40);
+        assert_eq!(format!("{:016x}", d.dynamics_hash()), RULED_HASH_40);
+        // Recording the violations adds ledger events, not state.
+        let mut r = WasmWorld::new(
+            3,
+            32,
+            32,
+            200,
+            3,
+            25,
+            "random",
+            r#"{"nomos":true,"record_violations":true}"#,
+        )
+        .unwrap();
+        r.intervene(ENCROACH_JSON).unwrap();
+        r.step(40).unwrap();
+        assert_eq!(r.dynamics_hash_hex(), RULED_HASH_40);
+        assert_ne!(
+            r.state_hash_hex(),
+            ww.state_hash_hex(),
+            "the config differs"
+        );
+    }
+
+    /// Pinned by the test above; `tests/wasm.rs` holds the same constants.
+    const RULED_HASH_40: &str = "33babd3d304e5d92";
+    const RULED_VIOLATIONS_40: u64 = 9;
+    const RULED_SANCTIONS_40: u64 = 11;
+    const RULED_ACCUSED_40: u64 = 6;
 }

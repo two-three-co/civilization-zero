@@ -20,6 +20,16 @@
 //! `Intervention::SetPolicy` through `intervene` (ADR-0013 D7); this crate
 //! only widens the founding mixes to the learning policies and reports the
 //! policy of every agent (`policy_code`) so the map can colour all four.
+//! Institutions (ADR-0014 D12, 4-7) are read the same way, never judged
+//! here ([`institution`]): `institution_json` is the charter, the rules in
+//! force and who stands accused in the view's state; `timeline_json` the
+//! decrees of the ledger with the rule ids they received; `violations_json`
+//! the recorded violations or, failing those, the episodes open now;
+//! `sanctions_json` the ledger's sanctions each tied to the episode it
+//! answered; `agents()` gains a `flags` column and `agent_json` the agent's
+//! open episodes. A world with institutions is built with `options`
+//! `{"nomos":true}` (`WorldConfig::nomos_preset()`, as `cz run --preset
+//! nomos`) and ruled through `intervene` (`enact` / `repeal` / `charter`).
 //!
 //! Numbers cross the boundary as `u32` so JavaScript never needs `BigInt`;
 //! the state hash is a 16-hex-digit string. Errors are `String`s (wasm-bindgen
@@ -27,14 +37,67 @@
 //! testable without a JS runtime). Built with
 //! `wasm-pack build crates/cz-web --target web` (see `web/package.json`).
 
+pub mod institution;
 pub mod thread;
 
 use multiverse::{replay, BranchId, Multiverse};
-use simulation_core::{AgentId, Event, Intervention, PolicyKind, Pos, World, WorldConfig};
+use serde::{Deserialize, Serialize};
+use simulation_core::{Agent, AgentId, Event, Intervention, PolicyKind, Pos, World, WorldConfig};
 use wasm_bindgen::prelude::*;
 
-/// Fields per agent in `agents()`, in the kernel's trace order.
-pub const AGENT_FIELDS: usize = 8;
+/// Fields per agent in `agents()`: the kernel's trace order, then `flags`
+/// (4-7).
+pub const AGENT_FIELDS: usize = 9;
+
+/// Bits of the `flags` column of `agents()` (ADR-0014 D12): the view's
+/// `NormIndex` for the agent. `FLAG_ACCUSED` = some episode of accusation
+/// is open; `FLAG_VOTED` = has voted on the open motion (none before 4-5);
+/// `FLAG_HARMABLE` / `FLAG_REJECTABLE` = a harm / a rejection reaching the
+/// agent now would count as a sanction. 0 for every agent of a world
+/// without institutions.
+pub const FLAG_ACCUSED: i32 = 1 << 0;
+pub const FLAG_VOTED: i32 = 1 << 1;
+pub const FLAG_HARMABLE: i32 = 1 << 2;
+pub const FLAG_REJECTABLE: i32 = 1 << 3;
+
+/// What a fresh world may be given beyond its size, seed and founding mix
+/// (`WasmWorld::new`'s `options`, a JSON object; `""` and `"{}"` are the
+/// defaults, an unknown key is an error).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WorldOptions {
+    /// Institutions on (ADR-0014): the config is `WorldConfig::nomos_preset()`
+    /// — EXP-003's decision (D10), what `cz run --preset nomos` builds — so
+    /// decrees are accepted and the ledger counts encroachments, violations
+    /// and sanctions. Off, the config is the default and every decree is
+    /// rejected.
+    pub nomos: bool,
+    /// Record every violation as `Event::Violated` (`cz run
+    /// --record-violations`), so `violations_json` reads the ledger instead
+    /// of the open episodes. Off by default: ADR-0014 D9 measured ~21 per
+    /// tick in a crowded world.
+    pub record_violations: bool,
+}
+
+impl WorldOptions {
+    pub fn parse(json: &str) -> Result<Self, String> {
+        if json.trim().is_empty() {
+            return Ok(Self::default());
+        }
+        serde_json::from_str(json).map_err(js)
+    }
+}
+
+/// The living agent `id` as `agent_json` renders it: the kernel's `Agent`
+/// as serde renders it, plus the episodes it stands accused in and whether
+/// it has voted on the open motion (ADR-0014 D12).
+#[derive(Serialize)]
+struct AgentDetail<'a> {
+    #[serde(flatten)]
+    agent: &'a Agent,
+    standing: Vec<institution::Accused>,
+    voted: bool,
+}
 
 /// Fields per marker in `social()`: kind (`MARKER_TRANSFER` /
 /// `MARKER_HARM` / `MARKER_SIGNAL`), tick, x, y, x2, y2, value. `x2, y2` is
@@ -138,6 +201,9 @@ pub struct WasmWorld {
     branch: BranchId,
     /// Restored view of a past tick; `None` means the view is the head.
     cursor: Option<World>,
+    /// The institution at the branch's origin, which its ledger does not
+    /// say (4-7): nothing for a fresh world, the snapshot's for a fork.
+    origin: institution::Origin,
 }
 
 #[wasm_bindgen]
@@ -145,9 +211,14 @@ impl WasmWorld {
     /// A fresh world. `patches` is the number of food patches (`cz` uses
     /// `width * height / 700`); `snapshot_every` bounds how far a `seek` has
     /// to re-execute; `policy` is one of [`POLICY_MIXES`] (see
-    /// [`policy_mix`]; the evolving mixes mutate, see [`evolves`]). The
-    /// rest of the config is the kernel default, as `cz run` without
-    /// options: `cz run --seed S --policy P` reaches the same hashes.
+    /// [`policy_mix`]; the evolving mixes mutate, see [`evolves`]);
+    /// `options` is a [`WorldOptions`] JSON object (`""` for the defaults).
+    /// The rest of the config is the kernel default, as `cz run` without
+    /// options: `cz run --seed S --policy P` reaches the same hashes, and
+    /// `cz run --preset nomos --seed S --policy P` those of `{"nomos":true}`.
+    // A wasm-bindgen constructor is positional on the JS side; anything
+    // further goes into `options` rather than a ninth parameter.
+    #[allow(clippy::too_many_arguments)]
     #[wasm_bindgen(constructor)]
     pub fn new(
         seed: u32,
@@ -157,7 +228,14 @@ impl WasmWorld {
         patches: u32,
         snapshot_every: u32,
         policy: &str,
+        options: &str,
     ) -> Result<WasmWorld, String> {
+        let options = WorldOptions::parse(options)?;
+        let base = if options.nomos {
+            WorldConfig::nomos_preset()
+        } else {
+            WorldConfig::default()
+        };
         let config = WorldConfig {
             seed: seed as u64,
             width,
@@ -165,13 +243,16 @@ impl WasmWorld {
             initial_agents: agents,
             patch_count: patches,
             mutation_enabled: evolves(policy),
-            ..WorldConfig::default()
+            record_violations: options.record_violations,
+            ..base
         };
         let world = World::generate(config, policy_mix(policy)?).map_err(js)?;
+        let origin = institution::Origin::of(&world.nomos);
         Ok(Self {
             mv: Multiverse::new(world, snapshot_every.max(1) as u64),
             branch: BranchId(0),
             cursor: None,
+            origin,
         })
     }
 
@@ -184,10 +265,12 @@ impl WasmWorld {
     #[wasm_bindgen(js_name = fromSnapshot)]
     pub fn from_snapshot(bytes: &[u8], snapshot_every: u32) -> Result<WasmWorld, String> {
         let world = World::from_bytes(bytes).map_err(js)?;
+        let origin = institution::Origin::of(&world.nomos);
         Ok(Self {
             mv: Multiverse::new(world, snapshot_every.max(1) as u64),
             branch: BranchId(0),
             cursor: None,
+            origin,
         })
     }
 
@@ -301,11 +384,21 @@ impl WasmWorld {
 
     /// `AGENT_FIELDS` values per living agent: id, x, y, energy, inventory,
     /// policy ([`policy_code`]: 0 forager / 1 random / 2 reflex / 3
-    /// learner), health, age.
+    /// learner), health, age, flags ([`FLAG_ACCUSED`] and the other bits,
+    /// from the view's `NormIndex`).
     pub fn agents(&self) -> Vec<i32> {
         let w = self.view();
+        let norms = w.norm_index();
         let mut out = Vec::with_capacity(w.agents.len() * AGENT_FIELDS);
-        for a in &w.agents {
+        for (i, a) in w.agents.iter().enumerate() {
+            let flags = [
+                (norms.accused(i), FLAG_ACCUSED),
+                (norms.voted(i), FLAG_VOTED),
+                (norms.harmable(i), FLAG_HARMABLE),
+                (norms.rejectable(i), FLAG_REJECTABLE),
+            ]
+            .into_iter()
+            .fold(0, |acc, (on, bit)| if on { acc | bit } else { acc });
             out.extend_from_slice(&[
                 a.id.0 as i32,
                 a.pos.x as i32,
@@ -315,6 +408,7 @@ impl WasmWorld {
                 policy_code(a.policy),
                 a.health.clamp(0, i32::MAX as i64) as i32,
                 a.age.min(i32::MAX as u64) as i32,
+                flags,
             ]);
         }
         out
@@ -387,13 +481,21 @@ impl WasmWorld {
     }
 
     /// The living agent `id` of the view as JSON — the kernel's `Agent` as
-    /// serde renders it, including `last_signal` and the kernel-written
-    /// memory `recent` (oldest first) — or `null` when no such agent is
-    /// alive at this tick.
+    /// serde renders it, including `last_signal`, the kernel-written
+    /// memory `recent` (oldest first) and `arrived`, plus `standing` (the
+    /// episodes it stands accused in, ascending by rule, each with the
+    /// rule's kind and deadline) and `voted` (4-7) — or `null` when no
+    /// such agent is alive at this tick.
     pub fn agent_json(&self, id: u32) -> Result<String, String> {
         let w = self.view();
-        match w.agents.binary_search_by_key(&AgentId(id as u64), |a| a.id) {
-            Ok(i) => serde_json::to_string(&w.agents[i]).map_err(js),
+        let id = AgentId(id as u64);
+        match w.agents.binary_search_by_key(&id, |a| a.id) {
+            Ok(i) => serde_json::to_string(&AgentDetail {
+                agent: &w.agents[i],
+                standing: institution::standing_of(&w.nomos, id),
+                voted: institution::voted(&w.nomos, id),
+            })
+            .map_err(js),
             Err(_) => Ok("null".into()),
         }
     }
@@ -446,13 +548,78 @@ impl WasmWorld {
         serde_json::to_string(&thread::deals(branch.log().range(from..now), now)).map_err(js)
     }
 
+    /// The institution of the view (ADR-0014 D12) as JSON
+    /// (`institution::Institution`): whether the world has institutions,
+    /// the charter, the rules in force, the open motion (none before 4-5)
+    /// and how many stand accused, all from the view's state.
+    pub fn institution_json(&self) -> Result<String, String> {
+        serde_json::to_string(&institution::institution(self.view())).map_err(js)
+    }
+
+    /// What happened to the institution in ticks `from..now` (`now` = `to`
+    /// capped at the view's tick) as JSON (`institution::Timeline`):
+    /// every decree of the ledger, ledger order, with the rule id the
+    /// kernel assigned it and the rule it replaced — recovered by replaying
+    /// the decrees from this branch's origin, since ids are monotonic and
+    /// never reused (ADR-0014 D8). Motions join the same list with 4-5.
+    pub fn timeline_json(&self, from: u32, to: u32) -> Result<String, String> {
+        let branch = self.mv.branch(self.branch).map_err(js)?;
+        let now = (to as u64).min(self.view().tick);
+        let from = (from as u64).min(now);
+        let t = institution::timeline(branch.log().range(0..now), &self.origin, from, now);
+        serde_json::to_string(&t).map_err(js)
+    }
+
+    /// The violations of ticks `from..now` as JSON (`institution::Violations`):
+    /// from the ledger's `Violated` events when the world records them
+    /// (`source: ledger` — who, which rule, against whom, when, on what
+    /// evidence), else every episode open at `now` in the view's state
+    /// (`source: standing`, the second path of ADR-0014 D12).
+    pub fn violations_json(&self, from: u32, to: u32) -> Result<String, String> {
+        let branch = self.mv.branch(self.branch).map_err(js)?;
+        let w = self.view();
+        let now = (to as u64).min(w.tick);
+        let from = (from as u64).min(now);
+        let v = institution::violations(
+            branch.log().range(from..now),
+            &w.nomos,
+            w.config.record_violations,
+            from,
+            now,
+        );
+        serde_json::to_string(&v).map_err(js)
+    }
+
+    /// The sanctions of ticks `from..now` as JSON (`institution::Sanctions`):
+    /// the ledger's `Sanctioned` events, ledger order, each with the rule's
+    /// kind and the episode it answered — the view's `Standing` of the same
+    /// agent and rule opened before it, or, when violations are recorded,
+    /// the closed episode rebuilt from them (ADR-0014 D4), or none.
+    pub fn sanctions_json(&self, from: u32, to: u32) -> Result<String, String> {
+        let branch = self.mv.branch(self.branch).map_err(js)?;
+        let w = self.view();
+        let now = (to as u64).min(w.tick);
+        let from = (from as u64).min(now);
+        let s = institution::sanctions(
+            branch.log().range(0..now),
+            &self.origin,
+            &w.nomos,
+            w.config.record_violations,
+            from,
+            now,
+        );
+        serde_json::to_string(&s).map_err(js)
+    }
+
     /// Binary snapshot of the view (ADR-0006).
     pub fn snapshot_bytes(&self) -> Vec<u8> {
         self.view().to_bytes()
     }
 
     /// Applies an intervention (JSON as in the ledger, e.g.
-    /// `{"op":"drought","regrow_amount":0,"regrow_interval":10}`) to the head
+    /// `{"op":"drought","regrow_amount":0,"regrow_interval":10}` or a decree
+    /// `{"op":"enact","norm":{"kind":"encroach","standing_ticks":32,
+    /// "sanction":1,"except_sanction":false}}`, ADR-0014 D8) to the head
     /// and returns the recorded event as JSON. Rejected while the view is
     /// behind the head: that is a fork (2b-5).
     pub fn intervene(&mut self, json: &str) -> Result<String, String> {

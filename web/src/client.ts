@@ -1,4 +1,18 @@
-import type { Deal, Envelope, Frame, Intervention, InterventionEvent, Request, Response, Watch, WorldInit } from "./protocol";
+import type {
+  Deal,
+  Envelope,
+  Frame,
+  Institution,
+  Intervention,
+  InterventionEvent,
+  Request,
+  Response,
+  Sanctions,
+  Timeline,
+  Violations,
+  Watch,
+  WorldInit,
+} from "./protocol";
 
 type FrameResponse = Extract<Response, { type: "frame" }>;
 
@@ -80,6 +94,34 @@ export class WorldClient {
   /** Every deal (accepted proposal) of ticks `from..to`, judged by the kernel-side reader as of the window's end (3-9b). */
   deals(from: number, to: number): Promise<{ frame: Frame; deals: Deal[] }> {
     return this.send({ type: "deals", from, to }).then((r) => ({ frame: r.frame, deals: r.deals ?? [] }));
+  }
+  /** The institution of the view (ADR-0014 D12): the charter, the rules in force, the open motion and who stands accused. The same object rides on every frame. */
+  institution(): Promise<{ frame: Frame; institution: Institution }> {
+    return this.send({ type: "institution" }).then((r) => {
+      if (!r.institution) throw new Error("worker returned no institution");
+      return { frame: r.frame, institution: r.institution };
+    });
+  }
+  /** Decrees of ticks `from..to` (capped at the view's tick) with the rule ids the kernel assigned, read from the ledger (4-7). */
+  timeline(from: number, to: number): Promise<{ frame: Frame; timeline: Timeline }> {
+    return this.send({ type: "timeline", from, to }).then((r) => {
+      if (!r.timeline) throw new Error("worker returned no timeline");
+      return { frame: r.frame, timeline: r.timeline };
+    });
+  }
+  /** Recorded violations of ticks `from..to`, or — when the world does not record them — every episode open at the view's tick. */
+  violations(from: number, to: number): Promise<{ frame: Frame; violations: Violations }> {
+    return this.send({ type: "violations", from, to }).then((r) => {
+      if (!r.violations) throw new Error("worker returned no violations");
+      return { frame: r.frame, violations: r.violations };
+    });
+  }
+  /** Sanctions of ticks `from..to`, each tied by the kernel-side reader to the episode it answered. */
+  sanctions(from: number, to: number): Promise<{ frame: Frame; sanctions: Sanctions }> {
+    return this.send({ type: "sanctions", from, to }).then((r) => {
+      if (!r.sanctions) throw new Error("worker returned no sanctions");
+      return { frame: r.frame, sanctions: r.sanctions };
+    });
   }
   /** Binary snapshot of the current view (the state its tick starts with), to fork from. */
   snapshot(): Promise<{ frame: Frame; snapshot: Uint8Array }> {

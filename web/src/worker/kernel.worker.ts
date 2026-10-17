@@ -9,13 +9,17 @@ import type {
   Deal,
   Envelope,
   Frame,
+  Institution,
   InterventionEvent,
   Ledger,
   LedgerEvent,
   Request,
   Response,
+  Sanctions,
   Thread,
+  Timeline,
   Timing,
+  Violations,
   Watch,
   WorldInit,
 } from "../protocol";
@@ -36,7 +40,14 @@ function create(c: WorldInit): WasmWorld {
   const every = c.snapshotEvery ?? 250;
   if (c.snapshot) return WasmWorld.fromSnapshot(c.snapshot, every);
   const patches = c.patches ?? Math.max(1, Math.floor((c.width * c.height) / 700));
-  return new WasmWorld(c.seed >>> 0, c.width, c.height, c.agents, patches, every, c.policy ?? "forager");
+  // `WorldOptions` (cz-web): institutions on = `WorldConfig::nomos_preset()`, as `cz run --preset nomos`.
+  const options = JSON.stringify({ nomos: c.nomos ?? false, record_violations: c.recordViolations ?? false });
+  return new WasmWorld(c.seed >>> 0, c.width, c.height, c.agents, patches, every, c.policy ?? "forager", options);
+}
+
+/** A tick window `from..to` as the kernel takes it: non-negative integers (the kernel caps `to` at the view's tick). */
+function span(from: number, to: number): [number, number] {
+  return [Math.max(0, Math.floor(from)), Math.max(0, Math.floor(to))];
 }
 
 function frame(w: WasmWorld, watch?: Watch): Frame {
@@ -56,6 +67,8 @@ function frame(w: WasmWorld, watch?: Watch): Frame {
     frontier: w.frontier(),
     snapshotEvery: w.snapshot_every(),
     origin: w.origin(),
+    // The institution of the view, read from the state (ADR-0014 D12).
+    institution: JSON.parse(w.institution_json()) as Institution,
     timing: { ...timing },
   };
   if (watch) {
@@ -91,6 +104,10 @@ async function handle({ id, body, watch }: Envelope<Request>): Promise<void> {
     let history: InterventionEvent[] | undefined;
     let snapshot: Uint8Array | undefined;
     let deals: Deal[] | undefined;
+    let institution: Institution | undefined;
+    let timeline: Timeline | undefined;
+    let violations: Violations | undefined;
+    let sanctions: Sanctions | undefined;
     switch (body.type) {
       case "init":
         world = create(body.config);
@@ -119,7 +136,21 @@ async function handle({ id, body, watch }: Envelope<Request>): Promise<void> {
         snapshot = need().snapshot_bytes();
         break;
       case "deals":
-        deals = JSON.parse(need().deals_json(Math.max(0, Math.floor(body.from)), Math.max(0, Math.floor(body.to)))) as Deal[];
+        deals = JSON.parse(need().deals_json(...span(body.from, body.to))) as Deal[];
+        break;
+      // Institutions (4-7): every judgement is the kernel-side reader's; the
+      // worker only parses what cz-web renders.
+      case "institution":
+        institution = JSON.parse(need().institution_json()) as Institution;
+        break;
+      case "timeline":
+        timeline = JSON.parse(need().timeline_json(...span(body.from, body.to))) as Timeline;
+        break;
+      case "violations":
+        violations = JSON.parse(need().violations_json(...span(body.from, body.to))) as Violations;
+        break;
+      case "sanctions":
+        sanctions = JSON.parse(need().sanctions_json(...span(body.from, body.to))) as Sanctions;
         break;
       case "frame":
         break;
@@ -127,7 +158,10 @@ async function handle({ id, body, watch }: Envelope<Request>): Promise<void> {
     const f = frame(need(), watch);
     const transfer: Transferable[] = [f.food.buffer, f.agents.buffer, f.social.buffer];
     if (snapshot) transfer.push(snapshot.buffer);
-    post({ id, body: { type: "frame", frame: f, event, history, snapshot, deals } }, transfer);
+    post(
+      { id, body: { type: "frame", frame: f, event, history, snapshot, deals, institution, timeline, violations, sanctions } },
+      transfer,
+    );
   } catch (err) {
     post({ id, body: { type: "error", message: err instanceof Error ? err.message : String(err) } });
   }

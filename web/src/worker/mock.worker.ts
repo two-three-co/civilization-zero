@@ -5,7 +5,8 @@
 // is NOT the kernel: no conservation ledger, no determinism contract, no
 // hash, no social layer (its random walkers never transfer, harm or speak,
 // so `social` is always empty, a watched agent remembers nothing and every
-// thread is empty).
+// thread is empty), and no institutions (`institution` is the empty one,
+// every timeline / violations / sanctions reading is empty, 4-7).
 // Nothing shown from it is a fact about Civilization Zero.
 
 import {
@@ -14,6 +15,7 @@ import {
   type AgentDetail,
   type Envelope,
   type Frame,
+  type Institution,
   type Ledger,
   type Request,
   type Response,
@@ -299,6 +301,26 @@ function ledger(): Ledger {
     food_intervened: 0,
     energy_intervened: 0,
     interventions: 0,
+    gathers: 0,
+    encroachments: 0,
+    promises_due: 0,
+    promises_broken: 0,
+    violations: [0, 0, 0],
+    sanctions: [0, 0, 0],
+    episodes_closed: [0, 0, 0],
+    episodes_sanctioned: [0, 0, 0],
+  };
+}
+
+/** The mock has no institutions: the shape of a world with `nomos` off. */
+function institution(): Institution {
+  return {
+    nomos: false,
+    record_violations: false,
+    charter: { quorum_permille: 100, threshold_permille: 667, vote_ticks: 32, amendable: true },
+    rules: [],
+    motion: null,
+    accused: { episodes: 0, agents: 0, by_kind: [0, 0, 0] },
   };
 }
 
@@ -320,6 +342,9 @@ function watched(s: State, watch: Watch): Watched {
       last_signal: null,
       recent: [],
       last_step: null,
+      arrived: null,
+      standing: [],
+      voted: false,
     };
     break;
   }
@@ -350,6 +375,7 @@ function frame(watch?: Watch): Frame {
     frontier,
     snapshotEvery: SNAP_EVERY,
     origin: 0,
+    institution: institution(),
     watched: watch ? watched(s, watch) : undefined,
   };
 }
@@ -381,14 +407,28 @@ self.onmessage = (ev: MessageEvent<Envelope<Request>>) => {
         throw new Error("the mock world cannot be forked: use the kernel worker");
       case "history":
       case "deals":
+      case "institution":
+      case "timeline":
+      case "violations":
+      case "sanctions":
         if (!state) throw new Error("init first");
         break;
     }
     const f = frame(watch);
+    const empty = (from: number, to: number) => ({ from: Math.max(0, from), now: Math.min(Math.max(0, to), f.tick) });
     post(
       {
         id,
-        body: { type: "frame", frame: f, history: body.type === "history" ? [] : undefined, deals: body.type === "deals" ? [] : undefined },
+        body: {
+          type: "frame",
+          frame: f,
+          history: body.type === "history" ? [] : undefined,
+          deals: body.type === "deals" ? [] : undefined,
+          institution: body.type === "institution" ? f.institution : undefined,
+          timeline: body.type === "timeline" ? { ...empty(body.from, body.to), entries: [] } : undefined,
+          violations: body.type === "violations" ? { source: "standing", ...empty(body.from, body.to), entries: [] } : undefined,
+          sanctions: body.type === "sanctions" ? { ...empty(body.from, body.to), entries: [] } : undefined,
+        },
       },
       [
         f.food.buffer,

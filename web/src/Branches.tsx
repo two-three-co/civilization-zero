@@ -201,5 +201,11 @@ function describe(iv: Intervention): string {
       return `remove agent ${iv.id}`;
     case "set_policy":
       return describeSetPolicy(iv);
+    case "enact":
+      return `enact ${iv.norm.kind.replace("_", " ")} (accused ${iv.norm.standing_ticks} ticks, sanction ${iv.norm.sanction})`;
+    case "repeal":
+      return `repeal rule #${iv.rule}`;
+    case "charter":
+      return `charter: quorum ${iv.charter.quorum_permille}‰, threshold ${iv.charter.threshold_permille}‰, ${iv.charter.vote_ticks} ticks, ${iv.charter.amendable ? "amendable" : "not amendable"}`;
   }
 }
