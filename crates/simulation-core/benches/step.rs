@@ -74,6 +74,17 @@ fn bench_step(c: &mut Criterion) {
             criterion::BatchSize::LargeInput,
         )
     });
+    // A learner world (ADR-0013 3-7) after 1,000 ticks of learning: its own
+    // population, decide with the Q lookup and apply with the Q update.
+    let learner = warmed_world_of(1_000, 128, PolicyKind::Learner, false);
+    g.throughput(Throughput::Elements(learner.agents.len() as u64 * 10));
+    g.bench_with_input(BenchmarkId::new("learner", 1_000), &learner, |b, base| {
+        b.iter_batched_ref(
+            || base.clone(),
+            |w| w.run(10),
+            criterion::BatchSize::LargeInput,
+        )
+    });
     g.finish();
 }
 
@@ -82,12 +93,15 @@ fn bench_step(c: &mut Criterion) {
 /// `reflex/1000` is the same for a reflex world with the initial (forager)
 /// weights and `reflex_evolved/1000` for one whose weights have mutated for
 /// 1,000 ticks (ADR-0013 3-6 budget: ≤ 150 ns per agent-step).
+/// `learner/1000` is a learner world after 1,000 ticks of learning (ADR-0013
+/// 3-7 budget: ≤ 200 ns per agent-step; the Q update itself is in apply).
 fn bench_decide(c: &mut Criterion) {
     let mut g = c.benchmark_group("decide");
     for (name, kind, mutation) in [
         ("serial/1000", PolicyKind::Forager, false),
         ("reflex/1000", PolicyKind::Reflex, false),
         ("reflex_evolved/1000", PolicyKind::Reflex, true),
+        ("learner/1000", PolicyKind::Learner, false),
     ] {
         let mut w = warmed_world_of(1_000, 128, kind, mutation);
         let states: Vec<World> = (0..10)

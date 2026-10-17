@@ -18,6 +18,11 @@
 //!    so moves never conflict).
 //! 5. **Upkeep**  – metabolism + action costs, then Rest healing, then
 //!    starvation damage, then ageing.
+//!    - *5a. Learn* – a `Learner`'s previous step is credited with this
+//!      tick's energy change as reward and the row it just decided in as
+//!      `s'` (`Q += (r + γ·max Q[s'] − Q) >> 4`), and this step is recorded
+//!      in `Agent.last_step` for the next tick (ADR-0013 D6, 3-7). Before
+//!      death and birth, so the energy handed to a child is not a penalty.
 //!    - *5b. Memory* – the kernel appends what each agent gave, received,
 //!      suffered, witnessed, heard, was proposed, had accepted or rejected,
 //!      and promised this tick to `Agent.recent` (ADR-0013 D4).
@@ -39,6 +44,7 @@ use crate::config::{ConfigError, WorldConfig};
 use crate::event::{DeathCause, Event};
 use crate::intervention::{Intervention, InterventionError, ParamsMode, Who};
 use crate::memory::{remember, Interaction, InteractionKind, Message, Signal, Terms};
+use crate::policy::learner::{self, LearnerStep};
 use crate::policy::{decide, Intent, Observation, PolicyKind, PolicyParams, PolicyTable};
 use crate::resources::ResourceGrid;
 use crate::rng::{RngStream, Stream};
@@ -171,6 +177,7 @@ impl World {
                     memory: Memory::default(),
                     last_signal: None,
                     recent: Vec::new(),
+                    last_step: None,
                 }
             })
             .collect();
@@ -298,6 +305,13 @@ impl World {
             a.memory = it.memory;
             report.actions[it.action.kind_index()] += 1;
         }
+        // Energies at S(t), for the learners' rewards (phase 5a). Only
+        // worlds with learners pay for the copy.
+        let start_energy: Vec<i64> = if intents.iter().any(|it| it.state.is_some()) {
+            self.agents.iter().map(|a| a.energy).collect()
+        } else {
+            Vec::new()
+        };
 
         // --- Phase 2: consume -------------------------------------------
         for (i, it) in intents.iter().enumerate() {
@@ -675,6 +689,29 @@ impl World {
                 a.health -= cfg.starvation_damage;
             }
             a.age += 1;
+
+            // --- Phase 5a: learning (ADR-0013 D6, 3-7) -----------------------
+            // The policy reported the row it decided in; the kernel credits
+            // the previous step with this tick's reward and that row, then
+            // records this step. The reward is the energy change so far in
+            // the tick — before birth, so energy moved to a child counts as
+            // kept (the birth bonus). An intent without a row (any other
+            // kind, or a hand-built intent) ends the chain.
+            a.last_step = match (intents[i].state, a.params.table.as_mut()) {
+                (Some(now), Some(PolicyTable::Learner { q }))
+                    if (now as usize + 1) * Action::KIND_COUNT <= q.len() =>
+                {
+                    if let Some(prev) = a.last_step {
+                        learner::credit(q, prev, now);
+                    }
+                    Some(LearnerStep {
+                        state: now,
+                        action: intents[i].action.kind_index() as u8,
+                        reward: learner::reward(a.energy - start_energy[i]),
+                    })
+                }
+                _ => None,
+            };
         }
 
         for o in &outcomes {
@@ -780,6 +817,7 @@ impl World {
                     memory: Memory::default(),
                     last_signal: None,
                     recent: Vec::new(),
+                    last_step: None,
                 };
                 report.events.push(Event::Born {
                     tick,
@@ -892,6 +930,7 @@ impl World {
                         memory: Memory::default(),
                         last_signal: None,
                         recent: Vec::new(),
+                        last_step: None,
                     });
                     self.next_agent_id += 1;
                 }
@@ -937,6 +976,9 @@ impl World {
                         ParamsMode::Default => PolicyParams::for_kind(kind, &self.config),
                         ParamsMode::Keep => std::mem::take(&mut a.params).refit(kind, &self.config),
                     };
+                    // The switch breaks the chain of decisions: the next
+                    // decision has no predecessor to credit (3-7).
+                    a.last_step = None;
                 }
             }
         }
@@ -1011,6 +1053,17 @@ impl World {
                     a.id,
                     a.recent.len()
                 ));
+            }
+            if let Some(s) = a.last_step {
+                if a.policy != PolicyKind::Learner
+                    || s.state >= cfg.learner_states
+                    || s.action as usize >= Action::KIND_COUNT
+                {
+                    errs.push(format!(
+                        "{:?} policy {:?} carries a learner step that does not fit: {s:?}",
+                        a.id, a.policy
+                    ));
+                }
             }
             if !self.bounds().contains(a.pos) {
                 errs.push(format!("{:?} out of bounds: {:?}", a.id, a.pos));
@@ -1144,6 +1197,14 @@ impl World {
                     }
                 }
             }
+            // A learner's pending step is state too; `None` adds no bytes
+            // (ADR-0013 3-7).
+            if let Some(s) = a.last_step {
+                h.u64(3);
+                h.u64(s.state as u64);
+                h.u64(s.action as u64);
+                h.u64(s.reward as i64 as u64);
+            }
             match a.memory.target {
                 Some(p) => h.u64((1 << 32) | ((p.x as u64) << 16) | p.y as u64),
                 None => h.u64(0),
@@ -1246,7 +1307,8 @@ pub const SNAPSHOT_MAGIC: [u8; 4] = *b"CZS\0";
 /// 6: `Ledger.proposals` / `acceptances` / `rejections` (ADR-0013 3-4).
 /// 7: `PolicyParams.table`, `PolicyKind::{Reflex, Learner}`, config
 /// `learner_states` / `learner_inherit_q` (ADR-0013 3-5).
-pub const SNAPSHOT_FORMAT: u32 = 7;
+/// 8: `Agent.last_step`, config `learner_epsilon_permille` (ADR-0013 3-7).
+pub const SNAPSHOT_FORMAT: u32 = 8;
 
 /// Written form: borrows the world instead of cloning it.
 #[derive(Serialize)]

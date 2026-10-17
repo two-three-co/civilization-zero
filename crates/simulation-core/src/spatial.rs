@@ -139,6 +139,7 @@ mod tests {
             memory: Memory::default(),
             last_signal: None,
             recent: Vec::new(),
+            last_step: None,
         }
     }
 

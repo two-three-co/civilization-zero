@@ -1,7 +1,10 @@
 //! 2a-4: restoring any tick from snapshot + ledger equals running directly.
 
 use multiverse::{replay, BranchId, Multiverse, MultiverseError, ReplayError};
-use simulation_core::{Event, EventLog, Intervention, PolicyKind, Pos, World, WorldConfig};
+use simulation_core::{
+    Event, EventLog, Intervention, ParamsMode, PolicyKind, PolicyTable, Pos, Who, World,
+    WorldConfig,
+};
 
 fn root() -> World {
     World::new(WorldConfig {
@@ -113,6 +116,88 @@ fn replay_counts_interventions_and_refuses_to_rewind() {
         mv.state_at(BranchId(7), 0),
         Err(MultiverseError::UnknownBranch(BranchId(7)))
     );
+}
+
+/// ADR-0013 3-7 acceptance: a learning world replays bit-exactly. Q tables
+/// and pending steps are state, so a replay that lost or re-derived either
+/// differently would diverge from the direct run — and the switch of a
+/// seed-keyed fraction to learners mid-way is replayed from the ledger.
+#[test]
+fn learner_worlds_replay_bit_exactly_from_snapshot_and_ledger() {
+    let base = World::generate(
+        WorldConfig {
+            seed: 23,
+            width: 48,
+            height: 48,
+            initial_agents: 150,
+            patch_count: 6,
+            ..WorldConfig::default()
+        },
+        |i| match i % 3 {
+            0 => PolicyKind::Forager,
+            1 => PolicyKind::Reflex,
+            _ => PolicyKind::Learner,
+        },
+    )
+    .unwrap();
+    let schedule = [
+        (120u64, Intervention::ScaleFood { permille: 600 }),
+        (
+            300,
+            Intervention::SetPolicy {
+                who: Who::Fraction { permille: 500 },
+                kind: PolicyKind::Learner,
+                params: ParamsMode::Keep,
+            },
+        ),
+        (
+            450,
+            Intervention::SetPolicy {
+                who: Who::All,
+                kind: PolicyKind::Learner,
+                params: ParamsMode::Default,
+            },
+        ),
+    ];
+    let keep = [0u64, 99, 100, 300, 301, 449, 450, 451, 600];
+    let mut mv = Multiverse::new(base.clone(), 100);
+    let r = BranchId(0);
+    let mut direct = base.clone();
+    let mut kept = Vec::new();
+    for tick in 0..600u64 {
+        if keep.contains(&tick) {
+            kept.push((tick, direct.clone()));
+        }
+        for (t, iv) in schedule {
+            if t == tick {
+                mv.intervene(r, iv).unwrap();
+                direct.intervene(iv).unwrap();
+            }
+        }
+        mv.step(r, 1).unwrap();
+        direct.step();
+    }
+    kept.push((600, direct.clone()));
+    let head = mv.branch(r).unwrap().head();
+    assert_eq!(head, &direct);
+    assert!(!head.agents.is_empty());
+    assert!(head.agents.iter().all(|a| a.policy == PolicyKind::Learner
+        && a.last_step.is_some() == (a.age > 0)
+        && matches!(&a.params.table, Some(PolicyTable::Learner { q }) if q.iter().any(|&v| v != 0))));
+    for (t, expected) in kept {
+        let restored = mv.state_at(r, t).unwrap();
+        assert_eq!(restored, expected, "tick {t}");
+    }
+    // From the tick-300 snapshot (taken before that tick's switch) through
+    // both switches to the head, every lifecycle event verified.
+    let mut w = mv.state_at(r, 300).unwrap();
+    let stats = replay(&mut w, mv.branch(r).unwrap().log(), 600).unwrap();
+    assert_eq!((stats.from, stats.to, stats.interventions), (300, 600, 2));
+    assert_eq!(&w, head);
+    // The same world built again from bytes replays the same.
+    let mut w = World::from_bytes(&mv.state_at(r, 100).unwrap().to_bytes()).unwrap();
+    replay(&mut w, mv.branch(r).unwrap().log(), 600).unwrap();
+    assert_eq!(w.state_hash(), head.state_hash());
 }
 
 #[test]

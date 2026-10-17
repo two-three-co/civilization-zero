@@ -87,6 +87,12 @@ pub struct WorldConfig {
     /// blank (false).
     #[serde(default = "default_true")]
     pub learner_inherit_q: bool,
+    /// ε of a `Learner`'s ε-greedy choice, in permille (3-7): with this
+    /// probability per decision the action kind is drawn uniformly instead
+    /// of greedily. 50 by default; 0 explores only through the tie lottery
+    /// of a fresh (all-zero) table. `default` so older configs still load.
+    #[serde(default = "default_learner_epsilon")]
+    pub learner_epsilon_permille: u16,
 
     /// What agents can perceive about each other (ADR-0013 D2). `default`
     /// so configs written before the field existed still load; it is always
@@ -97,6 +103,10 @@ pub struct WorldConfig {
 
 fn default_learner_states() -> u16 {
     32
+}
+
+fn default_learner_epsilon() -> u16 {
+    50
 }
 
 fn default_true() -> bool {
@@ -176,6 +186,7 @@ impl Default for WorldConfig {
             mutation_step_permille: 50,
             learner_states: default_learner_states(),
             learner_inherit_q: true,
+            learner_epsilon_permille: default_learner_epsilon(),
             perception: Perception::default(),
         }
     }
@@ -197,7 +208,7 @@ impl WorldConfig {
     pub const MAX_LEARNER_STATES: u16 = 1024;
 
     pub fn validate(&self) -> Result<(), ConfigError> {
-        let checks: [(bool, &'static str); 18] = [
+        let checks: [(bool, &'static str); 19] = [
             (
                 self.width > 0 && self.height > 0,
                 "width/height must be > 0",
@@ -259,6 +270,10 @@ impl WorldConfig {
             (
                 (1..=Self::MAX_LEARNER_STATES).contains(&self.learner_states),
                 "learner_states must be in 1..=1024",
+            ),
+            (
+                self.learner_epsilon_permille <= PolicyParams::PERMILLE_MAX,
+                "learner_epsilon_permille must be <= 1000",
             ),
         ];
         for (ok, msg) in checks {

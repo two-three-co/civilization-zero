@@ -57,6 +57,7 @@ pub fn add_agent_with(
         memory: Memory::default(),
         last_signal: None,
         recent: Vec::new(),
+        last_step: None,
     });
     w.ledger.energy_initial += energy;
     w.ledger.food_initial += inventory as u64;
@@ -76,6 +77,7 @@ pub fn intents(actions: &[Action]) -> Vec<Intent> {
         .map(|&action| Intent {
             action,
             memory: Memory::default(),
+            state: None,
         })
         .collect()
 }

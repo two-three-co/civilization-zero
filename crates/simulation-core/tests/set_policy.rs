@@ -1,8 +1,7 @@
 //! The frame for learning policies (ADR-0013 3-5): `PolicyKind::{Reflex,
-//! Learner}` with their tables, the `SetPolicy` intervention and snapshot
-//! format 7. The decision rules are 3-6 / 3-7; here both kinds still decide
-//! like the forager, and that is asserted so the placeholder can never be
-//! mistaken for an implementation.
+//! Learner}` with their tables, the `SetPolicy` intervention and the
+//! snapshot format. The decision rules are 3-6 (`tests/reflex.rs`) and 3-7
+//! (`tests/learner.rs`); here the frame around them is checked.
 
 mod common;
 
@@ -39,7 +38,7 @@ fn bodies(w: &World) -> Vec<(AgentId, Pos, i64, i64, u32, u64)> {
 }
 
 #[test]
-fn learning_kinds_carry_blank_tables_and_for_now_decide_like_the_forager() {
+fn learning_kinds_carry_their_tables_the_reflex_starts_as_the_forager_and_the_learner_learns() {
     let cfg = small(5);
     let mut forager = World::new(cfg.clone()).unwrap();
     let mut reflex = World::generate(cfg.clone(), |_| PolicyKind::Reflex).unwrap();
@@ -59,9 +58,13 @@ fn learning_kinds_carry_blank_tables_and_for_now_decide_like_the_forager() {
     }
     for a in &learner.agents {
         match &a.params.table {
-            Some(PolicyTable::Learner { q }) => assert_eq!(q.len(), 32 * Action::KIND_COUNT),
+            Some(PolicyTable::Learner { q }) => {
+                assert_eq!(q.len(), 32 * Action::KIND_COUNT);
+                assert!(q.iter().all(|&v| v == 0), "a fresh learner knows nothing");
+            }
             other => panic!("learner without a Q table: {other:?}"),
         }
+        assert_eq!(a.last_step, None, "nothing to credit before the first tick");
     }
     assert!(forager.agents.iter().all(|a| a.params.table.is_none()));
 
@@ -70,15 +73,28 @@ fn learning_kinds_carry_blank_tables_and_for_now_decide_like_the_forager() {
         reflex.step();
         learner.step();
     }
-    assert!(learner.ledger.births > 0, "generations passed");
-    // Reflex: by construction of `forager_weights()` (3-6); Learner: the
-    // 3-5 placeholder. Same bodies, same food, same ledger — only the kind
-    // and its table differ, and those are state the hash sees.
+    // Reflex: by construction of `forager_weights()` (3-6) the same bodies,
+    // food and ledger as the forager world — only the kind and its table
+    // differ, and those are state the hash sees.
     assert_eq!(bodies(&forager), bodies(&reflex));
-    assert_eq!(bodies(&forager), bodies(&learner));
-    assert_eq!(forager.resources.food, learner.resources.food);
-    assert_eq!(forager.ledger, learner.ledger);
     assert_ne!(forager.dynamics_hash(), reflex.dynamics_hash());
+    // Learner (3-7): decides from its own Q table, so its history is its
+    // own, its tables are no longer blank and every agent that acted
+    // carries the step awaiting credit.
+    assert!(
+        !learner.agents.is_empty(),
+        "the learner world did not die out"
+    );
+    assert_ne!(bodies(&forager), bodies(&learner));
+    assert_ne!(forager.ledger, learner.ledger);
+    assert!(learner.agents.iter().all(|a| matches!(
+        &a.params.table,
+        Some(PolicyTable::Learner { q }) if q.iter().any(|&v| v != 0)
+    )));
+    assert!(learner
+        .agents
+        .iter()
+        .all(|a| a.age == 0 || a.last_step.is_some()));
     assert_ne!(reflex.dynamics_hash(), learner.dynamics_hash());
     assert!(reflex
         .agents
@@ -209,7 +225,7 @@ fn set_policy_names_its_agents_and_params_modes_keep_or_reset() {
     assert!(all.agents.iter().all(|a| a.policy == PolicyKind::Learner));
     assert_eq!(w.ledger.interventions, 6);
     w.check_invariants().unwrap();
-    // The switched world keeps running (and, in the 3-5 frame, like foragers).
+    // The switched world keeps running, learners learning from here on.
     w.run(50);
     w.check_invariants().unwrap();
 }
@@ -377,10 +393,10 @@ fn snapshots_carry_tables_in_both_encodings_and_reject_what_does_not_fit() {
 
     let v: serde_json::Value = serde_json::from_slice(&json).unwrap();
     let mut old = v.clone();
-    old["format"] = serde_json::json!(6);
+    old["format"] = serde_json::json!(7);
     assert_eq!(
         World::from_snapshot(&serde_json::to_vec(&old).unwrap()).err(),
-        Some(SnapshotError::Format(6))
+        Some(SnapshotError::Format(7))
     );
     // A policy without its table, a table without its policy, a Q table of
     // the wrong length, a config with no states: the invariants refuse them

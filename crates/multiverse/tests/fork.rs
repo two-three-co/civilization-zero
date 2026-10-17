@@ -124,13 +124,20 @@ fn switching_policies_at_a_fork_is_reproducible() {
             mv.state_at(a, 450).unwrap().state_hash(),
             mv.state_at(b, 450).unwrap().state_hash()
         );
+        // The switch is the first record of the fork tick; what follows it
+        // are the social events of the freshly switched agents (a learner
+        // with a blank table tries every kind, 3-7).
+        let at_300 = mv.branch(a).unwrap().log().at(300);
         assert_eq!(
-            mv.branch(a).unwrap().log().at(300),
-            &[Event::Intervened {
+            at_300[0],
+            Event::Intervened {
                 tick: 300,
                 intervention: switch
-            }]
+            }
         );
+        assert!(at_300[1..]
+            .iter()
+            .all(|e| !matches!(e, Event::Intervened { .. })));
         let head = mv.branch(a).unwrap().head();
         head.check_invariants().unwrap();
         match switch {

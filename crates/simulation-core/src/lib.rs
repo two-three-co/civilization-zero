@@ -31,7 +31,8 @@ pub use event_log::{EventLog, LogError};
 pub use intervention::{Intervention, InterventionError, ParamsMode, Who};
 pub use memory::{Interaction, InteractionKind, Message, Signal, Terms};
 pub use policy::{
-    Intent, Neighbor, Observation, PolicyKind, PolicyParams, PolicyTable, REFLEX_FEATURES,
+    Intent, LearnerStep, Neighbor, Observation, PolicyKind, PolicyParams, PolicyTable,
+    REFLEX_FEATURES,
 };
 pub use space::{Dir, Pos};
 pub use spatial::SpatialIndex;

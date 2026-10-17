@@ -1,5 +1,5 @@
 use crate::memory::{Interaction, Signal};
-use crate::policy::{PolicyKind, PolicyParams};
+use crate::policy::{LearnerStep, PolicyKind, PolicyParams};
 use crate::space::Pos;
 use serde::{Deserialize, Serialize};
 
@@ -39,4 +39,10 @@ pub struct Agent {
     /// took part in or witnessed (ADR-0013 D4). Kernel-written; policies
     /// only read it.
     pub recent: Vec<Interaction>,
+    /// A `Learner`'s last decision, awaiting the next one to be credited
+    /// (ADR-0013 D6, 3-7): the Q row it decided in, the action kind and the
+    /// reward that tick earned. Kernel-written in Apply; `None` for every
+    /// other kind, for a newborn and after a `SetPolicy`. Policies never
+    /// read it.
+    pub last_step: Option<LearnerStep>,
 }

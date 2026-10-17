@@ -7,10 +7,11 @@
 //! learning policies (ADR-0013 D6): `Reflex` (3-6: a linear score per action
 //! kind over a fixed integer feature vector, weights inherited and mutated
 //! at birth, starting from weights that reproduce the forager exactly) and
-//! `Learner` (within-life tabular Q, 3-7; until it lands it *decides like
-//! the forager*). 3-5 provides the kinds, their heritable tables, their
-//! serialisation and the `SetPolicy` intervention that switches a running
-//! world over to them.
+//! `Learner` (3-7, [`learner`]: within-life tabular Q over a discretised
+//! observation, ε-greedy, integer-only; the policy decides and reports the
+//! row it decided in, the kernel does the Q update in Apply). 3-5 provides
+//! the kinds, their heritable tables, their serialisation and the
+//! `SetPolicy` intervention that switches a running world over to them.
 
 use crate::action::Action;
 use crate::agent::{Agent, AgentId, Memory};
@@ -22,6 +23,10 @@ use crate::space::{Bounds, Dir, Pos};
 use crate::spatial::SpatialIndex;
 use serde::{Deserialize, Serialize};
 
+pub mod learner;
+
+pub use learner::LearnerStep;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PolicyKind {
     Forager,
@@ -31,10 +36,12 @@ pub enum PolicyKind {
     /// inherited and mutated at birth. Fresh agents start from
     /// `forager_weights()`, with which they decide exactly like the forager.
     Reflex,
-    /// Within-life tabular Q learner (ADR-0013 D6): Q table in
-    /// `PolicyParams.table`, inherited by children unless
-    /// `learner_inherit_q` is off. **3-5 frame: decides like the forager
-    /// until 3-7 defines the state discretisation, reward and update.**
+    /// Within-life tabular Q learner (ADR-0013 D6, 3-7, [`learner`]): Q
+    /// table in `PolicyParams.table`, one row per discretised observation
+    /// (`learner::state`), ε-greedy over the action kinds, updated by the
+    /// kernel in Apply from the agent's own energy change. Children inherit
+    /// the table unless `learner_inherit_q` is off; mutation never touches
+    /// it.
     Learner,
 }
 
@@ -181,9 +188,12 @@ pub enum PolicyTable {
     /// every weight moves by up to `mutation_step_permille` units at birth
     /// when `mutation_enabled`. Fresh agents start from `forager_weights()`.
     Reflex { weights: Vec<i32> },
-    /// `learner_states × Action::KIND_COUNT` Q values (i16 fixed point),
-    /// row-major by state. Updated within life (3-7); children inherit it
-    /// unless `learner_inherit_q` is off. The frame starts it at zero.
+    /// `learner_states × Action::KIND_COUNT` Q values (i16 fixed point,
+    /// `learner::Q_UNIT` = one reward unit = 100 milli-energy), row-major by
+    /// state (`learner::state_row` of the fine `learner::state` index).
+    /// Updated within life by the kernel (3-7); children inherit it unless
+    /// `learner_inherit_q` is off. Fresh agents start from all zeros, which
+    /// ties every kind and so tries each once per state before preferring.
     Learner { q: Vec<i16> },
 }
 
@@ -388,6 +398,11 @@ impl Observation<'_> {
 pub struct Intent {
     pub action: Action,
     pub memory: Memory,
+    /// The Q-table row a `Learner` decided in (ADR-0013 3-7); `None` for
+    /// every other kind. The kernel reads it in Apply to credit the agent's
+    /// previous step and to record this one — the policy stays a pure
+    /// function and never touches its table.
+    pub state: Option<u16>,
 }
 
 pub fn decide(obs: &Observation<'_>, rng: &mut RngStream) -> Intent {
@@ -568,18 +583,16 @@ fn reflex_act(
         KIND_HARM => nearest_adjacent().map_or(Action::Rest, |target| Action::Harm { target }),
         _ => Action::Signal(Message::Say((heard - 1).clamp(0, 7) as u8)),
     };
-    Intent { action, memory }
+    Intent {
+        action,
+        memory,
+        state: None,
+    }
 }
 
-/// 3-5 frame of the Q learner: the Q table in `agent.params.table` is
-/// carried, inherited and hashed but not yet read or updated. Decides
-/// exactly like the forager until 3-7.
+/// The Q learner (ADR-0013 D6, 3-7): see [`learner`].
 fn learner(obs: &Observation<'_>, rng: &mut RngStream) -> Intent {
-    debug_assert!(matches!(
-        obs.agent.params.table,
-        Some(PolicyTable::Learner { .. })
-    ));
-    forager(obs, rng)
+    learner::decide(obs, rng)
 }
 
 fn random(obs: &Observation<'_>, rng: &mut RngStream) -> Intent {
@@ -636,6 +649,7 @@ fn random(obs: &Observation<'_>, rng: &mut RngStream) -> Intent {
     Intent {
         action,
         memory: obs.agent.memory,
+        state: None,
     }
 }
 
@@ -653,6 +667,7 @@ fn forager(obs: &Observation<'_>, rng: &mut RngStream) -> Intent {
         return Intent {
             action: Action::Consume(1),
             memory,
+            state: None,
         };
     }
     // 2. Harvest where standing.
@@ -661,6 +676,7 @@ fn forager(obs: &Observation<'_>, rng: &mut RngStream) -> Intent {
         return Intent {
             action: Action::Gather,
             memory,
+            state: None,
         };
     }
     // 3. Top up energy opportunistically when the pack is full.
@@ -668,6 +684,7 @@ fn forager(obs: &Observation<'_>, rng: &mut RngStream) -> Intent {
         return Intent {
             action: Action::Consume(1),
             memory,
+            state: None,
         };
     }
     // 4. Head to the richest visible cell, else 5. explore (`forage_move`).
@@ -757,6 +774,7 @@ fn forage_move(
             return Intent {
                 action: Action::Move(toward(a.pos, t, rng)),
                 memory,
+                state: None,
             };
         }
     }
@@ -764,6 +782,7 @@ fn forage_move(
     Intent {
         action: Action::Move(Dir::ALL[rng.below(4) as usize]),
         memory,
+        state: None,
     }
 }
 

@@ -27,7 +27,7 @@ crates/simulation-core     ← Deterministic World Kernel。外部依存は serd
 | `multiverse` | 再生（再実行 + 台帳照合）、`Multiverse` / `Branch`（head + 台帳 + 周期スナップショット）、fork と系譜 | 実装済み（ADR-0012） |
 | `web/`（npm, 非 Cargo） | Toy 1 UI: Vite + React + TS、UI ↔ Worker プロトコル（v4）、カーネル Worker（wasm）とモック Worker、社会マーカーとインスペクタ、交渉スレッドと取引の一覧（ADR-0013 3-9a/b） | 実装済み（2b-1/2b-2、3-9a/b） |
 | `cz-web` | wasm-bindgen パッケージ: `WasmWorld` = `Multiverse` + cursor（巻き戻し用の復元ビュー）。社会層の読み出し `social / ledger_json / agent_json / agent_events_json`、方策構成付きコンストラクタ、交渉スレッドの読み手 `thread.rs`（`thread_json / deals_json`: 2 者間の台帳と、各受諾を窓内の移転から kept / open / broken と判定。表示のための読み方で世界には何も返さない） | 実装済み（2b-1、3-9a/b） |
-| （`simulation-core/src/policy/`） | 方策は遷移関数の一部なので別クレートにしない（ADR-0013 D1）。Phase 3 で `forager / random / reflex / learner` に分割し、他者観測・相互作用・記憶・通信もカーネル内 | Phase 3（ADR-0013） |
+| （`simulation-core/src/policy/`） | 方策は遷移関数の一部なので別クレートにしない（ADR-0013 D1）。`policy.rs` が根（Forager / Random / Reflex と共通のアクチュエータ）、`policy/learner.rs` が Q 学習者（3-7）。他者観測・相互作用・記憶・通信もカーネル内 | 実装済み（3-6, 3-7）。forager / random / reflex のファイル分割は未 |
 | `nomos` | Institution DSL / 解釈器 | Phase 4 |
 
 ## カーネルのデータモデル
@@ -35,8 +35,8 @@ crates/simulation-core     ← Deterministic World Kernel。外部依存は serd
 - **World** = `config` + `tick` + `ResourceGrid` + `Vec<Agent>`（id 昇順を不変条件として維持）+ `next_agent_id`（単調増加、再利用なし）+ `Ledger`。
 - **空間**: 有界の整数グリッド（`u16` 座標）、4近傍、境界は壁。1セルに何体でも入れる（Phase 1 では移動衝突なし）。
 - **資源**: SoA（`food: Vec<u32>`, `capacity: Vec<u32>`）。パッチ生成、`regrow_interval` ごとに定量再生。
-- **Agent**: `id, pos, energy(milli), health, inventory, age, policy, params, memory{target}, last_signal, recent`。`policy` は `Forager / Random / Reflex / Learner`（Reflex は 3-6 で実装: `policy::feature` の 16 特徴の線形スコアと重みの突然変異、初期重みは Forager 等価。Learner は 3-5 の枠のみで決定は Forager に委譲）。`params` は `PolicyParams { hunger_permille, table: Option<PolicyTable> }` で、`table` は Reflex の重み（16 × 8 の i32 固定小数点）か Learner の Q 表（`learner_states` × 8 の i16）、固定方策では `None`（ハッシュにバイトを足さない）。`policy` と `table` の整合は `check_invariants` が検査する。`memory` は方策が所有し `Intent` で返す。`last_signal`（最後の `Say` と tick）と `recent`（直近 `memory_slots` 件の相互作用 `{tick, other, kind, value}`、oldest-first。`kind` = GaveTo / ReceivedFrom / Harmed / HarmedBy / SawHarm / Heard / ProposalFrom / Accepted / Rejected / Promised）はカーネルだけが書く（ADR-0013 D4, D5）。交渉メッセージ（`Message::Propose / Accept / Reject`）は `signal_radius` 内の宛先の `recent` にだけ届き、`Accept` は宛先が記憶している提案（`ProposalFrom`）にしか成立しない。約束の履行は強制されない（返済は通常の `Transfer`）。
-  `params` は親から継承（`table` も継承。Learner の子は `learner_inherit_q` が false なら白紙の Q で始まる）、突然変異は既定 OFF で `hunger_permille` だけを動かす（重みの突然変異は 3-6。ADR-0008、ADR-0013 D6）。
+- **Agent**: `id, pos, energy(milli), health, inventory, age, policy, params, memory{target}, last_signal, recent, last_step`。`policy` は `Forager / Random / Reflex / Learner`（Reflex は 3-6: `policy::feature` の 16 特徴の線形スコアと重みの突然変異、初期重みは Forager 等価。Learner は 3-7: `policy::learner` の 7 ビット状態（hungry / has_food / food_here / food_in_sight / adjacent / upper / heard）を `learner_states` 行に折った Q 表の ε-greedy、ε は config `learner_epsilon_permille`）。`params` は `PolicyParams { hunger_permille, table: Option<PolicyTable> }` で、`table` は Reflex の重み（16 × 8 の i32 固定小数点）か Learner の Q 表（`learner_states` × 8 の i16、固定小数点 16 = 報酬 1 単位 = 100 ミリエネルギー）、固定方策では `None`（ハッシュにバイトを足さない）。`policy` と `table` の整合は `check_invariants` が検査する。`memory` は方策が所有し `Intent` で返す。`last_signal`（最後の `Say` と tick）と `recent`（直近 `memory_slots` 件の相互作用 `{tick, other, kind, value}`、oldest-first。`kind` = GaveTo / ReceivedFrom / Harmed / HarmedBy / SawHarm / Heard / ProposalFrom / Accepted / Rejected / Promised）はカーネルだけが書く（ADR-0013 D4, D5）。`last_step: Option<LearnerStep { state, action, reward }>` は Learner の前 tick の決定（Q 表の行・行動の種類・その tick の報酬）で、カーネルが Apply で書き、次の tick の Apply で Q を更新するのに使う。他の方策・新生児・`SetPolicy` 直後は `None`（ハッシュにバイトを足さない。ADR-0013 D6 3-7）。交渉メッセージ（`Message::Propose / Accept / Reject`）は `signal_radius` 内の宛先の `recent` にだけ届き、`Accept` は宛先が記憶している提案（`ProposalFrom`）にしか成立しない。約束の履行は強制されない（返済は通常の `Transfer`）。
+  `params` は親から継承（`table` も継承。Learner の子は `learner_inherit_q` が false なら白紙の Q で始まる）、突然変異は既定 OFF で `hunger_permille` と Reflex の重みを動かし、Q 表には触れない（ADR-0008、ADR-0013 D6）。
 - **Ledger**: 食料・エネルギーの流入/流出、出生数、死因別死亡数を累計し、保存則を任意の tick で検証可能にする。
 - **Event**: `Born` / `Died` / `Intervened` / `Transferred` / `Harmed` / `Proposed` / `Accepted` / `Rejected` / `Signaled` / `Acted` の自己完結レコード（tick 入り、serde 内部タグ）。`Signaled` は `record_signals` のときだけ、`Proposed / Accepted / Rejected`（届いた交渉メッセージ。`Accepted` は契約条件 `give / want / by` と `offer_tick` を複写）は常に。`Intervened` は `World::intervene()` の戻り値、他は `TickReport.events`。`Acted`（全個体の行動と結果）は `record_actions` のときだけ。Phase 2 の台帳形式そのもので、Phase 4 の違反判定（不履行 = `Accepted` に対応する `Transferred` が期限までにない）の材料。
 - **EventLog**（ADR-0010 2a-2）: 追記専用の `Vec<Event>`。tick 非減少を検証、`range(from..to)` は二分探索。JSON Lines（先頭にヘッダ行 `{"format":1,"kernel":…}`）の書き出し/読み戻しは `Write` / `BufRead` を受け取り、カーネルはファイルを開かない。
@@ -50,6 +50,7 @@ ECS ライブラリは使わない（ADR-0001）。
 S(t) ──Index──▶ SpatialIndex（派生状態、保存しない。Decide と Apply で共有）
      ──Decide(純関数, 並列化可)──▶ Intent[]  ──Apply──▶ S(t+1)
          ↑ RngStream(seed,tick,agent,Decide)、Observation::neighbors() は Index を読むだけ（前 tick の発信は Neighbor.signal）
+           Learner の Intent は決定した Q 表の行（Intent.state）も運ぶ。方策は表を読むだけで、更新は Apply の 5a
 Apply:
   2 Consume   在庫→エネルギー（私的、競合なし）
   3 Gather    S(t) の位置で解決。同一セルの請求者を抽選キー順に逐次配分
@@ -58,6 +59,8 @@ Apply:
              受諾者が記憶していることが要件（なければ NoSuchOffer）。届いたものは Proposed / Accepted / Rejected として常に台帳へ（ADR-0013 D3, D5）
   4 Move      同時適用（セル容量無制限なので衝突しない）
   5 Upkeep    代謝+行動コスト → Rest 回復 → 飢餓ダメージ → 加齢
+  5a Learn    Learner: 前 tick の記録 last_step {s, a, r} を今 tick の行 s'（Intent.state）で更新 Q[s,a] += (r·16 + 29·max Q[s'] >> 5 − Q[s,a]) >> 4、
+             今 tick の記録 {s', 行動の種類, Upkeep までのエネルギー差分 /100} を書く（出生の移転は含まない。ADR-0013 D6 3-7）
   5b Memory   その tick の移転・加害・目撃（被害者から social_radius 内）・聴取・提案（ProposalFrom）・受諾（受諾者と提案者に Promised、提案者に Accepted）・
              拒否（Rejected）を起きた順に各個体の recent へ（上限 memory_slots、カーネルのみが書く。ADR-0013 D4）
   6 Death     health<=0 はその tick に加害を受けていれば Violence、そうでなければ Starvation。それ以外で age>=max_age は OldAge。食料はセルへ、エネルギーは償却
@@ -83,7 +86,7 @@ wasm32 と native の一致は ADR-0009 で計測し、CI（`wasm-pack test --no
 
 ## シリアライズ（ADR-0006）
 
-- スナップショット: `{format: 7, state_hash, world}` を JSON（可読）またはバイナリ（マジック `CZS\0` + postcard、実行時の既定）で。形式番号は `World` の直列化形が変わるたびに上げ、旧版は `Format(n)` で拒否する。読み込み時に形式版 → config 検証 → 不変条件 → ハッシュ照合（両形式共通）。
+- スナップショット: `{format: 8, state_hash, world}` を JSON（可読）またはバイナリ（マジック `CZS\0` + postcard、実行時の既定）で。形式番号は `World` の直列化形が変わるたびに上げ、旧版は `Format(n)` で拒否する。読み込み時に形式版 → config 検証 → 不変条件 → ハッシュ照合（両形式共通）。
 - 再生と分岐（`multiverse`）: `state_at(T)` は「tick T の開始状態」で、最寄りのスナップショットから台帳の介入を適用しつつ再実行し、出生・死亡を台帳と照合する。分岐は親の開始状態 + 子の介入、台帳は過去をコピー。
 - `state_hash`: 正準エンコーディング上の FNV-1a 64bit。`std::hash` には依存しない。
 - trace（ビューア用, format 2）: `cz run --trace` が出す軽量形式。カーネルの公開形式ではない。
@@ -106,8 +109,9 @@ UI ↔ Worker は `web/src/protocol.ts`（v4: `init / step / seek / frame / inte
 | ライフサイクル | `tests/lifecycle.rs` | 出生の分裂と親 id 順採番、死因の優先、死者は繁殖しない、継承と突然変異、イベントの直列化 |
 | 決定論/統合 | `tests/determinism.rs` | 同一シード同一履歴、ゴールデンハッシュ、スナップショット往復、改竄検出、5,000 tick 不変条件、世代をまたぐ保存則、serial=parallel |
 | 社会層 | `tests/neighbors.rs`, `tests/interaction.rs`, `tests/memory.rs`, `tests/negotiation.rs` | 近傍観測、Transfer / Store / Harm、発信と記憶、交渉（提案 → 受諾 → 移転 → 返済の台帳と記憶、不履行で物理不変、届かない・不在・未受領の失敗、proptest で serial = parallel） |
-| 方策の枠 | `tests/set_policy.rs`, `multiverse/tests/fork.rs` | Reflex / Learner の表と Forager への委譲（身体が 600 tick 一致）、`SetPolicy` の All / Id / Fraction と Default / Keep、無効介入の拒否、JSON 形、Q の継承 / 白紙、形式 7 の往復と不整合の拒否、同一 tick の 2 回 fork でハッシュ一致 |
+| 方策の枠 | `tests/set_policy.rs`, `multiverse/tests/fork.rs` | Reflex / Learner の表（Reflex は Forager と身体が 600 tick 一致、Learner は自分の履歴・非零の表・記録を持つ）、`SetPolicy` の All / Id / Fraction と Default / Keep、無効介入の拒否、JSON 形、Q の継承 / 白紙、形式 8 の往復と不整合の拒否、同一 tick の 2 回 fork でハッシュ一致 |
 | Reflex 方策 | `tests/reflex.rs`, `policy.rs` 単体 | Forager 等価（全個体の決定一致、1,000 tick の身体・資源・台帳一致）、特徴ベクトル、決定規則、重みが決定を変える、同点抽選の一様性と決定性、子の重みの突然変異、serial = parallel（proptest） |
+| Learner 方策 | `tests/learner.rs`, `policy/learner.rs` 単体, `multiverse/tests/replay.rs` | 状態ビットと空腹 4 段階の境界、行に従う決定と 8 種のアクチュエータ、ε の一様性と ε = 0、カーネルの更新値（前 tick の報酬と次行の最大）、出生の移転は罰にならない、Rest の自己ループで Q が単調減少、`SetPolicy` が連鎖を切る、往復と不整合の拒否、継承と行数、Forager 世界に記録なし + ゴールデン不変、serial = parallel = 再実行（proptest）、単体: 固定点への単調収束・i16 飽和・境界・行の折り畳み、再生: Learner 世界の `state_at` と再生が直接実行と bit 一致 |
 | プロパティ | `tests/determinism.rs` (proptest) | 任意の config（ライフサイクル ON/OFF、突然変異 ON/OFF）で毎 tick 不変条件、消費なしでエネルギー増加なし、再実行一致 |
 | ベンチ | `benches/step.rs` (criterion) | 1k/10k/100k 体の step（1,000 tick 後の定常状態）、ハッシュ、スナップショット |
 | 計測 | `cz sweep` | 複数シードの個体数帯域（docs/research/experiments/EXP-001） |

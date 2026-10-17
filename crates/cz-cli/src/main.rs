@@ -2,7 +2,7 @@
 //!
 //!   cz run    [--seed N] [--agents N] [--side N] [--ticks N]
 //!             [--policy forager|random|mixed|reflex|learner|mixed-learning] [--check]
-//!             [--mutate | --no-mutate] [--learner-states N]
+//!             [--mutate | --no-mutate] [--learner-states N] [--learner-epsilon PERMILLE]
 //!             [--trace PATH --every K] [--snapshot PATH]
 //!             [--drought-at TICK [--drought-amount N] [--drought-interval N]]
 //!             [--set-policy KIND [--set-policy-at TICK]]
@@ -17,10 +17,10 @@
 //!             [--window PCT] [--sample K] [--out PREFIX] [--check]
 //!
 //! Policies: `reflex` and `mixed-learning` (forager / reflex / learner in
-//! rotation) switch mutation on unless `--no-mutate` (ADR-0013 D6). Until
-//! 3-6 / 3-7 land, `reflex` and `learner` agents decide like the forager.
-//! `--set-policy KIND` applies `SetPolicy { who: All, params: Default }` at
-//! `--set-policy-at` (default 0) and logs it like a drought.
+//! rotation) switch mutation on unless `--no-mutate` (ADR-0013 D6).
+//! `--learner-states` / `--learner-epsilon` size and explore a learner's Q
+//! table (3-7). `--set-policy KIND` applies `SetPolicy { who: All, params:
+//! Default }` at `--set-policy-at` (default 0) and logs it like a drought.
 //!
 //! Snapshot paths ending in `.json` use the readable form; anything else is
 //! the compact binary form (ADR-0006). Timing printed by `run` covers
@@ -58,7 +58,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  cz run [--seed N] [--agents N] [--side N] [--ticks N]\n         [--policy forager|random|mixed|reflex|learner|mixed-learning] [--mutate | --no-mutate]\n         [--learner-states N] [--check] [--trace PATH --every K] [--snapshot PATH]\n         [--drought-at TICK [--drought-amount N] [--drought-interval N]]\n         [--set-policy KIND [--set-policy-at TICK]] [--log PATH] [--record-actions]\n  cz log --path PATH [--from TICK] [--to TICK] [--limit N]\n  cz resume --snapshot PATH [--ticks N] [--check]\n  cz replay --snapshot PATH --log PATH [--to TICK]\n  cz fork [--seed N] [--agents N] [--side N] [--ticks N] [--at TICK] [--every K]\n          [--scale-food PERMILLE] [--drought-amount N --drought-interval N] [--set-policy KIND]\n  cz sweep [--seeds N] [--seed-start S] [--ticks N] [--policy ...] [--window PCT]\n           [--sample K] [--out PREFIX] [--check]"
+        "usage:\n  cz run [--seed N] [--agents N] [--side N] [--ticks N]\n         [--policy forager|random|mixed|reflex|learner|mixed-learning] [--mutate | --no-mutate]\n         [--learner-states N] [--learner-epsilon PERMILLE] [--check] [--trace PATH --every K] [--snapshot PATH]\n         [--drought-at TICK [--drought-amount N] [--drought-interval N]]\n         [--set-policy KIND [--set-policy-at TICK]] [--log PATH] [--record-actions]\n  cz log --path PATH [--from TICK] [--to TICK] [--limit N]\n  cz resume --snapshot PATH [--ticks N] [--check]\n  cz replay --snapshot PATH --log PATH [--to TICK]\n  cz fork [--seed N] [--agents N] [--side N] [--ticks N] [--at TICK] [--every K]\n          [--scale-food PERMILLE] [--drought-amount N --drought-interval N] [--set-policy KIND]\n  cz sweep [--seeds N] [--seed-start S] [--ticks N] [--policy ...] [--window PCT]\n           [--sample K] [--out PREFIX] [--check]"
     );
     std::process::exit(2)
 }
@@ -105,6 +105,7 @@ fn build_world(seed: u64, o: &Opts) -> Result<World, Box<dyn std::error::Error>>
         mutation_enabled: o.contains_key("mutate") || (evolving && !o.contains_key("no-mutate")),
         record_actions: o.contains_key("record-actions"),
         learner_states: get(o, "learner-states", 32)?,
+        learner_epsilon_permille: get(o, "learner-epsilon", 50)?,
         ..WorldConfig::default()
     };
     Ok(match policy {
