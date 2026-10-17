@@ -65,7 +65,7 @@ fn radius_zero_sees_only_the_same_cell_and_the_grid_edge_is_clipped() {
 fn perception_limits_what_is_visible() {
     let mut w = empty_world(cfg());
     add_agent(&mut w, Pos::new(2, 2), 1_000, 0);
-    let params = w.config.initial_params;
+    let params = w.config.initial_params.clone();
     add_agent_with(&mut w, Pos::new(3, 2), 7_000, 4, PolicyKind::Random, params);
     let look = |w: &World| {
         let index = w.spatial_index();

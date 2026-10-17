@@ -6,7 +6,8 @@ mod common;
 use common::*;
 use proptest::prelude::*;
 use simulation_core::{
-    Action, AgentId, Event, Intervention, InterventionError, PolicyKind, Pos, World, WorldConfig,
+    Action, AgentId, Event, Intervention, InterventionError, ParamsMode, PolicyKind, Pos, Who,
+    World, WorldConfig,
 };
 
 #[test]
@@ -318,6 +319,24 @@ fn intervention_strategy() -> impl Strategy<Value = Intervention> {
             }
         }),
         (0u64..60).prop_map(|id| Intervention::RemoveAgent { id: AgentId(id) }),
+        (
+            prop_oneof![
+                Just(Who::All),
+                (0u64..60).prop_map(|id| Who::Id(AgentId(id))),
+                (0u32..=1100).prop_map(|permille| Who::Fraction { permille }),
+            ],
+            0usize..PolicyKind::ALL.len(),
+            any::<bool>(),
+        )
+            .prop_map(|(who, k, keep)| Intervention::SetPolicy {
+                who,
+                kind: PolicyKind::ALL[k],
+                params: if keep {
+                    ParamsMode::Keep
+                } else {
+                    ParamsMode::Default
+                },
+            }),
     ]
 }
 

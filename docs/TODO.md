@@ -24,7 +24,7 @@ Phase 2 の計画は ADR-0010（Toy 1）に従う。
 - [x] 3-2 `Transfer` / `Store` / `Harm`、`DeathCause::Violence`、`Transferred` / `Harmed` イベント、`Acted` 記録（済 2026-10-17: ゴールデン不変を旧定義で証明、Random は社会行動も抽選）
 - [x] 3-3 `Signal(Say)`、`last_signal` の観測、記憶リング `recent[K]` のカーネル更新（済 2026-10-17: `Agent.recent` は `memory` の兄弟フィールド、空なら符号化に入らずゴールデン不変、スナップショット形式 5）
 - [x] 3-4 交渉メッセージ `Propose / Accept / Reject`（済 2026-10-17: `signal_radius` 内の宛先にだけ届き、受諾は記憶の `ProposalFrom` が要件、`Promised` は約束した量、`Proposed / Accepted / Rejected` を常時記録。履行は強制しない。スナップショット形式 6、ゴールデン不変）
-- [ ] 3-5 `PolicyKind::{Reflex, Learner}` の枠、`Intervention::SetPolicy`、CLI の方策拡張
+- [x] 3-5 `PolicyKind::{Reflex, Learner}` の枠、`Intervention::SetPolicy`、CLI の方策拡張（済 2026-10-17: 枠のみ。`PolicyParams.table`（重み 16×8 i32 / Q `learner_states`×8 i16）、`SetPolicy { All | Id | Fraction }`、`--policy reflex|learner|mixed-learning`、`--set-policy`、スナップショット形式 7。両 kind の決定は 3-6 / 3-7 まで Forager に委譲）
 - [ ] 3-6 Reflex 方策（固定小数点、Forager 等価の初期重み、突然変異 ON）
 - [ ] 3-7 Learner 方策（表形式 Q、整数、継承）
 - [ ] 3-8 EXP-002 事前登録 → 実行 → 記録

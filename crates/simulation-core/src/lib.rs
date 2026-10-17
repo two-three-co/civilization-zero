@@ -28,9 +28,11 @@ pub use agent::{Agent, AgentId, Memory};
 pub use config::{Perception, WorldConfig};
 pub use event::{DeathCause, Event};
 pub use event_log::{EventLog, LogError};
-pub use intervention::{Intervention, InterventionError};
+pub use intervention::{Intervention, InterventionError, ParamsMode, Who};
 pub use memory::{Interaction, InteractionKind, Message, Signal, Terms};
-pub use policy::{Intent, Neighbor, Observation, PolicyKind, PolicyParams};
+pub use policy::{
+    Intent, Neighbor, Observation, PolicyKind, PolicyParams, PolicyTable, REFLEX_FEATURES,
+};
 pub use space::{Dir, Pos};
 pub use spatial::SpatialIndex;
 pub use world::{Ledger, SnapshotError, TickReport, World};

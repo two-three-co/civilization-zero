@@ -91,9 +91,25 @@ Decide の前に一様グリッドのバケット（セル → 個体 index 列�
 - 浮動小数点は使わない。これにより native / wasm / 並列のすべてで bit 一致が保たれ、Toy 1 の Verify がそのまま学習世界にも効く。
 - 報酬は自己のエネルギーだけなので、移転は学習者にとって損である。分かち合いが「割に合う」条件（互恵、制裁）を作るのは Phase 4 の制度であり、Phase 3 で分かち合いが出なくても失敗ではない。
 
+**実装（3-5 = 枠のみ、2026-10-17）と設計からの差分**:
+- `PolicyKind::{Reflex, Learner}` を追加。**決定規則は未実装**で、両方とも `forager()` に委譲する明示的なプレースホルダ（`policy.rs` の `reflex()` / `learner()`）。3-6 は「初期重みの Reflex が Forager と同一決定」を受け入れ基準にしているので、この委譲はその出発点でもある。`tests/set_policy.rs` は Reflex 世界・Learner 世界の身体（位置・エネルギー・在庫・年齢）と資源・台帳が Forager 世界と 600 tick 一致することを**明示的に**検査し、プレースホルダが実装と誤認されないようにしている。
+- 重みと Q 表は `PolicyParams.table: Option<PolicyTable>`（`Reflex { weights: Vec<i32> }` = `REFLEX_FEATURES`(16) × `Action::KIND_COUNT`(8) の 1/1024 固定小数点、`Learner { q: Vec<i16> }` = `learner_states`(既定 32、1..=1024) × 8）。`PolicyParams` は `Copy` でなくなり `Clone`。固定方策は `None` で、**`None` は `dynamics_hash` にバイトを足さない**ので Forager のゴールデンは不変。postcard では `None` が 1 B なので Forager のスナップショットは +1 B/体（1,357 体で 59,583 → 60,944 B）。
+- `World::check_invariants` が「`policy` と `table` の形が合うこと」を検査する（Forager / Random は `None`、Reflex は長さ 128、Learner は `learner_states × 8`）。スナップショット読み込みはハッシュ照合の前に不変条件を通るので、方策と表の不一致・表の長さ違いは `Invalid` で拒否される。
+- 出生: 子は親の `params` を `clone()` して受け取る。`mutation_enabled` は `hunger_permille` だけを動かし、**重みの突然変異は 3-6**（表はそのまま継承）。Learner の子は `learner_inherit_q`（既定 true）で親の Q を継承するか白紙で始まる。
+- 設計の `REFLEX_FEATURES ≈ 16` と Q の 32 / 128 状態は、3-5 では**形だけ**を確定した。3-6 / 3-7 で特徴の意味や離散化を決めるときに長さが変われば `SNAPSHOT_FORMAT` を上げる。
+- CLI: `--policy reflex|learner|mixed-learning`（mixed-learning は Forager / Reflex / Learner の輪番）、`--learner-states N`、`reflex` と `mixed-learning` は `--no-mutate` がなければ突然変異 ON（D6 の「Reflex では既定 ON」）。
+
 ### D7. 固定 vs 学習の比較は fork + `Intervention::SetPolicy`（3-5）
 
 `Intervention::SetPolicy { who: All | Ids | Fraction(permille), kind, params: Default | Keep }` を追加する。同じ tick の同じ開始状態から「全員を学習者にした分岐」を作れるので、Toy 1 の fork UI がそのまま比較実験になり、H4 の介入（ランダム化はシード）としても使える。
+
+**実装（3-5、2026-10-17）と設計からの差分**:
+- `who` は `All | Id(AgentId) | Fraction { permille }`。**`Ids(Vec)` ではなく `Id` 1 件**にしたのは、`Intervention` と `Event` が `Copy` の固定長レコードであることを保つため（複数 id は介入を複数回適用し、台帳にもその数だけ載る）。
+- `Fraction` は各生存個体を独立に確率 permille/1000 で選ぶ。乱数は新ストリーム `Stream::Intervention` を `(seed, tick, id)` で引くので、同じ世界・同じ tick なら必ず同じ集合になり、個体の処理順にも依存しない。「介入は乱数を使わない」という 2a-1 の記述はこれが唯一の例外（台帳からの再生で同じ集合が再現される）。`permille > 1000` は `Invalid`。
+- `params: Default` は config の `initial_params` のスカラー + 新しい kind の白紙の表。`Keep` はスカラーを保ち、**新しい kind に合う表だけ**を保つ（Learner → Learner なら学んだ Q をそのまま、Forager → Learner なら白紙の Q、Learner → Forager なら表を捨てる）。
+- 身体（エネルギー・体力・在庫・位置・年齢）、方策所有の `memory`、`last_signal`、`recent` は触らない。保存則への影響はなく、台帳は `interventions` を 1 増やすだけ。
+- 受け入れ基準の検証: `crates/multiverse/tests/fork.rs::switching_policies_at_a_fork_is_reproducible` が `SetPolicy { All, Learner }` と `SetPolicy { Fraction 300, Reflex, Keep }` を同一 tick で 2 回 fork してハッシュ一致、台帳からの再生（`state_at`）でも一致することを確認する。JSON は `{"op":"set_policy","who":"all","kind":"Learner","params":"default"}` / `"who":{"fraction":{"permille":500}}` / `"who":{"id":7}`。
+- CLI: `cz run --set-policy KIND [--set-policy-at TICK]`（既定 tick 0、`All` + `Default`、`--log` に記録）、`cz fork --set-policy KIND`。UI（3-9c）は `WasmWorld::intervene(json)` にそのまま渡せる。
 
 ### D8. UI（3-9）は台帳とフレームの拡張だけで作る
 
@@ -123,7 +139,7 @@ Decide の前に一様グリッドのバケット（セル → 個体 index 列�
 | 3-2 ✅ | `Transfer` / `Store` / `Harm` 行動、`DeathCause::Violence`、`Transferred` / `Harmed` イベント、`Acted` 記録（設定）。**済 2026-10-17**: `tests/interaction.rs` 8 本、Forager のゴールデン不変（旧定義で証明）、`Acted` は 1,000 体 × 2,000 tick で 220 MB（20,000 tick なら約 2.2 GB → 診断用に限定）。ゴールデンは台帳も除いた物理状態のみに再定義 | 3-1 | 保存則テスト（移転・貯蔵で食料不変、加害コストは `energy_spent`）、隣接判定は S(t)、相手が満杯で部分移転、ゴールデン不変。`record_actions` ON の台帳サイズを計測 |
 | 3-3 ✅ | `Signal(Say)`、`last_signal` の観測、記憶リング `recent[K]` とカーネル更新（受領・被害・目撃・聴取）。**済 2026-10-17**: `src/memory.rs`、`tests/memory.rs` 5 本（proptest 32 ケース: serial = parallel で記憶が一致、上限、oldest-first）、Forager のゴールデン不変（空の記憶はバイトを足さない）、スナップショット形式 5。計測: step 154 µs/tick（3-1 の 147〜154 の範囲内）、スナップショット Forager +5%、全個体満杯で約 2.0 倍（D4 参照） | 3-2 | 記憶の内容が決定論的（proptest）、スナップショットの増分を計測（≤ 2 倍）、ゴールデン不変（符号化のみの変更は旧符号化で証明） |
 | 3-4 ✅ | 交渉メッセージ `Propose / Accept / Reject` の配達と台帳、`Promised` 記憶。**済 2026-10-17**: 宛先付き配達（`signal_radius`、`OutOfEarshot` / `NoSuchTarget`）、受諾は記憶の `ProposalFrom` を要件に（`NoSuchOffer`）、`Promised` = 自分が渡すと約束した量、常時記録の `Proposed / Accepted / Rejected` イベント、`tests/negotiation.rs` 8 本（提案 → 受諾 → 移転 → 返済の台帳と両者の記憶、不履行で物理不変、拒否、半径外・不在・自分宛・未受領・死者、S(t) での判定、Random 世界の往復と形式 6、proptest 32 ケースで serial = parallel）。ゴールデン不変。Random は 14 行動。スナップショット形式 6。計測は STATUS | 3-3 | 単体テストで「提案 → 受諾 → 移転 → 返済」が台帳と記憶に正しく並ぶ。台本方策（正直な互恵者）で再現。履行は強制されないことのテスト（不履行が起きても物理は進む） |
-| 3-5 | `PolicyKind::{Reflex, Learner}` の枠、`PolicyParams` の拡張（重みベクトル / Q 表）、`Intervention::SetPolicy`、CLI `--policy reflex|learner|mixed-learning` | 3-2 | SetPolicy を同一 tick で 2 回 fork してハッシュ一致。スナップショット形式の版上げと互換テスト |
+| 3-5 ✅ | `PolicyKind::{Reflex, Learner}` の枠、`PolicyParams` の拡張（重みベクトル / Q 表）、`Intervention::SetPolicy`、CLI `--policy reflex|learner|mixed-learning`。**済 2026-10-17（枠のみ: 決定規則は 3-6 / 3-7、両 kind は Forager に委譲）**: `PolicyParams.table: Option<PolicyTable>`（`None` はハッシュにバイトを足さずゴールデン不変）、`check_invariants` が方策と表の整合を検査、`SetPolicy { All / Id / Fraction, kind, Default / Keep }`（`Fraction` は `Stream::Intervention` の seed 付き抽選）、config `learner_states` / `learner_inherit_q`、スナップショット形式 7。`tests/set_policy.rs` 7 本 + 介入 proptest の拡張 + `multiverse/tests/fork.rs` の fork 再現性。計測は STATUS | 3-2 | SetPolicy を同一 tick で 2 回 fork してハッシュ一致。スナップショット形式の版上げと互換テスト |
 | 3-6 | Reflex 方策（特徴ベクトル・固定小数点スコア・Forager 等価の初期重み・突然変異 ON） | 3-3, 3-5 | 初期重みの Reflex が Forager と 1,000 tick 同一決定（ハッシュ一致）。`tests/forager.rs` 相当の決定規則テスト。1.3k 体で decide ≤ 150 ns/体·tick（計測） |
 | 3-7 | Learner 方策（離散状態・整数 Q・決定論的 ε-greedy・継承） | 3-3, 3-5 | 再生で bit 一致。スナップショット 1,300 体 ≤ 1 MB。同じ状態列で Q が単調に更新されるユニットテスト。1.3k 体で decide ≤ 200 ns/体·tick |
 | 3-8 | EXP-002（事前登録 → 実行 → 記録）、`cz sweep` の方策拡張と新指標（摂取量・移転・加害） | 3-6, 3-7 | 実験仕様が実行前にコミットされている。10 シードの結果表と限界の記述。予測の当否を明記 |

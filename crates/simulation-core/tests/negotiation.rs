@@ -567,7 +567,6 @@ fn random_worlds_negotiate_and_snapshots_carry_the_deals() {
     assert!(std::str::from_utf8(&json)
         .unwrap()
         .starts_with(&format!("{{\"format\":{SNAPSHOT_FORMAT}")));
-    assert_eq!(SNAPSHOT_FORMAT, 6);
     println!(
         "random snapshot with deals: {} bytes binary, {} bytes json, {} agents",
         bin.len(),

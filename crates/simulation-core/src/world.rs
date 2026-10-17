@@ -37,9 +37,9 @@ use crate::action::{Action, Failure, Outcome};
 use crate::agent::{Agent, AgentId, Memory};
 use crate::config::{ConfigError, WorldConfig};
 use crate::event::{DeathCause, Event};
-use crate::intervention::{Intervention, InterventionError};
+use crate::intervention::{Intervention, InterventionError, ParamsMode, Who};
 use crate::memory::{remember, Interaction, InteractionKind, Message, Signal, Terms};
-use crate::policy::{decide, Intent, Observation, PolicyKind};
+use crate::policy::{decide, Intent, Observation, PolicyKind, PolicyParams, PolicyTable};
 use crate::resources::ResourceGrid;
 use crate::rng::{RngStream, Stream};
 use crate::space::{Bounds, Pos};
@@ -158,6 +158,7 @@ impl World {
                 // Spread the founding cohort over the whole life span so it
                 // does not die of old age in a single tick (ADR-0008).
                 let age = config.max_age.map_or(0, |m| rng.below(m));
+                let policy = policy_for(i);
                 Agent {
                     id: AgentId(i as u64),
                     pos,
@@ -165,8 +166,8 @@ impl World {
                     health: config.max_health,
                     inventory: 0,
                     age,
-                    policy: policy_for(i),
-                    params: config.initial_params,
+                    policy,
+                    params: PolicyParams::for_kind(policy, &config),
                     memory: Memory::default(),
                     last_signal: None,
                     recent: Vec::new(),
@@ -757,10 +758,15 @@ impl World {
                 }
                 let child_id = AgentId(self.next_agent_id);
                 self.next_agent_id += 1;
-                let mut params = parent.params;
+                let mut params = parent.params.clone();
                 if cfg.mutation_enabled {
                     let mut rng = RngStream::new(cfg.seed, tick, child_id.0, Stream::Mutation);
                     params = params.mutated(cfg.mutation_step_permille, &mut rng);
+                }
+                // A learner's child starts from the parent's Q table unless
+                // the config says every life starts blank (ADR-0013 D6).
+                if parent.policy == PolicyKind::Learner && !cfg.learner_inherit_q {
+                    params.table = PolicyTable::blank(PolicyKind::Learner, cfg);
                 }
                 let child = Agent {
                     id: child_id,
@@ -836,8 +842,9 @@ impl World {
     }
 
     /// Applies an external change between ticks (ADR-0010 2a-1) and returns
-    /// its ledger record. Never runs inside `apply`, uses no randomness, and
-    /// on error leaves the state untouched.
+    /// its ledger record. Never runs inside `apply`; the only randomness is
+    /// the seed-keyed draw of `SetPolicy { who: Fraction }`; on error the
+    /// state is left untouched.
     pub fn intervene(&mut self, iv: Intervention) -> Result<Event, InterventionError> {
         use InterventionError::Invalid;
         match iv {
@@ -870,11 +877,8 @@ impl World {
                 if !self.bounds().contains(pos) {
                     return Err(Invalid("pos out of bounds"));
                 }
-                let (energy, health, params) = (
-                    self.config.initial_energy,
-                    self.config.max_health,
-                    self.config.initial_params,
-                );
+                let (energy, health) = (self.config.initial_energy, self.config.max_health);
+                let params = PolicyParams::for_kind(policy, &self.config);
                 for _ in 0..n {
                     self.agents.push(Agent {
                         id: AgentId(self.next_agent_id),
@@ -884,7 +888,7 @@ impl World {
                         inventory: 0,
                         age: 0,
                         policy,
-                        params,
+                        params: params.clone(),
                         memory: Memory::default(),
                         last_signal: None,
                         recent: Vec::new(),
@@ -902,6 +906,38 @@ impl World {
                 let cell = self.bounds().index(a.pos);
                 self.resources.food[cell] += a.inventory;
                 self.ledger.energy_intervened -= a.energy;
+            }
+            Intervention::SetPolicy { who, kind, params } => {
+                let chosen: Vec<usize> = match who {
+                    Who::All => (0..self.agents.len()).collect(),
+                    Who::Id(id) => vec![self
+                        .agents
+                        .binary_search_by_key(&id, |a| a.id)
+                        .map_err(|_| InterventionError::NoSuchAgent(id))?],
+                    Who::Fraction { permille } => {
+                        if permille > Who::PERMILLE_MAX {
+                            return Err(Invalid("permille must be <= 1000"));
+                        }
+                        let (seed, tick) = (self.config.seed, self.tick);
+                        self.agents
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, a)| {
+                                RngStream::new(seed, tick, a.id.0, Stream::Intervention)
+                                    .chance(permille as u64, Who::PERMILLE_MAX as u64)
+                            })
+                            .map(|(i, _)| i)
+                            .collect()
+                    }
+                };
+                for i in chosen {
+                    let a = &mut self.agents[i];
+                    a.policy = kind;
+                    a.params = match params {
+                        ParamsMode::Default => PolicyParams::for_kind(kind, &self.config),
+                        ParamsMode::Keep => std::mem::take(&mut a.params).refit(kind, &self.config),
+                    };
+                }
             }
         }
         self.ledger.interventions += 1;
@@ -953,7 +989,21 @@ impl World {
                 errs.push(format!("{:?} older than max_age: {}", a.id, a.age));
             }
             if !a.params.is_valid() {
-                errs.push(format!("{:?} params out of range: {:?}", a.id, a.params));
+                errs.push(format!(
+                    "{:?} params out of range: hunger_permille {}",
+                    a.id, a.params.hunger_permille
+                ));
+            }
+            if !a.params.fits(a.policy, cfg) {
+                errs.push(format!(
+                    "{:?} policy {:?} does not fit its table {:?}",
+                    a.id,
+                    a.policy,
+                    a.params.table.as_ref().map(|t| match t {
+                        PolicyTable::Reflex { weights } => ("reflex", weights.len()),
+                        PolicyTable::Learner { q } => ("learner", q.len()),
+                    })
+                ));
             }
             if a.recent.len() > cfg.memory_slots as usize {
                 errs.push(format!(
@@ -1074,6 +1124,26 @@ impl World {
             h.u64(a.age);
             h.u64(a.policy as u64);
             h.u64(a.params.hunger_permille as u64);
+            // A learning policy's table is state; the fixed policies have
+            // none and add no bytes, so their golden hash is unchanged
+            // (ADR-0013 3-5).
+            match &a.params.table {
+                None => {}
+                Some(PolicyTable::Reflex { weights }) => {
+                    h.u64(1);
+                    h.u64(weights.len() as u64);
+                    for w in weights {
+                        h.u64(*w as i64 as u64);
+                    }
+                }
+                Some(PolicyTable::Learner { q }) => {
+                    h.u64(2);
+                    h.u64(q.len() as u64);
+                    for v in q {
+                        h.u64(*v as i64 as u64);
+                    }
+                }
+            }
             match a.memory.target {
                 Some(p) => h.u64((1 << 32) | ((p.x as u64) << 16) | p.y as u64),
                 None => h.u64(0),
@@ -1174,7 +1244,9 @@ pub const SNAPSHOT_MAGIC: [u8; 4] = *b"CZS\0";
 /// config, social-action ledger fields, `DeathCause::Violence` (ADR-0013 3-1/3-2).
 /// 5: `Agent.last_signal`, `Agent.recent`, `Ledger.signals` (ADR-0013 3-3).
 /// 6: `Ledger.proposals` / `acceptances` / `rejections` (ADR-0013 3-4).
-pub const SNAPSHOT_FORMAT: u32 = 6;
+/// 7: `PolicyParams.table`, `PolicyKind::{Reflex, Learner}`, config
+/// `learner_states` / `learner_inherit_q` (ADR-0013 3-5).
+pub const SNAPSHOT_FORMAT: u32 = 7;
 
 /// Written form: borrows the world instead of cloning it.
 #[derive(Serialize)]

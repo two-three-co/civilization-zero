@@ -28,11 +28,12 @@ pub fn empty_world(cfg: WorldConfig) -> World {
 }
 
 pub fn add_agent(w: &mut World, pos: Pos, energy: i64, inventory: u32) -> usize {
-    let params = w.config.initial_params;
+    let params = w.config.initial_params.clone();
     add_agent_with(w, pos, energy, inventory, PolicyKind::Forager, params)
 }
 
-/// Appends an agent with the next id and keeps the ledger consistent.
+/// Appends an agent with the next id and keeps the ledger consistent. The
+/// params are refit to the policy (a learning kind gets its blank table).
 pub fn add_agent_with(
     w: &mut World,
     pos: Pos,
@@ -41,6 +42,7 @@ pub fn add_agent_with(
     policy: PolicyKind,
     params: PolicyParams,
 ) -> usize {
+    let params = params.refit(policy, &w.config);
     let id = AgentId(w.next_agent_id);
     w.next_agent_id += 1;
     w.agents.push(Agent {

@@ -16,6 +16,9 @@ pub enum Stream {
     GatherPriority = 4,
     /// Keyed by the *child's* id at birth (ADR-0008).
     Mutation = 5,
+    /// Keyed by the agent's id at the tick of a `SetPolicy { who: Fraction }`
+    /// intervention (ADR-0013 D7): the only randomness an intervention uses.
+    Intervention = 6,
 }
 
 /// SplitMix64 finaliser. Bijective on u64, good avalanche, no state.

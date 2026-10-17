@@ -1,17 +1,26 @@
 //! `cz` — run Civilization Zero worlds from the command line.
 //!
 //!   cz run    [--seed N] [--agents N] [--side N] [--ticks N]
-//!             [--policy forager|random|mixed] [--check]
+//!             [--policy forager|random|mixed|reflex|learner|mixed-learning] [--check]
+//!             [--mutate | --no-mutate] [--learner-states N]
 //!             [--trace PATH --every K] [--snapshot PATH]
 //!             [--drought-at TICK [--drought-amount N] [--drought-interval N]]
+//!             [--set-policy KIND [--set-policy-at TICK]]
 //!             [--log PATH] [--record-actions]
 //!   cz resume --snapshot PATH [--ticks N] [--check]
 //!   cz log    --path PATH [--from TICK] [--to TICK] [--limit N]
 //!   cz replay --snapshot PATH --log PATH [--to TICK]
 //!   cz fork   [--seed N] [--agents N] [--side N] [--ticks N] [--at TICK] [--every K]
 //!             [--scale-food PERMILLE] [--drought-amount N --drought-interval N]
+//!             [--set-policy KIND]
 //!   cz sweep  [--seeds N] [--seed-start S] [--ticks N] [--policy ...]
 //!             [--window PCT] [--sample K] [--out PREFIX] [--check]
+//!
+//! Policies: `reflex` and `mixed-learning` (forager / reflex / learner in
+//! rotation) switch mutation on unless `--no-mutate` (ADR-0013 D6). Until
+//! 3-6 / 3-7 land, `reflex` and `learner` agents decide like the forager.
+//! `--set-policy KIND` applies `SetPolicy { who: All, params: Default }` at
+//! `--set-policy-at` (default 0) and logs it like a drought.
 //!
 //! Snapshot paths ending in `.json` use the readable form; anything else is
 //! the compact binary form (ADR-0006). Timing printed by `run` covers
@@ -19,7 +28,9 @@
 
 use multiverse::{BranchId, Multiverse};
 use serde::Serialize;
-use simulation_core::{DeathCause, Event, EventLog, Intervention, PolicyKind, World, WorldConfig};
+use simulation_core::{
+    DeathCause, Event, EventLog, Intervention, ParamsMode, PolicyKind, Who, World, WorldConfig,
+};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
@@ -47,7 +58,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  cz run [--seed N] [--agents N] [--side N] [--ticks N] [--policy forager|random|mixed]\n         [--check] [--trace PATH --every K] [--snapshot PATH]\n         [--drought-at TICK [--drought-amount N] [--drought-interval N]] [--log PATH]\n  cz log --path PATH [--from TICK] [--to TICK] [--limit N]\n  cz resume --snapshot PATH [--ticks N] [--check]\n  cz replay --snapshot PATH --log PATH [--to TICK]\n  cz fork [--seed N] [--agents N] [--side N] [--ticks N] [--at TICK] [--every K]\n          [--scale-food PERMILLE] [--drought-amount N --drought-interval N]\n  cz sweep [--seeds N] [--seed-start S] [--ticks N] [--policy ...] [--window PCT]\n           [--sample K] [--out PREFIX] [--check]"
+        "usage:\n  cz run [--seed N] [--agents N] [--side N] [--ticks N]\n         [--policy forager|random|mixed|reflex|learner|mixed-learning] [--mutate | --no-mutate]\n         [--learner-states N] [--check] [--trace PATH --every K] [--snapshot PATH]\n         [--drought-at TICK [--drought-amount N] [--drought-interval N]]\n         [--set-policy KIND [--set-policy-at TICK]] [--log PATH] [--record-actions]\n  cz log --path PATH [--from TICK] [--to TICK] [--limit N]\n  cz resume --snapshot PATH [--ticks N] [--check]\n  cz replay --snapshot PATH --log PATH [--to TICK]\n  cz fork [--seed N] [--agents N] [--side N] [--ticks N] [--at TICK] [--every K]\n          [--scale-food PERMILLE] [--drought-amount N --drought-interval N] [--set-policy KIND]\n  cz sweep [--seeds N] [--seed-start S] [--ticks N] [--policy ...] [--window PCT]\n           [--sample K] [--out PREFIX] [--check]"
     );
     std::process::exit(2)
 }
@@ -82,20 +93,21 @@ type R = Result<(), Box<dyn std::error::Error>>;
 
 fn build_world(seed: u64, o: &Opts) -> Result<World, Box<dyn std::error::Error>> {
     let side: u16 = get(o, "side", 128)?;
+    let policy = o.get("policy").map(String::as_str).unwrap_or("forager");
+    // Evolving policies mutate by default (ADR-0013 D6); `--no-mutate` wins.
+    let evolving = matches!(policy, "reflex" | "mixed-learning");
     let cfg = WorldConfig {
         seed,
         width: side,
         height: side,
         initial_agents: get(o, "agents", 1_000)?,
         patch_count: get(o, "patches", ((side as u32 * side as u32) / 700).max(1))?,
-        mutation_enabled: o.contains_key("mutate"),
+        mutation_enabled: o.contains_key("mutate") || (evolving && !o.contains_key("no-mutate")),
         record_actions: o.contains_key("record-actions"),
+        learner_states: get(o, "learner-states", 32)?,
         ..WorldConfig::default()
     };
-    let policy = o.get("policy").map(String::as_str).unwrap_or("forager");
     Ok(match policy {
-        "forager" => World::generate(cfg, |_| PolicyKind::Forager)?,
-        "random" => World::generate(cfg, |_| PolicyKind::Random)?,
         "mixed" => World::generate(cfg, |i| {
             if i % 2 == 0 {
                 PolicyKind::Forager
@@ -103,8 +115,30 @@ fn build_world(seed: u64, o: &Opts) -> Result<World, Box<dyn std::error::Error>>
                 PolicyKind::Random
             }
         })?,
-        p => return Err(format!("unknown policy {p}").into()),
+        "mixed-learning" => World::generate(cfg, |i| match i % 3 {
+            0 => PolicyKind::Forager,
+            1 => PolicyKind::Reflex,
+            _ => PolicyKind::Learner,
+        })?,
+        p => {
+            let kind = PolicyKind::parse(p).ok_or_else(|| format!("unknown policy {p}"))?;
+            World::generate(cfg, move |_| kind)?
+        }
     })
+}
+
+/// `--set-policy KIND` as the intervention it stands for.
+fn set_policy_opt(o: &Opts) -> Result<Option<Intervention>, Box<dyn std::error::Error>> {
+    o.get("set-policy")
+        .map(|k| {
+            let kind = PolicyKind::parse(k).ok_or_else(|| format!("unknown policy {k}"))?;
+            Ok(Intervention::SetPolicy {
+                who: Who::All,
+                kind,
+                params: ParamsMode::Default,
+            })
+        })
+        .transpose()
 }
 
 fn cmd_run(o: &Opts) -> R {
@@ -166,6 +200,9 @@ fn simulate(mut world: World, o: &Opts) -> R {
         regrow_amount: get(o, "drought-amount", 0)?,
         regrow_interval: get(o, "drought-interval", world.config.regrow_interval)?,
     };
+    // One scripted policy switch (ADR-0013 D7): every agent to KIND at a tick.
+    let set_policy = set_policy_opt(o)?;
+    let set_policy_at: u64 = get(o, "set-policy-at", 0)?;
     let mut log = o.get("log").map(|_| EventLog::new());
 
     println!(
@@ -209,6 +246,13 @@ fn simulate(mut world: World, o: &Opts) -> R {
         }
         if drought_at == Some(world.tick) {
             let e = world.intervene(drought)?;
+            println!("intervention: {}", serde_json::to_string(&e)?);
+            if let Some(l) = log.as_mut() {
+                l.push(e)?;
+            }
+        }
+        if let Some(iv) = set_policy.filter(|_| set_policy_at == world.tick) {
+            let e = world.intervene(iv)?;
             println!("intervention: {}", serde_json::to_string(&e)?);
             if let Some(l) = log.as_mut() {
                 l.push(e)?;
@@ -347,6 +391,9 @@ fn cmd_fork(o: &Opts) -> R {
             regrow_amount: get(o, "drought-amount", 0)?,
             regrow_interval: get(o, "drought-interval", 10)?,
         });
+    }
+    if let Some(iv) = set_policy_opt(o)? {
+        interventions.push(iv);
     }
     if interventions.is_empty() {
         interventions.push(Intervention::ScaleFood { permille: 500 });

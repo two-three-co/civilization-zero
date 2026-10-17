@@ -30,6 +30,7 @@ fn birth_splits_energy_and_numbers_children_in_parent_order() {
         PolicyKind::Random,
         PolicyParams {
             hunger_permille: 250,
+            ..PolicyParams::default()
         },
     ); // id 2: rich, custom traits
     let r = w.apply(intents(&[Action::Rest; 3]));
@@ -227,6 +228,7 @@ fn invalid_lifecycle_config_is_rejected() {
         WorldConfig {
             initial_params: PolicyParams {
                 hunger_permille: 1001,
+                ..PolicyParams::default()
             },
             ..WorldConfig::default()
         },

@@ -1,7 +1,9 @@
 //! 2a-5: forking at a past tick with interventions, lineage, reproducibility.
 
 use multiverse::{BranchId, Multiverse, MultiverseError};
-use simulation_core::{Event, Intervention, World, WorldConfig};
+use simulation_core::{
+    Event, Intervention, ParamsMode, PolicyKind, PolicyTable, Who, World, WorldConfig,
+};
 
 fn root() -> World {
     World::new(WorldConfig {
@@ -81,6 +83,77 @@ fn the_same_fork_twice_gives_identical_branches() {
         mv.state_at(a, 300).unwrap().state_hash(),
         mv.state_at(r, 300).unwrap().state_hash()
     );
+}
+
+/// ADR-0013 3-5 acceptance: "fixed vs learning" is a fork plus `SetPolicy`,
+/// and doing it twice at the same tick gives the same branch — including the
+/// seed-keyed `Fraction` draw, which the ledger replays.
+#[test]
+fn switching_policies_at_a_fork_is_reproducible() {
+    let mut mv = Multiverse::new(root(), 100);
+    let r = BranchId(0);
+    mv.step(r, 600).unwrap();
+    for switch in [
+        Intervention::SetPolicy {
+            who: Who::All,
+            kind: PolicyKind::Learner,
+            params: ParamsMode::Default,
+        },
+        Intervention::SetPolicy {
+            who: Who::Fraction { permille: 300 },
+            kind: PolicyKind::Reflex,
+            params: ParamsMode::Keep,
+        },
+    ] {
+        let a = mv.fork(r, 300, &[switch]).unwrap();
+        let b = mv.fork(r, 300, &[switch]).unwrap();
+        mv.step(a, 300).unwrap();
+        mv.step(b, 300).unwrap();
+        let (ha, hb) = (
+            mv.branch(a).unwrap().head().state_hash(),
+            mv.branch(b).unwrap().head().state_hash(),
+        );
+        assert_eq!(ha, hb, "{switch:?}");
+        assert_ne!(
+            ha,
+            mv.branch(r).unwrap().head().state_hash(),
+            "the kinds (and their tables) are state"
+        );
+        // Restoring a past tick replays the switch from the ledger.
+        assert_eq!(
+            mv.state_at(a, 450).unwrap().state_hash(),
+            mv.state_at(b, 450).unwrap().state_hash()
+        );
+        assert_eq!(
+            mv.branch(a).unwrap().log().at(300),
+            &[Event::Intervened {
+                tick: 300,
+                intervention: switch
+            }]
+        );
+        let head = mv.branch(a).unwrap().head();
+        head.check_invariants().unwrap();
+        match switch {
+            Intervention::SetPolicy { who: Who::All, .. } => {
+                assert!(head.agents.iter().all(|ag| ag.policy == PolicyKind::Learner
+                    && matches!(ag.params.table, Some(PolicyTable::Learner { .. }))));
+            }
+            _ => {
+                let reflex = head
+                    .agents
+                    .iter()
+                    .filter(|ag| ag.policy == PolicyKind::Reflex)
+                    .count();
+                assert!(
+                    reflex > 0 && reflex < head.agents.len(),
+                    "{reflex} of {} switched",
+                    head.agents.len()
+                );
+            }
+        }
+    }
+    // Both pairs are distinct branches of the same root.
+    assert_eq!(mv.branches().len(), 5);
 }
 
 #[test]

@@ -77,11 +77,30 @@ pub struct WorldConfig {
     /// Largest change per parameter per birth, in permille.
     pub mutation_step_permille: u16,
 
+    // --- learning policies (ADR-0013 D6) ---
+    /// Rows of a `Learner`'s Q table (`learner_states × Action::KIND_COUNT`
+    /// i16 cells). 32 by default; 128 is the fine grid. 3-7 defines how an
+    /// observation maps onto a row. `default` so older configs still load.
+    #[serde(default = "default_learner_states")]
+    pub learner_states: u16,
+    /// A `Learner`'s child inherits the parent's Q table (true) or starts
+    /// blank (false).
+    #[serde(default = "default_true")]
+    pub learner_inherit_q: bool,
+
     /// What agents can perceive about each other (ADR-0013 D2). `default`
     /// so configs written before the field existed still load; it is always
     /// written (postcard cannot skip fields).
     #[serde(default)]
     pub perception: Perception,
+}
+
+fn default_learner_states() -> u16 {
+    32
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Information limits on observing other agents. Position and distance are
@@ -155,6 +174,8 @@ impl Default for WorldConfig {
             initial_params: PolicyParams::default(),
             mutation_enabled: false,
             mutation_step_permille: 50,
+            learner_states: default_learner_states(),
+            learner_inherit_q: true,
             perception: Perception::default(),
         }
     }
@@ -172,8 +193,11 @@ impl std::fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl WorldConfig {
+    /// Largest Q table: 1,024 rows × 8 actions × 2 B = 16 KB per agent.
+    pub const MAX_LEARNER_STATES: u16 = 1024;
+
     pub fn validate(&self) -> Result<(), ConfigError> {
-        let checks: [(bool, &'static str); 17] = [
+        let checks: [(bool, &'static str); 18] = [
             (
                 self.width > 0 && self.height > 0,
                 "width/height must be > 0",
@@ -232,6 +256,10 @@ impl WorldConfig {
                 "perception radii must be <= 32",
             ),
             (self.memory_slots <= 64, "memory_slots must be <= 64"),
+            (
+                (1..=Self::MAX_LEARNER_STATES).contains(&self.learner_states),
+                "learner_states must be in 1..=1024",
+            ),
         ];
         for (ok, msg) in checks {
             if !ok {
