@@ -45,7 +45,7 @@ Phase 2 の計画は ADR-0010（Toy 1）に従う。
 - [ ] 4-6 EXP-004（H1: 先占規範と制裁。L0 / L1 / LE0 / LE + 帰無 5 本、主対比 30 シード）: 事前登録 → 実行 → 記録。「創発」「世界初」を書かない
 - [ ] 4-7 ∥ cz-web の読み手: `institution_json / timeline_json / violations_json / sanctions_json`、`agents()` の `flags` 列、`Frame.institution`、`watch` の係争、プロトコル v6、モック worker（4-2 の型が決まれば先行可）
 - [ ] 4-8 ∥ 制度エクスプローラ: 時系列カード、違反と制裁の一覧、率のカーブ、介入パネル Enact / Repeal / Charter、「Compare: with vs without rule」、インスペクタの係争、地図のマーカー、`institution` ミックス、ツアーの段、TUTORIAL §10（PRODUCT.md Phase 4 のデモ、公開 URL で確認）
-- [ ] 4-9 計測とゴールデン: 制度世界のゴールデン（native = wasm、CI）、decide / step / NormIndex / スナップショット（既定 ≤ 1 MB、制度世界 ≤ 2 MB）/ 巻き戻し（RISKS R11、学習世界と制度世界）/ ブラウザ tick/s / wasm ≤ 400 KB。**4-3 からの持ち越し**: 規則ありの世界の decide が門 ≤ 200 ns を超える（Reflex 進化後 249.3、Learner 128 行 230.7、盲目でも 215 / 210 ns。STATUS「その他」の 4-3 行）。ADR-0013 D6 と同じ手順で、セルごとの HARMABLE 件数の前計算（−10〜15 ns の見込み）か門の改定（規則ありは 250 ns、製品の門 tick/s を主に）かを決めて ADR-0014 に書く
+- [ ] 4-9 計測とゴールデン: 制度世界のゴールデン（native = wasm、CI）、decide / step / NormIndex / スナップショット（既定 ≤ 1 MB、制度世界 ≤ 2 MB）/ 巻き戻し（RISKS R11、学習世界と制度世界）/ ブラウザ tick/s / wasm ≤ 400 KB。**4-3 からの持ち越しは済（2026-10-18）**: セルごとの HARMABLE 件数の前計算（`NormIndex::harmable_on` / `Observation::violator_adjacent`、決定不変、`tests/nomos_policy.rs` +3 本）で規則ありの decide は 252 → 242（Reflex 進化後）/ 236 → 228 ns（Learner 128 行）、盲目でも 221 / 224 なので**規則ありの世界の門を ≤ 250 ns に改定し製品の門（tick/s）を主にした**（ADR-0014 D6 の「決定（2026-10-18）」、STATUS「その他」の 4-9a 行）。4-9 本体では制度世界（`nomos_preset` + 128 行 90% + Enforcer 10%）で改定後の門を、同じ run の盲目の対照付きで計測する
 - [ ] 4-10 文書: ADR-0014 の完了判定、STATUS、RISKS R12〜R14、HYPOTHESES、ARCHITECTURE（`nomos` モジュール、Apply 3c、プロトコル v6）、CLAUDE.md の `Failure` の文言、TUTORIAL §10〜11、README
 
 ## Phase 6 以降

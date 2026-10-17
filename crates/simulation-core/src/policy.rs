@@ -148,8 +148,10 @@ pub mod feature {
     pub const RULE_ACTIVE: usize = 17;
     /// The agent itself stands accused (`Observation::accused`).
     pub const ACCUSED: usize = 18;
-    /// `Observation::adjacent_violator()` finds someone: an agent within
-    /// distance 1 stands accused under a rule that lets a harm answer it.
+    /// `Observation::violator_adjacent()`: an agent within distance 1
+    /// stands accused under a rule that lets a harm answer it — exactly
+    /// when `adjacent_violator()` finds someone, read off the norm
+    /// index's per-cell counts instead of walking the cells.
     pub const VIOLATOR_ADJACENT: usize = 19;
     /// A `SanctionedBy` entry within `MEMORY_HORIZON` ticks.
     pub const SANCTIONED_RECENTLY: usize = 20;
@@ -370,8 +372,9 @@ impl PolicyParams {
 /// Read-only view an agent is allowed to see. Kept narrow on purpose: it is
 /// the seam where Phase 3 cognition (and its information limits) plugs in,
 /// and where Phase 4 adds the normative facts (ADR-0014 D6: `norms` and
-/// the queries `occupied` / `my_standing` / `adjacent_violator` / `rule` /
-/// `open_motion` / `i_voted`), filtered by `Perception.see_standing`.
+/// the queries `occupied` / `my_standing` / `adjacent_violator` /
+/// `violator_adjacent` / `rule` / `open_motion` / `i_voted`), filtered by
+/// `Perception.see_standing`.
 pub struct Observation<'a> {
     pub agent: &'a Agent,
     /// Position of `agent` in `agents` — the key into `norms` and the
@@ -499,6 +502,37 @@ impl Observation<'_> {
         first_adjacent(self, |i| self.norms.harmable(i))
     }
 
+    /// Whether `adjacent_violator()` would find someone, without the walk
+    /// (ADR-0014 4-9): the norm index's count of harmable agents on the
+    /// observer's own cell, less the observer itself, then — when
+    /// `social_radius` reaches them — on the four adjacent cells. Five
+    /// `u16` reads at most, and the same answer as the walk for every
+    /// observation (`tests/nomos_policy.rs`). The reflex feature
+    /// `VIOLATOR_ADJACENT` and the learner bit read this; the Harm
+    /// actuator, which needs the id, the walk.
+    pub fn violator_adjacent(&self) -> bool {
+        if !self.sees_norms() {
+            return false;
+        }
+        let me = self.agent;
+        // The walk skips the observer by id on its own cell. The observer
+        // is in the count only where the slice has it standing: a copy
+        // observed "as if" from another cell is a stranger there.
+        let myself = self.norms.harmable(self.me)
+            && self.agents.get(self.me).is_some_and(|a| a.pos == me.pos);
+        if self.norms.harmable_on(me.pos) > myself as u16 {
+            return true;
+        }
+        if self.config.perception.social_radius == 0 {
+            return false;
+        }
+        Dir::ALL.iter().any(|&d| {
+            self.bounds
+                .step(me.pos, d)
+                .is_some_and(|p| self.norms.harmable_on(p) > 0)
+        })
+    }
+
     /// The rule in force for `kind`, if one is and standing is seen.
     pub fn rule(&self, kind: NormKind) -> Option<&Rule> {
         if self.sees_norms() {
@@ -614,7 +648,7 @@ fn features(
     if obs.sees_norms() {
         x[RULE_ACTIVE] = obs.norms.any_rule() as i64;
         x[ACCUSED] = (obs.norms.flags(obs.me) & NormIndex::ACCUSED != 0) as i64;
-        x[VIOLATOR_ADJACENT] = obs.adjacent_violator().is_some() as i64;
+        x[VIOLATOR_ADJACENT] = obs.violator_adjacent() as i64;
     }
     let sees_standing = cfg.perception.see_standing as i64;
     // One pass over the memory, oldest first: the newest symbol heard last

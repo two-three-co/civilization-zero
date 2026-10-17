@@ -323,7 +323,7 @@ impl World {
     /// force.
     pub fn norm_index(&self) -> NormIndex {
         if self.config.nomos {
-            NormIndex::build(&self.agents, &self.nomos)
+            NormIndex::build(&self.agents, &self.nomos, self.bounds())
         } else {
             NormIndex::empty()
         }

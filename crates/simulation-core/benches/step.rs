@@ -257,10 +257,10 @@ fn bench_norm_index(c: &mut Criterion) {
     let episodes = w.nomos.standing.len();
     let mut g = c.benchmark_group("norm_index");
     g.bench_function(format!("{n}_agents_{episodes}_episodes"), |b| {
-        b.iter(|| NormIndex::build(&w.agents, &w.nomos))
+        b.iter(|| NormIndex::build(&w.agents, &w.nomos, w.bounds()))
     });
     g.bench_function(format!("{n}_agents_empty"), |b| {
-        b.iter(|| NormIndex::build(&empty.agents, &empty.nomos))
+        b.iter(|| NormIndex::build(&empty.agents, &empty.nomos, empty.bounds()))
     });
     g.finish();
 }

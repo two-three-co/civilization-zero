@@ -14,16 +14,32 @@
 //! motion open the index is empty, holds no per-agent bytes, and every
 //! query answers "no" in constant time.
 //!
+//! Beside the flags it keeps, per cell of the grid, how many agents carry
+//! `HARMABLE` (`harmable_on`), so that a policy can tell whether an
+//! accused agent stands within reach by reading five counts instead of
+//! walking five cells (4-9: `Observation::violator_adjacent`, behind the
+//! reflex feature `VIOLATOR_ADJACENT` and the learner bit of that name).
+//! The counts are allocated the first time an agent turns out harmable:
+//! a world with no rule, or none whose sanction set allows a harm, or no
+//! open episode under such a rule, pays nothing for them.
+//!
 //! Construction is one merge walk over `nomos.standing` (ascending by
 //! agent id) and `agents` (ascending by id): O(agents + episodes), no hash
-//! map, no binary search per episode.
+//! map, no binary search per episode, plus the zeroing of the counts when
+//! they are needed (one `u16` per cell).
 
 use super::{MotionKind, Nomos, NormKind, Rule, Sanction, Via};
 use crate::agent::Agent;
+use crate::space::{Bounds, Pos};
 
 pub struct NormIndex {
     /// One flag byte per agent index; empty when nothing is in force.
     flags: Vec<u8>,
+    /// How many agents of each cell (index = `Bounds::index`) carry
+    /// `HARMABLE`, saturating at `u16::MAX`; empty until the first one.
+    harmable: Vec<u16>,
+    /// The grid `harmable` is laid out over.
+    bounds: Bounds,
     /// The rule in force per kind (index = `NormKind::index`).
     rules: [Option<Rule>; NormKind::COUNT],
     /// What the open motion asks for, if one is open.
@@ -44,13 +60,19 @@ impl NormIndex {
     pub fn empty() -> Self {
         Self {
             flags: Vec::new(),
+            harmable: Vec::new(),
+            bounds: Bounds {
+                width: 0,
+                height: 0,
+            },
             rules: [None; NormKind::COUNT],
             motion: None,
         }
     }
 
-    /// Builds the view of `agents` (ascending by id) under `nomos`.
-    pub fn build(agents: &[Agent], nomos: &Nomos) -> Self {
+    /// Builds the view of `agents` (ascending by id, standing on the grid
+    /// `bounds`) under `nomos`.
+    pub fn build(agents: &[Agent], nomos: &Nomos, bounds: Bounds) -> Self {
         let mut rules = [None; NormKind::COUNT];
         for r in &nomos.rules {
             rules[r.norm.kind.index()] = Some(*r);
@@ -59,11 +81,14 @@ impl NormIndex {
         if nomos.rules.is_empty() && motion.is_none() {
             return Self {
                 flags: Vec::new(),
+                harmable: Vec::new(),
+                bounds,
                 rules,
                 motion,
             };
         }
         let mut flags = vec![0u8; agents.len()];
+        let mut harmable: Vec<u16> = Vec::new();
         // Merge walk: both sequences ascend by agent id.
         let mut i = 0usize;
         for s in &nomos.standing {
@@ -79,7 +104,7 @@ impl NormIndex {
             let sanction = nomos
                 .rule(s.rule)
                 .map_or(Sanction::NONE, |r| r.norm.sanction);
-            flags[i] |= Self::ACCUSED
+            let bits = Self::ACCUSED
                 | if sanction.allows(Via::Harm) {
                     Self::HARMABLE
                 } else {
@@ -90,6 +115,16 @@ impl NormIndex {
                 } else {
                     0
                 };
+            // An agent counts once in its cell, however many of its
+            // episodes allow a harm.
+            if bits & Self::HARMABLE != 0 && flags[i] & Self::HARMABLE == 0 {
+                if harmable.is_empty() {
+                    harmable = vec![0u16; bounds.cell_count()];
+                }
+                let c = &mut harmable[bounds.index(agents[i].pos)];
+                *c = c.saturating_add(1);
+            }
+            flags[i] |= bits;
         }
         if let Some(m) = &nomos.motion {
             for voters in [&m.ayes, &m.nays] {
@@ -109,6 +144,8 @@ impl NormIndex {
         }
         Self {
             flags,
+            harmable,
+            bounds,
             rules,
             motion,
         }
@@ -153,6 +190,19 @@ impl NormIndex {
         self.flags(i) & Self::HARMABLE != 0
     }
 
+    /// How many agents standing on `p` are `harmable` (0 with nothing in
+    /// force, with no harmable agent anywhere, or off the grid the index
+    /// was built over); `u16::MAX` stands for that many or more.
+    pub fn harmable_on(&self, p: Pos) -> u16 {
+        if self.harmable.is_empty() {
+            return 0;
+        }
+        self.harmable
+            .get(self.bounds.index(p))
+            .copied()
+            .unwrap_or(0)
+    }
+
     pub fn rejectable(&self, i: usize) -> bool {
         self.flags(i) & Self::REJECTABLE != 0
     }
@@ -178,10 +228,19 @@ mod tests {
     use crate::policy::{PolicyKind, PolicyParams};
     use crate::space::Pos;
 
+    const GRID: Bounds = Bounds {
+        width: 3,
+        height: 2,
+    };
+
     fn agent(id: u64) -> Agent {
+        agent_at(id, Pos::new(0, 0))
+    }
+
+    fn agent_at(id: u64, pos: Pos) -> Agent {
         Agent {
             id: AgentId(id),
-            pos: Pos::new(0, 0),
+            pos,
             energy: 1,
             health: 1,
             inventory: 0,
@@ -257,7 +316,7 @@ mod tests {
             ayes: vec![AgentId(1), AgentId(12)],
             nays: vec![AgentId(9), AgentId(30)],
         });
-        let ix = NormIndex::build(&agents, &n);
+        let ix = NormIndex::build(&agents, &n, GRID);
         assert!(!ix.is_empty() && ix.any_rule());
         assert_eq!(ix.len(), agents.len());
         assert_eq!(ix.motion(), Some(MotionKind::Repeal { rule: 0 }));
@@ -275,13 +334,88 @@ mod tests {
             ix.rule(NormKind::Harm).map(|r| r.norm.except_sanction),
             Some(true)
         );
+        // Everyone stands on (0, 0): the one harmable agent (4) is counted
+        // there and nowhere else.
+        assert_eq!(ix.harmable_on(Pos::new(0, 0)), 1);
+        assert_eq!(ix.harmable_on(Pos::new(1, 0)), 0);
+        assert_eq!(ix.harmable_on(Pos::new(2, 1)), 0);
+    }
+
+    #[test]
+    fn harmable_counts_follow_the_cells_and_count_an_agent_once() {
+        let agents = vec![
+            agent_at(1, Pos::new(0, 0)),
+            agent_at(4, Pos::new(0, 0)),
+            agent_at(6, Pos::new(1, 0)),
+            agent_at(9, Pos::new(2, 1)),
+            agent_at(12, Pos::new(2, 1)),
+        ];
+        let mut n = Nomos::default();
+        n.enact(
+            Norm {
+                kind: NormKind::Encroach,
+                standing_ticks: 8,
+                sanction: Sanction::HARM,
+                except_sanction: false,
+            },
+            0,
+        );
+        n.enact(
+            Norm {
+                kind: NormKind::Harm,
+                standing_ticks: 8,
+                sanction: Sanction::ALL,
+                except_sanction: true,
+            },
+            0,
+        );
+        n.enact(
+            Norm {
+                kind: NormKind::BrokenPromise,
+                standing_ticks: 8,
+                sanction: Sanction::REJECT,
+                except_sanction: false,
+            },
+            0,
+        );
+        // 4: two harm-answerable episodes, counted once; 6: harmable; 9:
+        // accused under the reject-only rule, not harmable; 12: nothing.
+        n.standing = vec![
+            standing(4, 0),
+            standing(4, 1),
+            standing(6, 1),
+            standing(9, 2),
+        ];
+        let ix = NormIndex::build(&agents, &n, GRID);
+        assert_eq!(ix.harmable_on(Pos::new(0, 0)), 1, "4 once, 1 is clean");
+        assert_eq!(ix.harmable_on(Pos::new(1, 0)), 1);
+        assert_eq!(ix.harmable_on(Pos::new(2, 0)), 0);
+        assert_eq!(ix.harmable_on(Pos::new(0, 1)), 0);
+        assert_eq!(ix.harmable_on(Pos::new(1, 1)), 0);
+        assert_eq!(ix.harmable_on(Pos::new(2, 1)), 0, "9 is only rejectable");
+        assert!(ix.harmable(1) && ix.harmable(2) && !ix.harmable(3));
+        // Two more harmable agents on (2, 1): the count follows.
+        n.standing.push(standing(9, 0));
+        n.standing.push(standing(12, 1));
+        let ix = NormIndex::build(&agents, &n, GRID);
+        assert_eq!(ix.harmable_on(Pos::new(2, 1)), 2);
+        assert_eq!(ix.harmable_on(Pos::new(0, 0)), 1);
+        // Rules in force but no harm-answerable episode: every count 0.
+        n.standing = vec![standing(9, 2)];
+        let ix = NormIndex::build(&agents, &n, GRID);
+        assert!(!ix.is_empty() && ix.accused(3));
+        for y in 0..GRID.height {
+            for x in 0..GRID.width {
+                assert_eq!(ix.harmable_on(Pos::new(x, y)), 0);
+            }
+        }
     }
 
     #[test]
     fn nothing_in_force_means_an_empty_index() {
         let agents: Vec<Agent> = (0..5).map(agent).collect();
         let n = Nomos::default();
-        let ix = NormIndex::build(&agents, &n);
+        let ix = NormIndex::build(&agents, &n, GRID);
         assert!(ix.is_empty() && !ix.any_rule());
         assert_eq!(ix.len(), 0);
         assert_eq!(ix.motion(), None);
@@ -289,9 +423,11 @@ mod tests {
             assert_eq!(ix.flags(i), 0);
             assert!(!ix.accused(i) && !ix.harmable(i) && !ix.rejectable(i) && !ix.voted(i));
         }
+        assert_eq!(ix.harmable_on(Pos::new(0, 0)), 0);
         assert!(ix.rule(NormKind::Harm).is_none());
         let e = NormIndex::empty();
         assert!(e.is_empty());
         assert!(!e.accused(0));
+        assert_eq!(e.harmable_on(Pos::new(0, 0)), 0);
     }
 }

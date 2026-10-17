@@ -56,9 +56,10 @@ pub mod state {
     /// earlier, so gathering here would encroach (ADR-0014 D3). Physical;
     /// not hidden by `see_standing`; always 0 with `nomos` off.
     pub const OCCUPIED: u16 = 1 << 5;
-    /// `Observation::adjacent_violator()` finds someone: an agent within
-    /// distance 1 stands accused under a rule that lets a harm answer it
-    /// — exactly when the Harm actuator aims at an accused agent.
+    /// `Observation::violator_adjacent()`: an agent within distance 1
+    /// stands accused under a rule that lets a harm answer it — exactly
+    /// when the Harm actuator (`adjacent_violator()`) aims at an accused
+    /// agent, read off the norm index's per-cell counts.
     pub const VIOLATOR_ADJACENT: u16 = 1 << 6;
     /// The agent itself stands accused (`Observation::accused()`).
     pub const ACCUSED: u16 = 1 << 7;
@@ -143,7 +144,7 @@ pub fn learner_state_masked(
         s |= state::OCCUPIED * obs.occupied() as u16;
     }
     if mask & state::VIOLATOR_ADJACENT != 0 {
-        s |= state::VIOLATOR_ADJACENT * obs.adjacent_violator().is_some() as u16;
+        s |= state::VIOLATOR_ADJACENT * obs.violator_adjacent() as u16;
     }
     if mask & state::ACCUSED != 0 {
         s |= state::ACCUSED * obs.accused() as u16;

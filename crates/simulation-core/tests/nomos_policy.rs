@@ -725,3 +725,259 @@ proptest! {
         prop_assert_eq!(World::from_bytes(&a.to_bytes()).unwrap(), a);
     }
 }
+
+// --- the count predicate behind `VIOLATOR_ADJACENT` (ADR-0014 4-9) -------
+
+/// `f(obs)` for an agent observed "as if" through `World::observation`: a
+/// copy, or a stranger, that need not be in `w.agents`.
+fn with_obs_of<T>(
+    w: &World,
+    a: &simulation_core::Agent,
+    f: impl FnOnce(&policy::Observation<'_>) -> T,
+) -> T {
+    let index = w.spatial_index();
+    let norms = w.norm_index();
+    f(&w.observation(a, &index, &norms))
+}
+
+/// `violator_adjacent()` of `obs`, checked against the walk it stands for.
+fn agreed(obs: &policy::Observation<'_>) -> bool {
+    let fast = obs.violator_adjacent();
+    assert_eq!(
+        fast,
+        obs.adjacent_violator().is_some(),
+        "the count predicate and the walk disagree for {:?} at {:?}",
+        obs.agent.id,
+        obs.agent.pos
+    );
+    fast
+}
+
+/// `violator_adjacent()` of `w.agents[i]`, checked against the walk, the
+/// reflex feature and the learner bit that read it.
+fn violator_adjacent(w: &World, i: usize) -> bool {
+    let fast = with_obs(w, i, agreed);
+    assert_eq!(features_of(w, i)[feature::VIOLATOR_ADJACENT], fast as i64);
+    assert_eq!(fine_of(w, i) & state::VIOLATOR_ADJACENT != 0, fast);
+    fast
+}
+
+#[test]
+fn the_count_predicate_agrees_with_the_walk_in_every_corner() {
+    let (mut w, rule, [me, o, v]) = scene(PolicyKind::Reflex);
+    let (me_id, o_id) = (w.agents[me].id, w.agents[o].id);
+    // The scene: V, accused and harmable, on the cell east of mine.
+    assert!(violator_adjacent(&w, me));
+    assert!(violator_adjacent(&w, o));
+    assert!(!violator_adjacent(&w, v), "nobody accused stands next to V");
+    let norms = w.norm_index();
+    assert_eq!(norms.harmable_on(Pos::new(5, 4)), 1);
+    assert_eq!(norms.harmable_on(Pos::new(4, 4)), 0);
+
+    // Accused myself: counted on my cell, never my own violator.
+    w.nomos.accuse(me_id, rule.id, 18, o_id);
+    assert_eq!(w.norm_index().harmable_on(Pos::new(4, 4)), 1);
+    w.agents[v].pos = Pos::new(7, 7); // V walks out of reach
+    assert!(!violator_adjacent(&w, me), "my own flag does not count");
+    assert!(
+        violator_adjacent(&w, o),
+        "but it counts for the founder beside me"
+    );
+    assert!(!violator_adjacent(&w, v));
+
+    // Two accused on my cell: me and X.
+    let x = reflex_agent(&mut w, Pos::new(4, 4), 50_000, 0);
+    let x_id = w.agents[x].id;
+    assert!(!violator_adjacent(&w, me), "X is not accused yet");
+    w.nomos.accuse(x_id, rule.id, 19, o_id);
+    assert_eq!(w.norm_index().harmable_on(Pos::new(4, 4)), 2);
+    assert!(violator_adjacent(&w, me));
+    assert!(violator_adjacent(&w, x));
+
+    // Radius 0 reaches my own cell only.
+    w.agents[x].pos = Pos::new(4, 3); // X north of me, still accused
+    w.config.perception.social_radius = 0;
+    assert!(
+        !violator_adjacent(&w, me),
+        "X is adjacent but beyond the social radius"
+    );
+    assert!(
+        violator_adjacent(&w, o),
+        "I stand accused on O's cell whatever the radius"
+    );
+    w.config.perception.social_radius = 1;
+    assert!(violator_adjacent(&w, me));
+    w.config.perception.social_radius = 2;
+
+    // Blind: nothing, and agreed.
+    w.config.perception.see_standing = false;
+    assert!(!violator_adjacent(&w, me) && !violator_adjacent(&w, o));
+    w.config.perception.see_standing = true;
+
+    // A rule whose sanction set has no HARM: accused, not harmable, not
+    // counted.
+    w.intervene(Intervention::Repeal { rule: rule.id }).unwrap();
+    assert!(!violator_adjacent(&w, me) && !violator_adjacent(&w, o));
+    let reject_only = enact(&mut w, norm(NormKind::Encroach, 32, Sanction::REJECT));
+    w.nomos.accuse(x_id, reject_only.id, 19, o_id);
+    w.nomos.accuse(me_id, reject_only.id, 19, o_id);
+    assert!(with_obs(&w, x, |obs| obs.accused()));
+    assert_eq!(w.norm_index().harmable_on(Pos::new(4, 3)), 0);
+    assert!(!violator_adjacent(&w, me) && !violator_adjacent(&w, o));
+    w.intervene(Intervention::Repeal {
+        rule: reject_only.id,
+    })
+    .unwrap();
+    let rule = enact(&mut w, norm(NormKind::Encroach, 32, Sanction::ALL));
+    w.nomos.accuse(me_id, rule.id, 19, o_id);
+    w.nomos.accuse(x_id, rule.id, 19, o_id);
+    assert!(violator_adjacent(&w, me) && violator_adjacent(&w, o));
+    w.check_invariants().unwrap();
+
+    // Observed "as if" (`World::observation`): a copy of me — accused —
+    // standing on another cell is a stranger there, so that cell's count
+    // is not reduced for it, exactly as the walk skips nobody there.
+    let y = reflex_agent(&mut w, Pos::new(1, 1), 50_000, 0);
+    let y_id = w.agents[y].id;
+    w.nomos.accuse(y_id, rule.id, 19, o_id);
+    let mut copy = w.agents[me].clone();
+    copy.pos = Pos::new(1, 1); // alone with Y, who is accused
+    assert!(with_obs_of(&w, &copy, agreed));
+    copy.pos = Pos::new(1, 0); // north of Y: adjacent
+    assert!(with_obs_of(&w, &copy, agreed));
+    copy.pos = Pos::new(7, 0); // nobody near
+    assert!(!with_obs_of(&w, &copy, agreed));
+    // A copy still on my own cell is myself: X beside me counts, I do not.
+    copy.pos = Pos::new(4, 4);
+    w.agents[x].pos = Pos::new(4, 4);
+    assert!(with_obs_of(&w, &copy, agreed));
+    w.agents[x].pos = Pos::new(7, 7);
+    assert!(
+        !with_obs_of(&w, &copy, agreed),
+        "alone with O, who stands accused of nothing"
+    );
+    // A stranger (an id no agent carries) on my cell sees me, the accused.
+    let mut stranger = w.agents[me].clone();
+    stranger.id = AgentId(999);
+    assert!(with_obs_of(&w, &stranger, agreed));
+    stranger.pos = Pos::new(7, 0);
+    assert!(!with_obs_of(&w, &stranger, agreed));
+    w.check_invariants().unwrap();
+}
+
+/// Over a crowded world under the first-occupancy rule — reflex agents
+/// mutating, 128-row learners exploring, so that harms, sanctions and
+/// accused neighbours all happen — the count predicate and the walk agree
+/// for every agent at every tick, and so do the serial and the parallel
+/// decisions that read it.
+#[test]
+fn the_count_predicate_agrees_with_the_walk_over_a_ruled_world() {
+    let cfg = WorldConfig {
+        nomos: true,
+        mutation_enabled: true,
+        learner_states: 128,
+        ..small(7)
+    };
+    let mix = |i: u32| {
+        if i % 2 == 0 {
+            PolicyKind::Reflex
+        } else {
+            PolicyKind::Learner
+        }
+    };
+    let mut w = World::generate(cfg, mix).unwrap();
+    w.intervene(Intervention::Enact {
+        norm: norm(NormKind::Encroach, 32, Sanction::HARM),
+    })
+    .unwrap();
+    let (mut seen, mut checked) = (0usize, 0usize);
+    for _ in 0..300 {
+        let index = w.spatial_index();
+        let norms = w.norm_index();
+        for i in 0..w.agents.len() {
+            let obs = w.observation_at(i, &index, &norms);
+            seen += agreed(&obs) as usize;
+            checked += 1;
+        }
+        let serial = w.decide_all_with(&index, &norms);
+        #[cfg(feature = "parallel")]
+        assert_eq!(w.decide_all_parallel_with(&index, &norms), serial);
+        w.apply_with(serial, &index, &norms);
+    }
+    assert!(
+        seen > 0,
+        "no accused neighbour in 300 ticks: the test exercises nothing"
+    );
+    assert!(
+        w.ledger.sanctions.iter().sum::<u64>() > 0,
+        "nobody sanctioned anyone"
+    );
+    w.check_invariants().unwrap();
+    eprintln!("{seen} of {checked} observations had an accused neighbour within reach");
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 12, .. ProptestConfig::default() })]
+
+    /// The count predicate (`violator_adjacent`) is the walk
+    /// (`adjacent_violator`) for every agent of every tick, whatever the
+    /// rules, the perception, the social radius and the row count — and
+    /// serial and parallel decisions, which read it, agree.
+    #[test]
+    fn the_count_predicate_is_the_walk_everywhere(
+        seed in any::<u64>(),
+        norms in prop::collection::vec(norm_strategy(), 1..=2),
+        rows in prop_oneof![Just(32u16), Just(128)],
+        see_standing in any::<bool>(),
+        social_radius in 0u16..=2,
+        mutation in any::<bool>(),
+        ticks in 1u64..=40,
+    ) {
+        let cfg = WorldConfig {
+            seed,
+            width: 24,
+            height: 24,
+            initial_agents: 100,
+            patch_count: 3,
+            birth_threshold: Some(60_000),
+            child_energy: 30_000,
+            mutation_enabled: mutation,
+            learner_states: rows,
+            nomos: true,
+            perception: simulation_core::Perception {
+                see_standing,
+                social_radius,
+                ..Default::default()
+            },
+            ..WorldConfig::default()
+        };
+        let mix = |i: u32| match i % 3 { 0 => PolicyKind::Reflex, 1 => PolicyKind::Learner, _ => PolicyKind::Forager };
+        let mut a = World::generate(cfg, mix).unwrap();
+        for n in &norms {
+            a.intervene(Intervention::Enact { norm: *n }).unwrap();
+        }
+        let mut b = a.clone();
+        for _ in 0..ticks {
+            let index = a.spatial_index();
+            let norms = a.norm_index();
+            for i in 0..a.agents.len() {
+                let obs = a.observation_at(i, &index, &norms);
+                prop_assert_eq!(
+                    obs.violator_adjacent(),
+                    obs.adjacent_violator().is_some(),
+                    "agent {:?} at tick {}",
+                    a.agents[i].id,
+                    a.tick
+                );
+            }
+            let ra = a.step();
+            #[cfg(feature = "parallel")]
+            let rb = b.step_parallel();
+            #[cfg(not(feature = "parallel"))]
+            let rb = b.step();
+            prop_assert_eq!(ra, rb);
+        }
+        prop_assert_eq!(a.state_hash(), b.state_hash());
+        prop_assert!(a.check_invariants().is_ok(), "{:?}", a.check_invariants());
+    }
+}
