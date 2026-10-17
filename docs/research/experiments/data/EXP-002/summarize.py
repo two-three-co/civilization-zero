@@ -55,7 +55,7 @@ def arm_table(label, name, rs):
     print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for r in rs:
         print("| {seed} | {fin} | {ext} | {wm} | {wmin} | {wmax} | {ratio} | {b} | {ds} | {da} | {dv} | {cons} | {xf} | {hm} | {sg} | {ah} | {at} | {asg} | {ar} | {am} | {q} | {dq} | {dr} | {hu} | {tps} |".format(
-            seed=r["seed"], fin=r["final_alive"], ext=r["extinct_at"], wm=fmt(f(r, "win_mean")),
+            seed=r["seed"], fin=r["final_alive"], ext=r["extinct_at"], wm=fmt(f(r, "win_mean"), 2),
             wmin=r["win_min"], wmax=r["win_max"], ratio=fmt(f(r, "win_max_over_min"), 3),
             b=r["births"], ds=r["deaths_starvation"], da=r["deaths_old_age"], dv=r.get("deaths_violence", ""),
             cons=fmt(f(r, "win_consumed_per_agent_tick"), 4), xf=fmt(f(r, "win_transfers_per_tick"), 2),
@@ -160,5 +160,68 @@ def main():
             print(f"{label}: qpolicy — 好みのある行（seed × 行）{visited}、多数派の種類別の行数: " + ", ".join(f"{k} {v}" for k, v in maj.items() if k != "tie"))
 
 
+def posthoc(data):
+    """Descriptive statistics added after the run (2026-10-17), not part of
+    the pre-registered checks: turnover, total harvest, standing food, the
+    action mix per arm and the greedy policy per Q row across seeds."""
+    import collections
+    import statistics as st
+    print("\n### 追加の記述統計（事後）\n")
+    print("| 腕 | 出生/t | 死亡/t | 寿命 ≈ 個体数/出生率 | 採集/体·tick | 摂取/体·tick | 総摂取/t | 立っている食料（窓平均） |")
+    print("|---|---|---|---|---|---|---|---|")
+    for label, name in ARMS:
+        rs = data.get(label)
+        if not rs or all(r["extinct_at"] != "-" for r in rs):
+            continue
+        ticks = int(rs[0]["win_ticks"])
+        bpt = st.mean(f(r, "win_births_per_tick") for r in rs)
+        dpt = st.mean((int(r["win_deaths_starvation"]) + int(r["win_deaths_old_age"]) + int(r["win_deaths_violence"])) / ticks for r in rs)
+        gat = st.mean(f(r, "win_gathered_per_agent_tick") for r in rs)
+        con = st.mean(f(r, "win_consumed_per_agent_tick") for r in rs)
+        pop = st.mean(f(r, "win_mean") for r in rs)
+        path = os.path.join(HERE, f"{name}_series.csv")
+        food = []
+        with open(path, newline="") as fh:
+            for r in csv.DictReader(fh):
+                if int(r["tick"]) > ticks:  # window = ticks above win_start = total − window length
+                    food.append(int(r["food"]))
+        print(f"| {label} | {bpt:.3f} | {dpt:.3f} | {pop / bpt:.0f} | {gat:.4f} | {con:.4f} | {pop * con:.1f} | {st.mean(food):.0f}（sd {st.pstdev(food):.0f}） |")
+    kinds = ["move", "gather", "consume", "rest", "transfer", "store", "harm", "signal"]
+    print("\n| 腕 | " + " | ".join(kinds) + " |")
+    print("|---|" + "---|" * len(kinds))
+    for label, _ in ARMS:
+        rs = data.get(label)
+        if not rs or all(r["extinct_at"] != "-" for r in rs):
+            continue
+        print(f"| {label} | " + " | ".join(f"{st.mean(f(r, 'win_act_' + k) for r in rs):.4f}" for k in kinds) + " |")
+    qp = os.path.join(HERE, "learner32_qpolicy.csv")
+    if os.path.exists(qp):
+        per_row = collections.defaultdict(list)
+        with open(qp, newline="") as fh:
+            for r in csv.DictReader(fh):
+                learners, tie = int(r["learners"]), int(r["tie"])
+                if learners == 0:
+                    continue
+                if tie == learners:
+                    per_row[int(r["row"])].append(("untouched", 1.0))
+                    continue
+                counts = {k: int(r[k]) for k in kinds}
+                best = max(kinds, key=lambda k: counts[k])
+                per_row[int(r["row"])].append((best, counts[best] / learners))
+        print("\nL32 の行ごとの貪欲行動（終了時。多数派の種類と、それが多数派だったシード数、その種類を選ぶ学習者の割合の平均）\n")
+        print("| 行 | hungry | has_food | food_here | food_in_sight | adjacent | 多数派 | シード | 割合 |")
+        print("|---|---|---|---|---|---|---|---|---|")
+        for row in range(32):
+            lst = per_row.get(row, [])
+            if not lst:
+                continue
+            c = collections.Counter(k for k, _ in lst)
+            modal, cnt = c.most_common(1)[0]
+            share = st.mean(sh for k, sh in lst if k == modal)
+            bits = " | ".join(str((row >> i) & 1) for i in range(5))
+            print(f"| {row} | {bits} | {modal} | {cnt}/10 | {share:.2f} |")
+
+
 if __name__ == "__main__":
     main()
+    posthoc({label: rows(name) for label, name in ARMS})
