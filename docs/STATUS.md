@@ -1,13 +1,13 @@
 # 実装進捗（新しいセッションはまずここを読む）
 
-最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · **Phase 2 = Toy 1 進行中（2a-1, 2a-2, 2a-4〜2a-6, 2b-1〜2b-6 済。残り 2b-7 配信とチュートリアル、2a-3）**（ADR-0010）· カーネル版 `simulation-core 0.1.0`
+最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · **Phase 2 = Toy 1: 機能完了（2a-1, 2a-2, 2a-4〜2a-6, 2b-1〜2b-7 済）。配信 URL の確定のみ残る（private リポジトリの Pages は要プラン）。2a-3 は Toy 1 に不要で保留**（ADR-0010）· カーネル版 `simulation-core 0.1.0`
 リポジトリ: https://github.com/two-three-co/civilization-zero（private）· CI: GitHub Actions（fmt / clippy / test debug+release / wasm ビルド）
 
 ## 状態の区別
 
 - **実装済み・テスト通過・計測済み**: 下表の Phase 1 項目、ADR-0008 のライフサイクル、ADR-0009 の wasm 計測。
-- **設計のみ**: Phase 2 の 2a-3、2b-7（ADR-0010 のタスク表）、Phase 3 以降。
-- **未着手**: Nomos / Genesis の全コード。`web/` は本物のカーネル（wasm）で観察・巻き戻し・介入・分岐比較ができる（PRODUCT.md の Toy 1 基準 1〜3 を満たす機能は揃った）。残りは静的配信とチュートリアル（基準 4、2b-7）。
+- **設計のみ**: Phase 2 の 2a-3（保留）、Phase 3 以降。
+- **未着手**: Nomos / Genesis の全コード。`web/` は本物のカーネル（wasm）で観察・巻き戻し・介入・分岐比較・再現性検証ができ、5 分ツアー付き（PRODUCT.md の Toy 1 基準 1〜4 を満たす。基準 4 は静的ビルドで満たすが、公開 URL は配信先の決定待ち）。
 
 ## Phase 1 チェックリスト
 
@@ -48,7 +48,15 @@
 | 2b-4 | 巻き戻し: Worker が `seek` の所要時間を計測、UI に「last seek: N ms（re-ran M）」を表示。ドラッグ中のシークは最新のみ処理（間引き）。任意 tick への `Go` 入力 | 済 (2026-10-17) | 最悪ケース（間隔 250 → 249 tick 再実行）**45〜56 ms**、124 tick 再実行 30 ms、スナップショット上 0 ms。目標 ≤ 200 ms |
 | 2b-5 | 介入パネル（干ばつ・資源量スケール・個体追加・個体除去）、プロトコルに `intervene` / `history`、履歴は **台帳から読み戻し**（`WasmWorld::interventions_json`）。head 以外では Apply 無効（分岐は 2b-6） | 済 (2026-10-17) | UI で tick 300 に干ばつ（regrow 0 / 10）を適用 → 履歴「tick 300 drought」→ tick 600 / 900 のハッシュが native `cz run --drought-at 300 --drought-amount 0 --drought-interval 10` と一致（`0x4392fb01743338c5` / `0x4be57883bb1d1a06`）。`tests/native.rs::intervention_history_comes_from_the_ledger` |
 | 2b-6 | 分岐の並列比較: `WasmWorld::fromSnapshot`（fork はワーカー境界をバイナリスナップショットで越える。`Multiverse::fork` と bit 一致）、プロトコル v2（`snapshot` 要求、`init` に `snapshot`、`Frame.origin`）、「Fork here」（任意 tick）、2 ワーカー同期再生・同期シーク、分割表示、A/B の人口・食料・ハッシュ比較表、スパークライン重ね描き、「Verify: fork again」（同一スナップショット + 同一介入で作り直して同 tick のハッシュ照合） | 済 (2026-10-17) | `tests/native.rs::a_fork_built_from_a_snapshot_matches_multiverse_fork_and_is_reproducible`。**ブラウザ**: fork 21 ms、2 世界同期で 1,800 tick/s・60 fps、tick 400 で A / B のハッシュが native `cz run --ticks 400`（無介入 / `--drought-at 300`）と一致、Verify = MATCH（90 ms） |
-| 2a-3, 2b-7 | Store/Transfer + `Acted`、配信とチュートリアル | 未 | — |
+| 2b-7 | アプリ内「Five-minute tour」（5 ステップを世界の状態から自動判定: 観察 → 巻き戻し → 介入 → 分岐 → Verify）、[docs/TUTORIAL.md](TUTORIAL.md)、ビルドにコミットを刻印（フッタ「built from commit …」）、`.github/workflows/pages.yml`（GitHub Pages。リポジトリ変数 `PAGES_ENABLED=true` と Settings → Pages の有効化で動く）、CI が `web/dist` を `toy1-dist` アーティファクトとして保存 | 済 (2026-10-17)。**配信先は要決定**（下記） | 本番ビルドをサブパス `/civilization-zero/` で配信してブラウザ検証: kernel バッジ、wasm/Worker の相対パス解決、ツアー 5/5 到達、Verify = MATCH |
+| 2a-3 | Store/Transfer + `Acted` | 未（Toy 1 に不要） | — |
+
+### 配信
+
+- 静的ファイルのみ（`web/dist`: HTML + JS + CSS + wasm + Worker、約 420 KB、サーバー不要）。PRODUCT.md 基準 4 を満たす。
+- GitHub Pages: **リポジトリが private のため、org のプランが Pages 対応（Team 以上）か、リポジトリを public にする必要がある**。有効化手順: Settings → Pages → Source: GitHub Actions、`gh variable set PAGES_ENABLED --body true`。URL は `https://two-three-co.github.io/civilization-zero/` の見込み。
+- 代替: 各 CI 実行の `toy1-dist` アーティファクトを配る（unzip して静的サーバーで配信）。
+- 配信 URL: **未設定**（決定後にここへ記録）。
 
 ## 計測値（Apple M1, rustc 1.99.1, release, 2026-10-17）
 

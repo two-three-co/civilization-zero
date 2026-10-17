@@ -4,6 +4,7 @@ import { WorldClient } from "./client";
 import { InterventionPanel } from "./Intervene";
 import { AGENT_FIELDS, type Frame, type Intervention, type InterventionEvent, type WorldInit } from "./protocol";
 import { drawFrame, drawSparkline, pickAgent, SCALE, type Sample } from "./render";
+import { Tutorial } from "./Tutorial";
 
 const DEFAULT_WORLD: WorldInit = { seed: 42, width: 128, height: 128, agents: 1000, snapshotEvery: 250 };
 const SPEEDS = [1, 4, 15, 30];
@@ -61,6 +62,7 @@ export default function App() {
   const [goTo, setGoTo] = useState("");
   const [forkMs, setForkMs] = useState<number | null>(null);
   const [verification, setVerification] = useState<Verification | null>(null);
+  const [rewound, setRewound] = useState(false);
 
   const show = useCallback((f: Frame) => {
     history.current.set(f.tick, { alive: f.alive, food: f.foodTotal });
@@ -168,6 +170,7 @@ export default function App() {
             ]);
             const ms = f.timing?.seekMs ?? performance.now() - t0;
             setLastSeek({ tick: f.tick, ms, reran: f.tick === f.frontier ? 0 : f.tick % f.snapshotEvery });
+            if (f.tick < f.frontier) setRewound(true);
             show(f);
             if (fb) showB(fb);
           }
@@ -348,6 +351,7 @@ export default function App() {
           </p>
         </section>
         <aside>
+          <Tutorial frame={frame} frameB={frameB} events={events} verification={verification} rewound={rewound} />
           <div className="card">
             <h2>World A</h2>
             <dl>
@@ -439,7 +443,8 @@ export default function App() {
       </main>
       <footer className="muted">
         canvas {frame ? `${frame.width * SCALE}×${frame.height * SCALE}` : ""} · {AGENT_FIELDS} fields per agent · worker protocol
-        v2 (web/src/protocol.ts) · one worker per world
+        v2 (web/src/protocol.ts) · one worker per world · built from commit {__COMMIT__} · static files only, nothing
+        leaves this tab
       </footer>
     </>
   );

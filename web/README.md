@@ -49,6 +49,18 @@ cd web && npm install && npm run build:wasm && npm run dev
 - `cargo test -p cz-web`: ラッパーがカーネルと同一の状態・ハッシュを出す、seek → step が head に合流する、介入は head のみ。
 - `wasm-pack test --node crates/cz-web --release`: **wasm 上で native のゴールデンハッシュに到達する**（CI）。
 
+## 配信
+
+`npm run build` の `dist/` は静的ファイルだけ（`base: "./"` なのでサブパスでも動く）。フッタにビルド元のコミットが出る。
+
+- GitHub Pages: `.github/workflows/pages.yml`。Settings → Pages で Source を GitHub Actions にし、リポジトリ変数 `PAGES_ENABLED=true` を設定すると `main` への push で配信される。private リポジトリでは Pages 対応プランが要る。
+- 配布: CI の `toy1-dist` アーティファクトを unzip し、任意の静的サーバーで配信する（`file://` では Worker が動かないブラウザがある）。
+- ローカル確認: `python3 -m http.server 8766` を `dist` の親ディレクトリで実行し `/dist/` を開く。
+
+## チュートリアル
+
+右列の「Five-minute tour」カードが 5 ステップ（観察 → 巻き戻し → 介入 → 分岐 → Verify）を世界の状態から自動判定する。本文は [docs/TUTORIAL.md](../docs/TUTORIAL.md)。
+
 ## 次
 
-2b-7（静的配信とチュートリアル）。これで PRODUCT.md の Toy 1 受け入れ基準 4 つが揃う。
+Toy 1 は機能完了。残りは配信 URL の確定（STATUS.md）。その後 Phase 3（docs/PRODUCT.md の Phase 別デモ）。

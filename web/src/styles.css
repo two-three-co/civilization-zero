@@ -135,6 +135,63 @@ main {
 .hint.bad {
   color: #dc2626;
 }
+.tour {
+  border-color: var(--forager);
+}
+.steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.steps li {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  opacity: 0.6;
+}
+.steps li.current,
+.steps li.done {
+  opacity: 1;
+}
+.steps li p {
+  margin: 2px 0 0;
+}
+.steps .mark {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1px;
+}
+.steps li.done .mark {
+  background: rgb(var(--food));
+  border-color: rgb(var(--food));
+  color: #fff;
+}
+.steps li.current .mark {
+  border-color: var(--forager);
+  color: var(--forager);
+}
+button.link {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--muted);
+  text-decoration: underline;
+  cursor: pointer;
+  font-size: 12px;
+}
+.tour-toggle {
+  margin: 6px 0 0;
+}
 .controls {
   display: flex;
   gap: 8px;

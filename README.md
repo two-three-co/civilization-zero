@@ -50,7 +50,7 @@ python3 -m http.server 8765 --bind 127.0.0.1
 cargo run --release -p cz-cli -- run --ticks 20000 --log out/events.jsonl && cargo run --release -p cz-cli -- log --path out/events.jsonl --from 1000 --to 1002
 ```
 
-Toy 1 の UI（本物のカーネルを wasm で実行。`wasm-pack` が必要。`web/README.md` 参照）:
+Toy 1 の UI（本物のカーネルを wasm で実行。`wasm-pack` が必要。遊び方は [docs/TUTORIAL.md](docs/TUTORIAL.md)、構成は `web/README.md`）:
 
 ```bash
 cd web && npm install && npm run build:wasm && npm run dev
