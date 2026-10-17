@@ -133,23 +133,48 @@ fn forager(obs: &Observation<'_>, rng: &mut RngStream) -> Intent {
     //    but a scan costs a handful of draws instead of one per cell.
     if a.inventory < cfg.inventory_capacity {
         let mut best: Option<(u32, u32, Option<u64>, Pos)> = None;
-        for p in obs.bounds.diamond(a.pos, cfg.vision_radius) {
-            let f = obs.resources.food_at(p);
-            if f == 0 || p == a.pos {
+        // Visits exactly the cells of `Bounds::diamond(a.pos, r)` in the same
+        // row-major order, but walks each row as one contiguous slice of the
+        // food grid: no per-cell bounds check or iterator chain. Because the
+        // order is identical, the winning cell and the number of lottery
+        // keys drawn are identical too (the golden hash proves it).
+        let (w, h) = (obs.bounds.width as i32, obs.bounds.height as i32);
+        let r = cfg.vision_radius as i32;
+        let (cx, cy) = (a.pos.x as i32, a.pos.y as i32);
+        let food = &obs.resources.food;
+        for dy in -r..=r {
+            let y = cy + dy;
+            if y < 0 || y >= h {
                 continue;
             }
-            let rank = (f, u32::MAX - a.pos.manhattan(p));
-            match best {
-                Some((bf, bd, _, _)) if (bf, bd) > rank => {}
-                Some((bf, bd, ref mut bkey, ref mut bpos)) if (bf, bd) == rank => {
-                    let bk = *bkey.get_or_insert_with(|| rng.next_u64());
-                    let k = rng.next_u64();
-                    if k > bk {
-                        *bkey = Some(k);
-                        *bpos = p;
-                    }
+            let span = r - dy.abs();
+            let (x0, x1) = ((cx - span).max(0), (cx + span).min(w - 1));
+            if x0 > x1 {
+                continue;
+            }
+            let row = y as usize * w as usize;
+            for (i, &f) in food[row + x0 as usize..=row + x1 as usize]
+                .iter()
+                .enumerate()
+            {
+                let x = x0 + i as i32;
+                if f == 0 || (dy == 0 && x == cx) {
+                    continue;
                 }
-                _ => best = Some((rank.0, rank.1, None, p)),
+                let p = Pos::new(x as u16, y as u16);
+                let rank = (f, u32::MAX - ((x - cx).abs() + dy.abs()) as u32);
+                match best {
+                    Some((bf, bd, _, _)) if (bf, bd) > rank => {}
+                    Some((bf, bd, ref mut bkey, ref mut bpos)) if (bf, bd) == rank => {
+                        let bk = *bkey.get_or_insert_with(|| rng.next_u64());
+                        let k = rng.next_u64();
+                        if k > bk {
+                            *bkey = Some(k);
+                            *bpos = p;
+                        }
+                    }
+                    _ => best = Some((rank.0, rank.1, None, p)),
+                }
             }
         }
         if let Some((_, _, _, target)) = best {

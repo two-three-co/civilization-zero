@@ -58,6 +58,30 @@ fn bench_step(c: &mut Criterion) {
     g.finish();
 }
 
+/// The decide phase alone, over the ten consecutive states of one regrowth
+/// period, so it can be compared with `step/serial/1000` (step − decide ≈ apply).
+fn bench_decide(c: &mut Criterion) {
+    let mut w = warmed_world(1_000, 128);
+    let states: Vec<World> = (0..10)
+        .map(|_| {
+            let s = w.clone();
+            w.step();
+            s
+        })
+        .collect();
+    let agent_steps: u64 = states.iter().map(|s| s.agents.len() as u64).sum();
+    let mut g = c.benchmark_group("decide");
+    g.throughput(Throughput::Elements(agent_steps));
+    g.bench_function("serial/1000", |b| {
+        b.iter(|| {
+            for s in &states {
+                criterion::black_box(s.decide_all());
+            }
+        })
+    });
+    g.finish();
+}
+
 fn bench_hash(c: &mut Criterion) {
     let w = warmed_world(1_000, 128);
     c.bench_function("state_hash/1000", |b| b.iter(|| w.state_hash()));
@@ -66,5 +90,5 @@ fn bench_hash(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_step, bench_hash);
+criterion_group!(benches, bench_step, bench_decide, bench_hash);
 criterion_main!(benches);
