@@ -29,7 +29,7 @@ pub use config::{Perception, WorldConfig};
 pub use event::{DeathCause, Event};
 pub use event_log::{EventLog, LogError};
 pub use intervention::{Intervention, InterventionError};
-pub use memory::{Interaction, InteractionKind, Message, Signal};
+pub use memory::{Interaction, InteractionKind, Message, Signal, Terms};
 pub use policy::{Intent, Neighbor, Observation, PolicyKind, PolicyParams};
 pub use space::{Dir, Pos};
 pub use spatial::SpatialIndex;

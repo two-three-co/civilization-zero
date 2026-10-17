@@ -9,13 +9,18 @@
 //! | Transfer{to, n}   | `to` alive, not self, adjacent at S(t) (Manhattan <= 1), inventory > 0 | `transfer_cost` (paid on attempt) | min(n, inventory, `to`'s free space) food moves to `to`; actors resolved in id order | `NoSuchTarget`, `NotAdjacent`, `EmptyInventory`, `TargetFull` (cost paid) |
 //! | Store(n)          | inventory > 0                                             | 0                                  | min(n, inventory) food onto the own cell (no capacity cap)         | `EmptyInventory`                                             |
 //! | Harm{target}      | target alive, not self, adjacent at S(t)                  | `harm_cost` (paid on attempt)      | target.health -= `harm_damage`; stacks; a death this tick is `Violence` | `NoSuchTarget`, `NotAdjacent` (cost paid)                   |
-//! | Signal(m)         | -                                                         | `signal_cost`                      | `last_signal := (t, m)`; others within `signal_radius` at S(t) hear it now and see it next tick | -                              |
+//! | Signal(Say)       | -                                                         | `signal_cost`                      | `last_signal := (t, m)`; others within `signal_radius` at S(t) hear it now and see it next tick | -                              |
+//! | Signal(Propose)   | `to` alive, not self, within `signal_radius` at S(t)      | `signal_cost` (paid on attempt)    | `to` remembers `ProposalFrom`; `Event::Proposed`                   | `NoSuchTarget`, `OutOfEarshot` (cost paid)                   |
+//! | Signal(Accept)    | as Propose, and the actor remembers `ProposalFrom` from `to` at `offer_tick` | `signal_cost` (paid on attempt) | both remember `Promised`, `to` also `Accepted`; `Event::Accepted` | `NoSuchTarget`, `OutOfEarshot`, `NoSuchOffer` (cost paid)   |
+//! | Signal(Reject)    | as Propose                                                | `signal_cost` (paid on attempt)    | `to` remembers `Rejected`; `Event::Rejected`                       | `NoSuchTarget`, `OutOfEarshot` (cost paid)                   |
 //!
 //! `metabolism_cost` is paid every tick regardless of action. Failures here
 //! are *physical* infeasibility; rule violations (Phase 4) are a different
 //! concept and will never be represented by `Failure`. The social actions
 //! (ADR-0013 D3) are deliberately generic primitives: nothing here is named
-//! after an institution.
+//! after an institution. Negotiation messages (ADR-0013 D5, 3-4) are
+//! delivered and recorded, never enforced: a broken promise is not a
+//! `Failure` of anything, it is a fact the ledger shows.
 
 use crate::agent::AgentId;
 use crate::memory::Message;
@@ -41,7 +46,8 @@ pub enum Action {
         target: AgentId,
     },
     /// Say something (ADR-0013 D5): agents within `signal_radius` hear it
-    /// this tick and see it in the next tick's observation.
+    /// this tick and see it in the next tick's observation. Or address a
+    /// negotiation message to one agent within `signal_radius` (3-4).
     Signal(Message),
 }
 
@@ -77,10 +83,18 @@ pub enum Failure {
     TargetFull,
     /// No *other* living agent has that id.
     NoSuchTarget,
+    /// The addressee of a message is beyond `signal_radius` (at the tick's
+    /// start positions). Distinct from `NotAdjacent`, whose reach is one cell.
+    OutOfEarshot,
+    /// `Accept` named a proposal the acceptor holds no memory of: no
+    /// `ProposalFrom` from `to` at `offer_tick` in `recent`. One cannot
+    /// accept what one does not hold, as one cannot give what one does not
+    /// carry (`EmptyInventory`).
+    NoSuchOffer,
 }
 
 impl Failure {
-    pub const COUNT: usize = 9;
+    pub const COUNT: usize = 11;
 
     pub fn index(self) -> usize {
         self as usize

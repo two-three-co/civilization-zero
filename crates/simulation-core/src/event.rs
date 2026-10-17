@@ -82,11 +82,43 @@ pub enum Event {
         action: Action,
         outcome: Outcome,
     },
-    /// A signal was made (`Action::Signal`). Recorded when `record_signals`.
+    /// A `Say` was made (`Action::Signal(Message::Say)`). Recorded when
+    /// `record_signals`. Negotiation messages have their own, always-recorded
+    /// events below; an undelivered message is recorded nowhere.
     Signaled {
         tick: u64,
         agent: AgentId,
         message: Message,
+    },
+    /// `from`'s proposal reached `to` (ADR-0013 D5, 3-4): "I give you `give`
+    /// now; give me `want` back by tick `tick + by`". Always recorded — it is
+    /// the first half of the material from which Phase 4 judges fulfilment.
+    Proposed {
+        tick: u64,
+        from: AgentId,
+        to: AgentId,
+        give: u8,
+        want: u8,
+        by: u16,
+    },
+    /// `from` accepted the proposal `to` made at `offer_tick`. The terms are
+    /// repeated so the record stands alone: `to` owes `from` `give` now, and
+    /// `from` owes `to` `want` by `offer_tick + by`. Whether either
+    /// `Transferred` follows is not the kernel's business. Always recorded.
+    Accepted {
+        tick: u64,
+        from: AgentId,
+        to: AgentId,
+        offer_tick: u64,
+        give: u8,
+        want: u8,
+        by: u16,
+    },
+    /// `from` declined `to`'s proposal. Always recorded.
+    Rejected {
+        tick: u64,
+        from: AgentId,
+        to: AgentId,
     },
 }
 
@@ -99,7 +131,10 @@ impl Event {
             | Event::Transferred { tick, .. }
             | Event::Harmed { tick, .. }
             | Event::Acted { tick, .. }
-            | Event::Signaled { tick, .. } => *tick,
+            | Event::Signaled { tick, .. }
+            | Event::Proposed { tick, .. }
+            | Event::Accepted { tick, .. }
+            | Event::Rejected { tick, .. } => *tick,
         }
     }
 }

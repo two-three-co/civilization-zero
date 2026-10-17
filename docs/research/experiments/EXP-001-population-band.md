@@ -106,6 +106,7 @@ Random 方策は 3-2 で社会行動（`Transfer` / `Store` / `Harm`）も一様
 7 行動版のもの。3-2 以降の Random は加害の試行コスト（既定 2,000）で急速に消耗し、1,000 体が tick 100 で約 200 体、tick 300 で絶滅する
 （`cz run --policy random`、seed 42）。Forager の結果は影響を受けない（ゴールデン不変）。
 3-3 で Random は `Signal(Say)` も抽選するようになった（11 行動）ので軌跡はさらに変わる（seed 42: tick 100 で 223 体、tick 200 で 6 体）。Forager は不変。
+3-4 で Random は `Propose` / `Accept` / `Reject` も抽選する（14 行動）。加害を引く確率が 1/11 → 1/14 に下がった分だけ消耗が遅く、seed 42 では tick 100 で 362 体、tick 200 で 2 体、tick 300 で絶滅（最初の 100 tick に提案 3,246、受諾 1,196、拒否 1,203 が届いた）。Forager は不変（ゴールデン `0x658ee873d1866501`）。
 
 ## データ
 

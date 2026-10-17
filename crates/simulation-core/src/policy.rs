@@ -8,7 +8,7 @@
 use crate::action::Action;
 use crate::agent::{Agent, AgentId, Memory};
 use crate::config::WorldConfig;
-use crate::memory::Message;
+use crate::memory::{InteractionKind, Message};
 use crate::resources::ResourceGrid;
 use crate::rng::RngStream;
 use crate::space::{Bounds, Dir, Pos};
@@ -129,28 +129,55 @@ pub fn decide(obs: &Observation<'_>, rng: &mut RngStream) -> Intent {
 }
 
 fn random(obs: &Observation<'_>, rng: &mut RngStream) -> Intent {
-    // Uniform over the whole vocabulary, social actions included (ADR-0013
-    // D3): the null model must be able to do everything a learner can.
-    // Targets are drawn from adjacent agents; with nobody in reach the agent
-    // rests instead.
-    let adjacent = |rng: &mut RngStream| {
+    // Uniform over the whole vocabulary, social actions and negotiation
+    // included (ADR-0013 D3, D5): the null model must be able to do
+    // everything a learner can. Targets are drawn from agents in reach
+    // (adjacent for Transfer / Harm, within signal_radius for Propose); an
+    // Accept or Reject answers the latest proposal in memory. With nobody in
+    // reach or nothing to answer the agent rests instead.
+    let within = |rng: &mut RngStream, reach: u32| {
         let near: Vec<AgentId> = obs
             .neighbors()
             .into_iter()
-            .filter(|n| n.distance <= 1)
+            .filter(|n| n.distance <= reach)
             .map(|n| n.id)
             .collect();
         (!near.is_empty()).then(|| near[rng.below(near.len() as u64) as usize])
     };
-    let action = match rng.below(11) {
+    let latest_offer = || {
+        obs.agent
+            .recent
+            .iter()
+            .rev()
+            .find(|e| e.kind == InteractionKind::ProposalFrom)
+    };
+    let earshot = obs.config.perception.signal_radius as u32;
+    let action = match rng.below(14) {
         0..=3 => Action::Move(Dir::ALL[rng.below(4) as usize]),
         4 => Action::Gather,
         5 => Action::Consume(1),
         6 => Action::Rest,
-        7 => adjacent(rng).map_or(Action::Rest, |to| Action::Transfer { to, n: 1 }),
+        7 => within(rng, 1).map_or(Action::Rest, |to| Action::Transfer { to, n: 1 }),
         8 => Action::Store(1),
-        9 => adjacent(rng).map_or(Action::Rest, |target| Action::Harm { target }),
-        _ => Action::Signal(Message::Say(rng.below(8) as u8)),
+        9 => within(rng, 1).map_or(Action::Rest, |target| Action::Harm { target }),
+        10 => Action::Signal(Message::Say(rng.below(8) as u8)),
+        11 => within(rng, earshot).map_or(Action::Rest, |to| {
+            Action::Signal(Message::Propose {
+                to,
+                give: rng.below(3) as u8,
+                want: rng.below(3) as u8,
+                by: 1 + rng.below(16) as u16,
+            })
+        }),
+        12 => latest_offer().map_or(Action::Rest, |offer| {
+            Action::Signal(Message::Accept {
+                to: offer.other,
+                offer_tick: offer.tick,
+            })
+        }),
+        _ => latest_offer().map_or(Action::Rest, |offer| {
+            Action::Signal(Message::Reject { to: offer.other })
+        }),
     };
     Intent {
         action,

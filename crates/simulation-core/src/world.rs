@@ -9,13 +9,18 @@
 //!    cell are ordered by a seeded lottery key and served sequentially until
 //!    the cell is empty, so food can never be taken twice.
 //!    - *3b. Interact* – Transfer / Store / Harm / Signal, resolved at `S(t)`
-//!      positions in actor (id) order (ADR-0013 D3, D5).
+//!      positions in actor (id) order (ADR-0013 D3, D5). Negotiation
+//!      messages are delivered here: the addressee must be another living
+//!      agent within `signal_radius`, an `Accept` must name a proposal the
+//!      acceptor remembers, and every delivered message becomes a ledger
+//!      event. Nothing enforces what was promised (3-4).
 //! 4. **Move**    – all moves applied simultaneously (cells are unbounded,
 //!    so moves never conflict).
 //! 5. **Upkeep**  – metabolism + action costs, then Rest healing, then
 //!    starvation damage, then ageing.
 //!    - *5b. Memory* – the kernel appends what each agent gave, received,
-//!      suffered, witnessed or heard this tick to `Agent.recent` (ADR-0013 D4).
+//!      suffered, witnessed, heard, was proposed, had accepted or rejected,
+//!      and promised this tick to `Agent.recent` (ADR-0013 D4).
 //! 6. **Death**   – `health <= 0` dies of `Starvation`; otherwise
 //!    `age >= max_age` dies of `OldAge`. Carried food is dropped on the cell,
 //!    remaining energy is written off in the ledger. The dead do not reach
@@ -33,7 +38,7 @@ use crate::agent::{Agent, AgentId, Memory};
 use crate::config::{ConfigError, WorldConfig};
 use crate::event::{DeathCause, Event};
 use crate::intervention::{Intervention, InterventionError};
-use crate::memory::{remember, Interaction, InteractionKind, Signal};
+use crate::memory::{remember, Interaction, InteractionKind, Message, Signal, Terms};
 use crate::policy::{decide, Intent, Observation, PolicyKind};
 use crate::resources::ResourceGrid;
 use crate::rng::{RngStream, Stream};
@@ -59,7 +64,13 @@ pub struct Ledger {
     pub food_transferred: u64,
     pub food_stored: u64,
     pub harms: u64,
+    /// `Say` signals made.
     pub signals: u64,
+    /// Negotiation messages *delivered* (ADR-0013 D5, 3-4); undeliverable
+    /// ones count as failures, not here.
+    pub proposals: u64,
+    pub acceptances: u64,
+    pub rejections: u64,
     /// Net food added (+) or removed (-) by interventions.
     pub food_intervened: i64,
     /// Net energy added (+) or removed (-) by interventions.
@@ -84,9 +95,12 @@ pub struct TickReport {
     pub food_stored: u64,
     pub harms: u32,
     pub signals: u32,
-    /// Events in the order they happened: transfers, harms and signals (if
-    /// recorded) in actor order, `Acted` (if recorded), then deaths in id
-    /// order, then births in parent-id order.
+    pub proposals: u32,
+    pub acceptances: u32,
+    pub rejections: u32,
+    /// Events in the order they happened: transfers, harms, delivered
+    /// negotiation messages and signals (if recorded) in actor order, `Acted`
+    /// (if recorded), then deaths in id order, then births in parent-id order.
     pub events: Vec<Event>,
 }
 
@@ -480,7 +494,7 @@ impl World {
                         }
                     };
                 }
-                Action::Signal(message) => {
+                Action::Signal(message @ Message::Say(_)) => {
                     let (who, at) = (self.agents[i].id, self.agents[i].pos);
                     self.agents[i].last_signal = Some(Signal { tick, message });
                     self.ledger.signals += 1;
@@ -506,6 +520,121 @@ impl World {
                             ));
                         }
                     }
+                }
+                // --- negotiation (ADR-0013 D5, 3-4): addressed, delivered,
+                // recorded, never enforced. The addressee must be another
+                // living agent within signal_radius at S(t). Memory is still
+                // S(t)'s here (notes land in 5b), so an Accept is checked
+                // against what the acceptor remembered at the tick's start.
+                Action::Signal(Message::Propose { to, give, want, by }) => {
+                    outcomes[i] = match self.addressee_index(i, to) {
+                        Err(f) => Outcome::Failed(f),
+                        Ok(j) => {
+                            let from = self.agents[i].id;
+                            notes.push((
+                                j,
+                                Interaction {
+                                    tick,
+                                    other: from,
+                                    kind: InteractionKind::ProposalFrom,
+                                    value: Terms { give, want, by }.pack(),
+                                },
+                            ));
+                            self.ledger.proposals += 1;
+                            report.proposals += 1;
+                            report.events.push(Event::Proposed {
+                                tick,
+                                from,
+                                to,
+                                give,
+                                want,
+                                by,
+                            });
+                            Outcome::Ok
+                        }
+                    };
+                }
+                Action::Signal(Message::Accept { to, offer_tick }) => {
+                    outcomes[i] = match self.addressee_index(i, to) {
+                        Err(f) => Outcome::Failed(f),
+                        Ok(j) => {
+                            let held = self.agents[i].recent.iter().find(|e| {
+                                e.kind == InteractionKind::ProposalFrom
+                                    && e.other == to
+                                    && e.tick == offer_tick
+                            });
+                            match held {
+                                None => Outcome::Failed(Failure::NoSuchOffer),
+                                Some(offer) => {
+                                    let terms = Terms::unpack(offer.value);
+                                    let acceptor = self.agents[i].id;
+                                    // Actor first, then the counterparty: the
+                                    // acceptor owes `want`, the proposer learns
+                                    // of the acceptance and owes `give`.
+                                    notes.push((
+                                        i,
+                                        Interaction {
+                                            tick,
+                                            other: to,
+                                            kind: InteractionKind::Promised,
+                                            value: terms.want as i64,
+                                        },
+                                    ));
+                                    notes.push((
+                                        j,
+                                        Interaction {
+                                            tick,
+                                            other: acceptor,
+                                            kind: InteractionKind::Accepted,
+                                            value: terms.pack(),
+                                        },
+                                    ));
+                                    notes.push((
+                                        j,
+                                        Interaction {
+                                            tick,
+                                            other: acceptor,
+                                            kind: InteractionKind::Promised,
+                                            value: terms.give as i64,
+                                        },
+                                    ));
+                                    self.ledger.acceptances += 1;
+                                    report.acceptances += 1;
+                                    report.events.push(Event::Accepted {
+                                        tick,
+                                        from: acceptor,
+                                        to,
+                                        offer_tick,
+                                        give: terms.give,
+                                        want: terms.want,
+                                        by: terms.by,
+                                    });
+                                    Outcome::Ok
+                                }
+                            }
+                        }
+                    };
+                }
+                Action::Signal(Message::Reject { to }) => {
+                    outcomes[i] = match self.addressee_index(i, to) {
+                        Err(f) => Outcome::Failed(f),
+                        Ok(j) => {
+                            let from = self.agents[i].id;
+                            notes.push((
+                                j,
+                                Interaction {
+                                    tick,
+                                    other: from,
+                                    kind: InteractionKind::Rejected,
+                                    value: 0,
+                                },
+                            ));
+                            self.ledger.rejections += 1;
+                            report.rejections += 1;
+                            report.events.push(Event::Rejected { tick, from, to });
+                            Outcome::Ok
+                        }
+                    };
                 }
                 _ => {}
             }
@@ -673,6 +802,26 @@ impl World {
     /// Resolves the target of a social action: another living agent, adjacent
     /// to the actor at the tick's start positions.
     fn target_index(&self, actor: usize, id: AgentId) -> Result<usize, Failure> {
+        self.resolve_other(actor, id, 1, Failure::NotAdjacent)
+    }
+
+    /// Resolves the addressee of a negotiation message: another living agent
+    /// within `signal_radius` of the actor at the tick's start positions.
+    fn addressee_index(&self, actor: usize, id: AgentId) -> Result<usize, Failure> {
+        let reach = self.config.perception.signal_radius as u32;
+        self.resolve_other(actor, id, reach, Failure::OutOfEarshot)
+    }
+
+    /// Another living agent within Manhattan `reach` of the actor, or the
+    /// failure that names the problem. Targets are named by id; `agents` is
+    /// sorted, so the lookup is a binary search.
+    fn resolve_other(
+        &self,
+        actor: usize,
+        id: AgentId,
+        reach: u32,
+        too_far: Failure,
+    ) -> Result<usize, Failure> {
         let j = self
             .agents
             .binary_search_by_key(&id, |a| a.id)
@@ -680,8 +829,8 @@ impl World {
         if j == actor {
             return Err(Failure::NoSuchTarget);
         }
-        if self.agents[actor].pos.manhattan(self.agents[j].pos) > 1 {
-            return Err(Failure::NotAdjacent);
+        if self.agents[actor].pos.manhattan(self.agents[j].pos) > reach {
+            return Err(too_far);
         }
         Ok(j)
     }
@@ -886,6 +1035,9 @@ impl World {
             l.food_stored,
             l.harms,
             l.signals,
+            l.proposals,
+            l.acceptances,
+            l.rejections,
         ] {
             h.u64(v);
         }
@@ -1021,7 +1173,8 @@ pub const SNAPSHOT_MAGIC: [u8; 4] = *b"CZS\0";
 /// (ADR-0008). 3: intervention ledger fields (ADR-0010 2a-1). 4: perception
 /// config, social-action ledger fields, `DeathCause::Violence` (ADR-0013 3-1/3-2).
 /// 5: `Agent.last_signal`, `Agent.recent`, `Ledger.signals` (ADR-0013 3-3).
-pub const SNAPSHOT_FORMAT: u32 = 5;
+/// 6: `Ledger.proposals` / `acceptances` / `rejections` (ADR-0013 3-4).
+pub const SNAPSHOT_FORMAT: u32 = 6;
 
 /// Written form: borrows the world instead of cloning it.
 #[derive(Serialize)]

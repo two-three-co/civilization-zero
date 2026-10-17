@@ -16,7 +16,7 @@ Phase 3 は制度を実装しない。「所有権が生まれた」と言える
 1. **ブラウザのデモ（PRODUCT.md Phase 3）**: 公開 URL で、(a) 個体を選ぶと記憶（最近の相互作用）・最後の発信・受けた提案が見える、(b) 地図上で移転・加害・発信が起きた場所がその tick に可視化される、(c) 2 個体間の交渉スレッド（提案 → 受諾/拒否 → 移転）が台帳から表示される、(d) 「固定方策 vs 学習方策」を同じ世界から fork で並べ、人口・摂取量・移転数のカーブを比較できる。
 2. **計測**: 学習方策の世界 1,300 体で、ブラウザ内 ≥ 60 tick/s を画面に表示。バイナリスナップショットは 1,300 体で ≤ 1 MB。
 3. **事前登録実験 EXP-002**（下記）を 10 シード以上で実施し、結果と限界を記録する（学習が「効く」かの健全性チェックであり、創発の主張ではない）。
-4. **決定論**: 既定の Forager だけの世界は 3-1〜3-5 を通してゴールデンハッシュ `0xf16cb4be6e7ed69b` を保つ（新しい物理は Forager に対して不活性であること。符号化のみの変更は ADR-0010 2a-1 と同じ旧符号化の再計算で証明する）。学習方策の世界には別のゴールデンを置く。CI の wasm ハッシュ照合は維持。
+4. **決定論**: 既定の Forager だけの世界は 3-1〜3-5 を通してゴールデンハッシュ `0xf16cb4be6e7ed69b`（3-2 で config と台帳を除く `dynamics_hash` に再定義し `0x658ee873d1866501`。遷移は不変）を保つ（新しい物理は Forager に対して不活性であること。符号化のみの変更は ADR-0010 2a-1 と同じ旧符号化の再計算で証明する）。学習方策の世界には別のゴールデンを置く。CI の wasm ハッシュ照合は維持。
 5. **台帳**: 相互作用（移転・加害・発信・提案）は常にイベントとして台帳に載り、再生で照合される。全行動の `Acted` 記録は設定で ON にでき、サイズを計測して記録する。
 
 ## 決定（設計）
@@ -55,7 +55,7 @@ Decide の前に一様グリッドのバケット（セル → 個体 index 列�
 **実装（3-3、2026-10-17）と設計からの差分**:
 - 記憶は `Agent.memory` の中ではなく兄弟フィールド **`Agent.recent: Vec<Interaction>`**。`Memory` は方策が所有し `Intent` で返す値（ADR-0005）なので、カーネルが書く記録を同じ構造体に入れると「方策は世界を変えない」の境界が曖昧になり、`Intent.memory` の書き戻しで記憶を潰す事故も起こりうる。
 - 固定長配列 `[Interaction; K]` ではなく `Vec` を `memory_slots`（u8、既定 8、0 で無効、上限 64）で打ち切る oldest-first のリング。K は設定値で型に埋め込めず、空なら 1 B で済む。
-- `kind` は 3-3 時点で `GaveTo / ReceivedFrom / Harmed / HarmedBy / SawHarm / Heard` の 6 種（`ProposalFrom / Accepted / Rejected / Promised` は 3-4）。`SawHarm` の `value` は被害者 id、`Heard` の `value` は記号。
+- `kind` は 3-3 時点で `GaveTo / ReceivedFrom / Harmed / HarmedBy / SawHarm / Heard` の 6 種。`SawHarm` の `value` は被害者 id、`Heard` の `value` は記号。3-4 で `ProposalFrom / Accepted / Rejected / Promised` を追加（`value` の意味は D5 の実装注記）。
 - 書き込み順は 3b の解決順: 行為者 id 順に、1 行為につき 行為者 → 相手 → 目撃者（被害者から `social_radius` 内）/ 聴取者（発信者から `signal_radius` 内）を (距離, id) 順。発信者自身は聴取者に含めない。Phase 5b（死亡処理の前）で反映するので、その tick に死ぬ個体にも書かれる（スナップショットには残らない）。
 - ハッシュ: `last_signal` と `recent` は**非空のときだけ** `dynamics_hash` にバイトを足す。Forager 世界では両方とも空なのでゴールデン `0x658ee873d1866501` は不変（空なら旧符号化と同一バイト列になるため、旧符号化の再計算は不要）。
 - 計測（Apple M1, 2026-10-17）: スナップショットの個体部分は Forager 19.7 B/体（`None` + 空 Vec で +2 B）、Random（記憶 5.5 件/体）46 B/体、満杯 8 件で 64 B/体（記憶を消すと 15〜20 B）。1 件 約 6 B（postcard varint）。128² 世界は資源 33 KB が支配的で、1,357 体の Forager スナップショットは 56.8 → 59.6 KB（+5%）、全個体が満杯でも約 120 KB（≈ 2.0 倍。tick・id が 16,384 を超えると varint が伸び 2 倍を少し超えうる）。見込みの 125 KB 増より小さい。
@@ -71,6 +71,18 @@ Decide の前に一様グリッドのバケット（セル → 個体 index 列�
 
 カーネルは配達（相手の記憶に `ProposalFrom` 等を書く）と台帳記録だけを行い、**約束の履行は強制しない**。履行は `Transfer` という物理行動であり、不履行は台帳から判定できる「社会的事実」になる。これが Phase 4 の制度（違反の定義と制裁）への接続点で、R4（制度は物理を変えない）と整合する。
 資源は食料 1 種類のまま。したがって交換は「今と後」の移転（貸し借り・分かち合い）であり、互恵と信頼の材料になる。資源の多様化は、それが必要だと実験が示してから（Phase 4 以降）。
+
+**実装（3-4、2026-10-17）と設計からの差分**:
+- **宛先付きの配達**。`Propose { to, give, want, by }` / `Accept { to, offer_tick }` / `Reject { to }` は `to`（自分以外の生存個体）が S(t) で `signal_radius` 内にいるときだけ届く。いなければ `Failure::NoSuchTarget`（不在・死亡・自分宛）または新設の **`Failure::OutOfEarshot`**。`NotAdjacent` を流用しなかったのは、`action.rs` の表で `NotAdjacent` が「Manhattan ≤ 1」と定義されており、既定 2・設定可の到達半径と混ぜると失敗の集計（`TickReport.failures`）が隣接の失敗と区別できなくなるから。`signal_cost` は試行時に払う（`Transfer` / `Harm` と同じ）。
+- **交渉メッセージは `last_signal` を書かず、傍観者にも届かない**。`Say` は発話（`Neighbor.signal` で近傍全員が次 tick に見る）、交渉は私信（宛先の記憶と台帳にだけ残る）。設計の「`signal_radius` 内の個体が次 tick に観測」は `Say` にのみ適用した。宛先付きの提案が第三者にも見えると、情報制限（D2）を素通りして交渉内容が公開情報になり、記憶を持たない個体（`memory_slots = 0`）が提案を観測だけで知るという不整合も生むため。
+- **`by` は提案 tick からの相対期限**（履行期限 = 提案 tick + `by`）。u16 では絶対 tick を長い世界で表せず、相対にすれば台帳の `Proposed` / `Accepted` が自分の tick と合わせて自己完結する。
+- **受諾の成立条件 = 受諾者が提案を記憶していること**。`Accept` は受諾者の `recent` に `ProposalFrom { other: to, tick: offer_tick }` があるときだけ成立し、なければ **`Failure::NoSuchOffer`**。理由: `Promised` と自己完結な `Accepted` イベントを書くにはカーネルが契約条件を知る必要があり、それを保持している状態は受諾者の記憶だけである（カーネルは台帳を持たない）。「持っていないものは渡せない」（`EmptyInventory`）と同じく「受け取っていない提案は受諾できない」を物理的不能として扱う。帰結として、`memory_slots = 0` の世界では約束が成立せず、リングから押し出された提案は受諾できない——記憶容量が成立しうる取引を制限する（H2 のパラメータとして意図どおり）。同じ提案を 2 度受諾することはカーネルは止めない（判定は Phase 4 の仕事）。`Reject` は `offer_tick` を持たないので検査せず、届けば記録する。
+- **記憶の `value`**: `ProposalFrom` と `Accepted` は契約条件 `Terms { give, want, by }` を `Terms::pack()`（give が 0..8 bit、want が 8..16、by が 16..32）で詰めた値——受諾する側の方策は記憶からしか条件を知れないため。`Rejected` は 0。**`Promised` は「自分が `other` に渡すと約束した食料数」**: 提案者には `give`（今渡す）、受諾者には `want`（期限までに返す）。両者で意味が同じ 1 つの数にし、期限は台帳（`Accepted` の `offer_tick + by`）に置いた。方策に必要なのは「誰にいくら負っているか」であり、期限から違反を判定するのは台帳を読む側（Phase 4）だから。
+- **書き込み順**は 3-3 の規約（行為者 → 相手）: 受諾 1 件につき 受諾者の `Promised` → 提案者の `Accepted` → 提案者の `Promised`。提案は宛先の `ProposalFrom` のみ（提案者には何も書かない）。すべて Phase 5b で反映。
+- **台帳は新イベント `Proposed { tick, from, to, give, want, by }` / `Accepted { tick, from, to, offer_tick, give, want, by }` / `Rejected { tick, from, to }`** を**常に**記録する（届いたときだけ）。`Signaled` を流用しなかった理由: (1) `Signaled` は `record_signals`（既定 OFF）で制御され、不履行の判定材料は常時必要、(2) 届かなかった提案が「提案」として台帳に載ると Phase 4 が存在しない義務を判定してしまう、(3) `Accepted` に条件を複写すれば 1 レコードで「誰が誰にいくらをいつまでに」が読め、`Proposed` との結合が不要。台帳カウンタ `proposals / acceptances / rejections`（届いた件数）を追加、`signals` は `Say` の件数のまま。
+- **Phase 4 への接続（D5 の追補）**: 受諾者の不履行 = `Accepted { from: B, to: A, offer_tick, want, by }` に対し、tick ≤ `offer_tick + by` の `Transferred { from: B, to: A }` の合計が `want` 未満。提案者の不履行 = 受諾後に `Transferred { from: A, to: B }` の合計が `give` 未満（「今」の期限の定義は Phase 4）。カーネルはどちらも検査しない。`tests/negotiation.rs::a_broken_promise_changes_nothing_physical` が、期限が過ぎても失敗・イベント・状態変化が一切ないことと、台帳だけからこの判定ができることを示す。
+- **Random 方策は 14 行動**を抽選する: `Propose`（`signal_radius` 内の一様な相手、give/want ∈ 0..3、by ∈ 1..16）、`Accept` / `Reject`（記憶の最新の `ProposalFrom` に対して）。帰無モデルは学習者ができることをすべてできるべきで、交渉の配達・検査の経路を serial = parallel の proptest で通すためでもある。Random 世界の軌跡は変わる（EXP-001 の注記）。Forager は交渉しないのでゴールデン `0x658ee873d1866501` は不変。
+- スナップショット形式 6（`Ledger` の形が変わった）。計測は STATUS の「3-4 後」。
 
 ### D6. 学習方策は 2 種類、どちらも整数演算（ADR-0003）
 
@@ -104,7 +116,7 @@ Decide の前に一様グリッドのバケット（セル → 個体 index 列�
 | 3-1 ✅ | 空間インデックス + `Observation::neighbors()` + `Perception` 設定。**済 2026-10-17**: `src/spatial.rs`（計数ソート、O(n + cells)）、`tests/neighbors.rs`（順序・半径・端のクリップ・情報制限・proptest で総当たりと一致）。計測: インデックス構築 10 µs、step 132 → 147〜154 µs/tick（+11〜16%、2 回計測）。ゴールデンは config を含まない `dynamics_hash` に再定義（旧符号化の再計算で遷移不変を証明） | – | 近傍が (距離, id) 順で決定論的。serial = parallel。既定世界のゴールデン不変。ベンチ: 1.3k 体で step +20% 以内（計測） |
 | 3-2 ✅ | `Transfer` / `Store` / `Harm` 行動、`DeathCause::Violence`、`Transferred` / `Harmed` イベント、`Acted` 記録（設定）。**済 2026-10-17**: `tests/interaction.rs` 8 本、Forager のゴールデン不変（旧定義で証明）、`Acted` は 1,000 体 × 2,000 tick で 220 MB（20,000 tick なら約 2.2 GB → 診断用に限定）。ゴールデンは台帳も除いた物理状態のみに再定義 | 3-1 | 保存則テスト（移転・貯蔵で食料不変、加害コストは `energy_spent`）、隣接判定は S(t)、相手が満杯で部分移転、ゴールデン不変。`record_actions` ON の台帳サイズを計測 |
 | 3-3 ✅ | `Signal(Say)`、`last_signal` の観測、記憶リング `recent[K]` とカーネル更新（受領・被害・目撃・聴取）。**済 2026-10-17**: `src/memory.rs`、`tests/memory.rs` 5 本（proptest 32 ケース: serial = parallel で記憶が一致、上限、oldest-first）、Forager のゴールデン不変（空の記憶はバイトを足さない）、スナップショット形式 5。計測: step 154 µs/tick（3-1 の 147〜154 の範囲内）、スナップショット Forager +5%、全個体満杯で約 2.0 倍（D4 参照） | 3-2 | 記憶の内容が決定論的（proptest）、スナップショットの増分を計測（≤ 2 倍）、ゴールデン不変（符号化のみの変更は旧符号化で証明） |
-| 3-4 | 交渉メッセージ `Propose / Accept / Reject` の配達と台帳、`Promised` 記憶 | 3-3 | 単体テストで「提案 → 受諾 → 移転 → 返済」が台帳と記憶に正しく並ぶ。台本方策（正直な互恵者）で再現。履行は強制されないことのテスト（不履行が起きても物理は進む） |
+| 3-4 ✅ | 交渉メッセージ `Propose / Accept / Reject` の配達と台帳、`Promised` 記憶。**済 2026-10-17**: 宛先付き配達（`signal_radius`、`OutOfEarshot` / `NoSuchTarget`）、受諾は記憶の `ProposalFrom` を要件に（`NoSuchOffer`）、`Promised` = 自分が渡すと約束した量、常時記録の `Proposed / Accepted / Rejected` イベント、`tests/negotiation.rs` 8 本（提案 → 受諾 → 移転 → 返済の台帳と両者の記憶、不履行で物理不変、拒否、半径外・不在・自分宛・未受領・死者、S(t) での判定、Random 世界の往復と形式 6、proptest 32 ケースで serial = parallel）。ゴールデン不変。Random は 14 行動。スナップショット形式 6。計測は STATUS | 3-3 | 単体テストで「提案 → 受諾 → 移転 → 返済」が台帳と記憶に正しく並ぶ。台本方策（正直な互恵者）で再現。履行は強制されないことのテスト（不履行が起きても物理は進む） |
 | 3-5 | `PolicyKind::{Reflex, Learner}` の枠、`PolicyParams` の拡張（重みベクトル / Q 表）、`Intervention::SetPolicy`、CLI `--policy reflex|learner|mixed-learning` | 3-2 | SetPolicy を同一 tick で 2 回 fork してハッシュ一致。スナップショット形式の版上げと互換テスト |
 | 3-6 | Reflex 方策（特徴ベクトル・固定小数点スコア・Forager 等価の初期重み・突然変異 ON） | 3-3, 3-5 | 初期重みの Reflex が Forager と 1,000 tick 同一決定（ハッシュ一致）。`tests/forager.rs` 相当の決定規則テスト。1.3k 体で decide ≤ 150 ns/体·tick（計測） |
 | 3-7 | Learner 方策（離散状態・整数 Q・決定論的 ε-greedy・継承） | 3-3, 3-5 | 再生で bit 一致。スナップショット 1,300 体 ≤ 1 MB。同じ状態列で Q が単調に更新されるユニットテスト。1.3k 体で decide ≤ 200 ns/体·tick |

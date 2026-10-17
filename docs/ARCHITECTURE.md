@@ -35,10 +35,10 @@ crates/simulation-core     ← Deterministic World Kernel。外部依存は serd
 - **World** = `config` + `tick` + `ResourceGrid` + `Vec<Agent>`（id 昇順を不変条件として維持）+ `next_agent_id`（単調増加、再利用なし）+ `Ledger`。
 - **空間**: 有界の整数グリッド（`u16` 座標）、4近傍、境界は壁。1セルに何体でも入れる（Phase 1 では移動衝突なし）。
 - **資源**: SoA（`food: Vec<u32>`, `capacity: Vec<u32>`）。パッチ生成、`regrow_interval` ごとに定量再生。
-- **Agent**: `id, pos, energy(milli), health, inventory, age, policy, params, memory{target}, last_signal, recent`。`memory` は方策が所有し `Intent` で返す。`last_signal`（最後の発信と tick）と `recent`（直近 `memory_slots` 件の相互作用 `{tick, other, kind, value}`、oldest-first）はカーネルだけが書く（ADR-0013 D4, D5）。
+- **Agent**: `id, pos, energy(milli), health, inventory, age, policy, params, memory{target}, last_signal, recent`。`memory` は方策が所有し `Intent` で返す。`last_signal`（最後の `Say` と tick）と `recent`（直近 `memory_slots` 件の相互作用 `{tick, other, kind, value}`、oldest-first。`kind` = GaveTo / ReceivedFrom / Harmed / HarmedBy / SawHarm / Heard / ProposalFrom / Accepted / Rejected / Promised）はカーネルだけが書く（ADR-0013 D4, D5）。交渉メッセージ（`Message::Propose / Accept / Reject`）は `signal_radius` 内の宛先の `recent` にだけ届き、`Accept` は宛先が記憶している提案（`ProposalFrom`）にしか成立しない。約束の履行は強制されない（返済は通常の `Transfer`）。
   `params`（`PolicyParams { hunger_permille }`）は親から継承、突然変異は既定 OFF（ADR-0008）。
 - **Ledger**: 食料・エネルギーの流入/流出、出生数、死因別死亡数を累計し、保存則を任意の tick で検証可能にする。
-- **Event**: `Born` / `Died` / `Intervened` / `Transferred` / `Harmed` / `Signaled` / `Acted` の自己完結レコード（tick 入り、serde 内部タグ）。`Signaled` は `record_signals` のときだけ。`Intervened` は `World::intervene()` の戻り値、他は `TickReport.events`。`Acted`（全個体の行動と結果）は `record_actions` のときだけ。Phase 2 の台帳形式そのもので、Phase 4 の違反判定の材料。
+- **Event**: `Born` / `Died` / `Intervened` / `Transferred` / `Harmed` / `Proposed` / `Accepted` / `Rejected` / `Signaled` / `Acted` の自己完結レコード（tick 入り、serde 内部タグ）。`Signaled` は `record_signals` のときだけ、`Proposed / Accepted / Rejected`（届いた交渉メッセージ。`Accepted` は契約条件 `give / want / by` と `offer_tick` を複写）は常に。`Intervened` は `World::intervene()` の戻り値、他は `TickReport.events`。`Acted`（全個体の行動と結果）は `record_actions` のときだけ。Phase 2 の台帳形式そのもので、Phase 4 の違反判定（不履行 = `Accepted` に対応する `Transferred` が期限までにない）の材料。
 - **EventLog**（ADR-0010 2a-2）: 追記専用の `Vec<Event>`。tick 非減少を検証、`range(from..to)` は二分探索。JSON Lines（先頭にヘッダ行 `{"format":1,"kernel":…}`）の書き出し/読み戻しは `Write` / `BufRead` を受け取り、カーネルはファイルを開かない。
 - **Intervention**（ADR-0010 2a-1）: `Drought` / `ScaleFood` / `SpawnAgents` / `RemoveAgent`。tick の合間に `World::intervene()` で適用。乱数を使わず、無効なら状態を変えずに `Err`。差分は台帳の `food_intervened` / `energy_intervened` に計上され、保存則の検査式に入る。
 
@@ -53,17 +53,20 @@ S(t) ──Index──▶ SpatialIndex（派生状態、保存しない。Decide
 Apply:
   2 Consume   在庫→エネルギー（私的、競合なし）
   3 Gather    S(t) の位置で解決。同一セルの請求者を抽選キー順に逐次配分
-  3b Transfer / Store / Harm / Signal   S(t) の位置で隣接判定（Manhattan ≤ 1）、行為者 id 順に逐次解決。Signal の聴取者は signal_radius 内（ADR-0013 D3, D5）
+  3b Transfer / Store / Harm / Signal   S(t) の位置で隣接判定（Manhattan ≤ 1）、行為者 id 順に逐次解決。Say の聴取者は signal_radius 内。
+             Propose / Accept / Reject は signal_radius 内の宛先にだけ届く（外なら OutOfEarshot、不在なら NoSuchTarget）。Accept は宛先からの提案を
+             受諾者が記憶していることが要件（なければ NoSuchOffer）。届いたものは Proposed / Accepted / Rejected として常に台帳へ（ADR-0013 D3, D5）
   4 Move      同時適用（セル容量無制限なので衝突しない）
   5 Upkeep    代謝+行動コスト → Rest 回復 → 飢餓ダメージ → 加齢
-  5b Memory   その tick の移転・加害・目撃（被害者から social_radius 内）・聴取を起きた順に各個体の recent へ（上限 memory_slots、カーネルのみが書く。ADR-0013 D4）
+  5b Memory   その tick の移転・加害・目撃（被害者から social_radius 内）・聴取・提案（ProposalFrom）・受諾（受諾者と提案者に Promised、提案者に Accepted）・
+             拒否（Rejected）を起きた順に各個体の recent へ（上限 memory_slots、カーネルのみが書く。ADR-0013 D4）
   6 Death     health<=0 はその tick に加害を受けていれば Violence、そうでなければ Starvation。それ以外で age>=max_age は OldAge。食料はセルへ、エネルギーは償却
   7 Birth     生存者で energy>=birth_threshold の個体を id 順に処理。子 id は next_agent_id から連番、末尾に追加
   8 Env       regrow_interval ごとに再生
 ```
 
 行動ごとの事前条件・コスト・失敗条件は [`action.rs`](../crates/simulation-core/src/action.rs) 冒頭の表を正とする。
-`Failure` は**物理的実行不能**のみを表す。規則違反（Phase 4）は別概念として導入する。
+`Failure` は**物理的実行不能**のみを表す（届かないメッセージ `OutOfEarshot`、受け取っていない提案の受諾 `NoSuchOffer` もここ）。約束の不履行は `Failure` ではなく台帳から読む事実。規則違反（Phase 4）は別概念として導入する。
 
 ## 乱数（ADR-0004）
 
@@ -80,7 +83,7 @@ wasm32 と native の一致は ADR-0009 で計測し、CI（`wasm-pack test --no
 
 ## シリアライズ（ADR-0006）
 
-- スナップショット: `{format: 3, state_hash, world}` を JSON（可読）またはバイナリ（マジック `CZS\0` + postcard、実行時の既定）で。読み込み時に形式版 → config 検証 → 不変条件 → ハッシュ照合（両形式共通）。
+- スナップショット: `{format: 6, state_hash, world}` を JSON（可読）またはバイナリ（マジック `CZS\0` + postcard、実行時の既定）で。形式番号は `World` の直列化形が変わるたびに上げ、旧版は `Format(n)` で拒否する。読み込み時に形式版 → config 検証 → 不変条件 → ハッシュ照合（両形式共通）。
 - 再生と分岐（`multiverse`）: `state_at(T)` は「tick T の開始状態」で、最寄りのスナップショットから台帳の介入を適用しつつ再実行し、出生・死亡を台帳と照合する。分岐は親の開始状態 + 子の介入、台帳は過去をコピー。
 - `state_hash`: 正準エンコーディング上の FNV-1a 64bit。`std::hash` には依存しない。
 - trace（ビューア用, format 2）: `cz run --trace` が出す軽量形式。カーネルの公開形式ではない。
@@ -101,6 +104,7 @@ UI ↔ Worker は `web/src/protocol.ts`（`init / step / seek / frame / interven
 | シナリオ | `tests/actions.rs` | 競合採集・二重取得なし、壁移動、消費上限、飢餓死、再生 |
 | ライフサイクル | `tests/lifecycle.rs` | 出生の分裂と親 id 順採番、死因の優先、死者は繁殖しない、継承と突然変異、イベントの直列化 |
 | 決定論/統合 | `tests/determinism.rs` | 同一シード同一履歴、ゴールデンハッシュ、スナップショット往復、改竄検出、5,000 tick 不変条件、世代をまたぐ保存則、serial=parallel |
+| 社会層 | `tests/neighbors.rs`, `tests/interaction.rs`, `tests/memory.rs`, `tests/negotiation.rs` | 近傍観測、Transfer / Store / Harm、発信と記憶、交渉（提案 → 受諾 → 移転 → 返済の台帳と記憶、不履行で物理不変、届かない・不在・未受領の失敗、proptest で serial = parallel） |
 | プロパティ | `tests/determinism.rs` (proptest) | 任意の config（ライフサイクル ON/OFF、突然変異 ON/OFF）で毎 tick 不変条件、消費なしでエネルギー増加なし、再実行一致 |
 | ベンチ | `benches/step.rs` (criterion) | 1k/10k/100k 体の step（1,000 tick 後の定常状態）、ハッシュ、スナップショット |
 | 計測 | `cz sweep` | 複数シードの個体数帯域（docs/research/experiments/EXP-001） |

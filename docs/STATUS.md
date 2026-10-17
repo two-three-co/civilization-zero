@@ -1,6 +1,6 @@
 # 実装進捗（新しいセッションはまずここを読む）
 
-最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · **Phase 2 = Toy 1 完了（配信中: https://two-three-co.github.io/civilization-zero/ ）。Phase 3（Agent Cognition, ADR-0013）進行中: 3-1, 3-2, 3-3 済**（ADR-0010）· カーネル版 `simulation-core 0.1.0`
+最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · **Phase 2 = Toy 1 完了（配信中: https://two-three-co.github.io/civilization-zero/ ）。Phase 3（Agent Cognition, ADR-0013）進行中: 3-1〜3-4 済**（ADR-0010）· カーネル版 `simulation-core 0.1.0`
 リポジトリ: https://github.com/two-three-co/civilization-zero（public）· CI: GitHub Actions（fmt / clippy / test debug+release / wasm ビルド）
 
 ## 状態の区別
@@ -22,7 +22,7 @@
 | 7 | 初期行動方針 | 済（Forager + Random 帰無モデル、`PolicyParams` 継承） | `policy.rs`, ADR-0005/0008 |
 | 8 | シード付き乱数 | 済 | `rng.rs`, ADR-0004 |
 | 9 | 決定論的 step | 済 | `tests/determinism.rs`、native = wasm32（ADR-0009） |
-| 10 | シリアライズ | 済（形式 5、JSON + バイナリ） | スナップショット + ハッシュ照合、ADR-0006 |
+| 10 | シリアライズ | 済（形式 6、JSON + バイナリ） | スナップショット + ハッシュ照合、ADR-0006 |
 | 11 | 自動テスト | 済 | 37 テスト（proptest 48 ケース含む）、debug/release 両方通過、CI 緑 |
 | 12 | ベンチマーク | 済 | criterion、下記 |
 | 13 | 2D ビューア | 済 | `viewer/index.html`（trace 形式 2、年齢表示）、ブラウザで確認済み |
@@ -75,7 +75,8 @@
 | 3-1 | 空間インデックス（`src/spatial.rs`、tick 開始時に `agents` から計数ソートで構築、派生状態で保存しない）、`Observation::neighbors()`（`social_radius` 内を (距離, id) 順、自分を除く）、`Perception { social_radius, see_policy, see_inventory, see_energy }`（既定 2 / off / on / off、`serde(default)` で旧 config も読める） | 済 (2026-10-17) | `tests/neighbors.rs`（4 テスト + proptest 64 ケースで総当たりと一致）、`spatial.rs` 単体 2 本。**既定世界の遷移は不変**（旧符号化で state_hash を再計算し `0xf16cb4be6e7ed69b` に一致）。計測: 構築 **10 µs**（1,310 体, 128²）、step 132 → **147〜154 µs/tick（+11〜16%、2 回計測、基準 +20% 以内）**、decide 0.97 → 1.10〜1.18 ms/10 tick |
 | 3-2 | 行動 `Transfer { to, n }` / `Store(n)` / `Harm { target }`（S(t) の位置で隣接判定、行為者 id 順、試行コスト）、失敗 `NotAdjacent` / `TargetFull` / `NoSuchTarget`、`DeathCause::Violence`（加害を受けた tick の死、餓死より優先）、イベント `Transferred` / `Harmed`（常時）/ `Acted`（`record_actions`）、台帳 `transfers` / `food_transferred` / `food_stored` / `harms`、config `transfer_cost` 100 / `harm_cost` 2,000 / `harm_damage` 20。Random 方策は 10 行動を一様に抽選（社会行動の対象は隣接個体）。`cz run --record-actions`、表に d.viol / xfer / harm 列。スナップショット形式 4（先頭の `format` だけ先に読んで旧版を `Format(n)` で拒否） | 済 (2026-10-17) | `tests/interaction.rs`（8 テスト: 移転・部分移転・4 種の失敗と試行コスト・S(t) 隣接と id 順・貯蔵・加害の累積と Violence・Acted の記録と JSON・Random 世界の不変条件）。**Forager 世界の遷移は不変**（旧定義のハッシュを再計算して `0xb7b914705736f95f` に一致）。計測: step 148 µs/tick（3-1 と同じ）、**`Acted` 台帳は 1,000 体 × 2,000 tick で 2,634,945 イベント・220 MB（84 B/イベント、記録なし 680 KB の 324 倍）** → 診断用。Random は加害コストで tick 300 までに絶滅 |
 | 3-3 | 行動 `Signal(Message::Say(u8))`（コスト `signal_cost` 既定 0）、`Agent.last_signal { tick, message }`、`Observation::neighbors()` の `Neighbor.signal`（**前 tick の発信だけ**を `signal_radius` 内で観測、既定 2）、カーネルが書く記憶 `Agent.recent: Vec<Interaction { tick, other, kind, value }>`（`kind` = GaveTo / ReceivedFrom / Harmed / HarmedBy / SawHarm / Heard、上限 `memory_slots` 既定 8、0 で無効）。Apply の 5b（死亡処理の前）でその tick の移転・加害・目撃（被害者から `social_radius` 内）・聴取（発信者から `signal_radius` 内）を起きた順に反映。`Event::Signaled`（`record_signals`、既定 OFF）、台帳 `signals`、`step` は空間インデックスを Decide と Apply で共有（`apply_with`）。Random は `Say(0..8)` を含む 11 行動を抽選。スナップショット形式 5。`cz run` の表に sig 列、`cz log` に signaled | 済 (2026-10-17) | `src/memory.rs`、`tests/memory.rs`（5 本: 発信は同 tick に聴取・次 tick だけ観測・半径外は不可、記憶の順序と上限と `memory_slots = 0`、Forager 世界は記憶も発信も空、スナップショット往復とハッシュへの寄与、**proptest 32 ケースで serial = parallel の記憶一致・上限・oldest-first**）。**Forager のゴールデン `0x658ee873d1866501` は不変**（空の `recent` / `None` の `last_signal` は符号化にバイトを足さない）。計測（M1）: step **154 µs/tick**（1,316 体、3-1 の 147〜154 の範囲内）、バイナリ往復 0.75 ms。スナップショット 1,357 体 56.8 → **59.6 KB（+5%）**、個体部分は Forager 19.7 B/体、Random（記憶 5.5 件/体）46 B/体、満杯 8 件で 64 B/体（記憶なし 15〜20 B）→ 全個体満杯でも約 120 KB（≈ 2.0 倍、基準 ≤ 2 倍。tick・id が大きいと varint が伸び少し超えうる）。ADR の見込み 125 KB 増より小さい |
-| 3-4 〜 3-10 | 通信・交渉、方策の枠と SetPolicy、Reflex、Learner、EXP-002、UI、文書 | 未 | — |
+| 3-4 | 交渉メッセージ `Signal(Propose { to, give, want, by } / Accept { to, offer_tick } / Reject { to })`。宛先は S(t) で `signal_radius` 内の自分以外の生存個体（外なら新設の `Failure::OutOfEarshot`、不在・死亡・自分宛は `NoSuchTarget`、`signal_cost` は試行時に払う）。`Accept` は受諾者の `recent` に `ProposalFrom { other: to, tick: offer_tick }` があるときだけ成立（なければ `NoSuchOffer`。`memory_slots = 0` の世界では約束は成立しない）。記憶は Phase 5b で `ProposalFrom` / `Accepted`（value = `Terms::pack()` = give \| want≪8 \| by≪16）/ `Rejected`（0）/ `Promised`（自分が `other` に渡すと約束した量: 提案者は `give`、受諾者は `want`）。交渉メッセージは `last_signal` を書かず傍観者にも届かない。台帳イベント `Proposed` / `Accepted`（契約条件と `offer_tick` を複写）/ `Rejected` は届いたときだけ**常時**記録、カウンタ `proposals / acceptances / rejections`（`signals` は `Say` のまま）。**履行は強制しない**（返済は通常の `Transfer`、不履行は台帳から判定。Phase 4 の接続点、ADR-0013 D5 追補）。Random は 14 行動（Propose / Accept / Reject を含む）。スナップショット形式 6。`cz run` の表に prop / acc / rej 列、`cz log` に proposed / accepted / rejected | 済 (2026-10-17) | `tests/negotiation.rs`（8 本: 提案 → 受諾 → 移転 → 返済が台帳と両者の `recent` に順に並ぶ、期限が過ぎても物理・記憶・失敗・イベントが一切変わらず台帳だけから不履行を計算できる、拒否、半径外・不在・自分宛・未受領・誤 tick・無記憶・死者の失敗と試行コスト、S(t) での判定、Forager ゴールデン不変、Random 世界の往復（JSON / バイナリ）と形式 5 の拒否、**proptest 32 ケースで serial = parallel の記憶・台帳・イベント一致、上限、値の整形**）、`memory.rs` 単体 3 本。**Forager のゴールデン `0x658ee873d1866501` は不変**。計測（M1、c628dd6 との同日前後比較）: step 151.5 → **155.3 µs/tick（+2.5%、1,316 体）**、parallel decide 137.6 → 146.8 µs/tick、decide 単体 1.110 → 1.097 ms（不変）、state_hash 269 → 265 µs、バイナリ往復 750 → 725 µs。Forager 世界は交渉の経路を通らないので、差は apply の match 腕の増加と `TickReport` の拡張、または測定ばらつき（3-1 で 147〜154 と記録した幅と同程度）。スナップショット 1,357 体 **59,583 B（3-3 の 59.6 KB と同じ。台帳カウンタ 3 つ = +3 B）** |
+| 3-5 〜 3-10 | 方策の枠と SetPolicy、Reflex、Learner、EXP-002、UI、文書 | 未 | — |
 
 ## 計測値（Apple M1, rustc 1.99.1, release, 2026-10-17）
 
@@ -137,6 +138,7 @@ native と同条件で `state_hash` 一致（`0x1c677f12c51ae3b1`）。
 
 - `state_hash`（≈1,310 体, 128²）: 261 µs。スナップショット往復: JSON 1.63 ms（304 KB）、**バイナリ 0.69 ms（56.8 KB）**。
 - 3-3 後（2026-10-17, commit の bench）: step **154 µs/tick**（1,316 体）、parallel decide 146 µs/tick、`spatial_index` 11.2 µs、`state_hash` 267 µs、スナップショット往復 JSON 2.31 ms（346 KB）/ **バイナリ 0.75 ms（59.6 KB、1,357 体）**。個体部分: Forager 19.7 B/体、Random（記憶 5.5 件/体）46 B/体、満杯 8 件 64 B/体。10k 体 1.54 ms/tick（parallel 0.86）、100k 体 20.6 ms/tick（parallel 10.3）。
+- 3-4 後（2026-10-17, M1, `cargo bench -p simulation-core --features parallel` を c628dd6 と同日に前後で実行）: step/serial/1000 1.5147 → **1.5532 ms/10 tick（151.5 → 155.3 µs/tick、+2.5%）**、parallel_decide/1000 1.3756 → 1.4681 ms、10k 体 15.25 → 15.60 ms/10 tick（parallel 8.76 → 9.09）、100k 体 205.3 → 211.1 ms（parallel 108.7 → 116.5）、decide/serial/1000 1.110 → 1.097 ms、`state_hash` 268.7 → 265.0 µs、`spatial_index` 11.30 → 11.43 µs、スナップショット往復 JSON 2.320 → 2.319 ms / **バイナリ 750.4 → 725.2 µs**。バイナリスナップショット 1,357 体 **59,583 B**（形式 6、3-3 比 +3 B）。計測中は別セッションの vite dev server が常駐していた。
 - Multiverse（ADR-0012）: fork 0.07 ms、`state_at` は最大でスナップショット間隔分の再実行（間隔 500 → 33 ms、100 → 6.7 ms）、再生 11,900 tick/s（照合込み）。
 - 並列 decide（rayon, M1 8 コア）は手順 B で 1.14×（1.3k 体）〜 2.25×（137k 体）（ADR-0011 後。直列が速くなった分、相対効果は 1.35×〜3.0× から下がった）。1〜2k 体の Toy 1 では使わない（ADR-0009）。手順 A で「1k 体では逆効果」に見えたのは、走査の少ない tick ではスレッド起動コストが支配的になるため。
 
@@ -165,7 +167,8 @@ ADR-0011 で走査を行スライス化（ハッシュ不変、-16%）→ 2 パ�
 | 2026-10-17 | 0xb7b914705736f95f | ADR-0013 3-1: ゴールデンを **config を含まない `dynamics_hash`** に再定義（config に `perception` を追加したため `state_hash` は変わる）。**遷移は不変**: 旧符号化（perception なしの config JSON）で `state_hash` を再計算すると前行の値に一致 |
 | 2026-10-17 | 0x658ee873d1866501 | ADR-0013 3-2: `dynamics_hash` を **台帳も含まない**物理状態（tick・id・資源・個体）だけに再定義（台帳に社会行動の集計と死因 `Violence` を追加したため）。**遷移は不変**: 3-1 時点の定義で再計算すると前行の値に一致。以後、config と台帳の追加はゴールデンを変えない |
 | 2026-10-17 | 0x658ee873d1866501（不変） | ADR-0013 3-3: `Agent.last_signal` / `Agent.recent` は**非空のときだけ**符号化に入るので、発信も記憶もない Forager 世界では値が変わらない。Random 世界は `Say` が抽選に加わり軌跡が変わる（EXP-001 の注記） |
+| 2026-10-17 | 0x658ee873d1866501（不変） | ADR-0013 3-4: 交渉メッセージは `Say` と同じく Forager が発しない行動で、台帳カウンタ `proposals / acceptances / rejections` は `dynamics_hash` に入らない（`state_hash` にだけ入る）。`tests/negotiation.rs::forager_worlds_never_negotiate_and_keep_the_golden_hash` で確認。Random 世界は 14 行動の抽選になり軌跡が変わる（EXP-001 の注記） |
 
 ## 次のタスク
 
-**Phase 3（Agent Cognition）**: 設計は [ADR-0013](adr/0013-phase3-agent-cognition.md)、タスクは docs/TODO.md。3-1〜3-3 済。次は 3-4（交渉メッセージ `Propose / Accept / Reject` の配達と台帳）。3-9a（UI の社会マーカー・インスペクタの記憶表示）は並行できる。
+**Phase 3（Agent Cognition）**: 設計は [ADR-0013](adr/0013-phase3-agent-cognition.md)、タスクは docs/TODO.md。3-1〜3-4 済。次は 3-5（`PolicyKind::{Reflex, Learner}` の枠、`Intervention::SetPolicy`、CLI の方策拡張）。3-9a（UI の社会マーカー・インスペクタの記憶表示）は並行作業中、3-9b（交渉スレッド表示）は 3-4 の台帳イベント `Proposed / Accepted / Rejected / Transferred` から作れる。
