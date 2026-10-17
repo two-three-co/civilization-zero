@@ -2,18 +2,25 @@
 //! Run: `cargo bench -p simulation-core` (add `--features parallel` for rayon).
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use simulation_core::{World, WorldConfig};
+use simulation_core::{PolicyKind, World, WorldConfig};
 
 fn warmed_world(agents: u32, side: u16) -> World {
+    warmed_world_of(agents, side, PolicyKind::Forager, false)
+}
+
+/// `mutation` switches weight / scalar mutation on, so after the warm-up a
+/// reflex population carries evolved (dense, non-zero) weights.
+fn warmed_world_of(agents: u32, side: u16, kind: PolicyKind, mutation: bool) -> World {
     let cfg = WorldConfig {
         seed: 42,
         width: side,
         height: side,
         initial_agents: agents,
         patch_count: (side as u32 * side as u32) / 700,
+        mutation_enabled: mutation,
         ..WorldConfig::default()
     };
-    let mut w = World::new(cfg).unwrap();
+    let mut w = World::generate(cfg, |_| kind).unwrap();
     // Skip the founding transient (die-off, first birth wave) so the
     // population is in its steady band (docs/research/experiments/EXP-001).
     w.run(1_000);
@@ -55,30 +62,51 @@ fn bench_step(c: &mut Criterion) {
             },
         );
     }
+    // A reflex world of the same size (ADR-0013 3-6): the same dynamics as
+    // the forager world with the initial weights, so the population is the
+    // same; the cost of features + scores + lottery is the difference.
+    let reflex = warmed_world_of(1_000, 128, PolicyKind::Reflex, false);
+    g.throughput(Throughput::Elements(reflex.agents.len() as u64 * 10));
+    g.bench_with_input(BenchmarkId::new("reflex", 1_000), &reflex, |b, base| {
+        b.iter_batched_ref(
+            || base.clone(),
+            |w| w.run(10),
+            criterion::BatchSize::LargeInput,
+        )
+    });
     g.finish();
 }
 
 /// The decide phase alone, over the ten consecutive states of one regrowth
 /// period, so it can be compared with `step/serial/1000` (step − decide ≈ apply).
+/// `reflex/1000` is the same for a reflex world with the initial (forager)
+/// weights and `reflex_evolved/1000` for one whose weights have mutated for
+/// 1,000 ticks (ADR-0013 3-6 budget: ≤ 150 ns per agent-step).
 fn bench_decide(c: &mut Criterion) {
-    let mut w = warmed_world(1_000, 128);
-    let states: Vec<World> = (0..10)
-        .map(|_| {
-            let s = w.clone();
-            w.step();
-            s
-        })
-        .collect();
-    let agent_steps: u64 = states.iter().map(|s| s.agents.len() as u64).sum();
     let mut g = c.benchmark_group("decide");
-    g.throughput(Throughput::Elements(agent_steps));
-    g.bench_function("serial/1000", |b| {
-        b.iter(|| {
-            for s in &states {
-                criterion::black_box(s.decide_all());
-            }
-        })
-    });
+    for (name, kind, mutation) in [
+        ("serial/1000", PolicyKind::Forager, false),
+        ("reflex/1000", PolicyKind::Reflex, false),
+        ("reflex_evolved/1000", PolicyKind::Reflex, true),
+    ] {
+        let mut w = warmed_world_of(1_000, 128, kind, mutation);
+        let states: Vec<World> = (0..10)
+            .map(|_| {
+                let s = w.clone();
+                w.step();
+                s
+            })
+            .collect();
+        let agent_steps: u64 = states.iter().map(|s| s.agents.len() as u64).sum();
+        g.throughput(Throughput::Elements(agent_steps));
+        g.bench_function(name, |b| {
+            b.iter(|| {
+                for s in &states {
+                    criterion::black_box(s.decide_all());
+                }
+            })
+        });
+    }
     g.finish();
 }
 

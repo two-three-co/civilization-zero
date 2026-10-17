@@ -67,6 +67,45 @@ impl SpatialIndex {
         &self.order[start..self.ends[c] as usize]
     }
 
+    /// How many agents stand within Manhattan `radius` of `center`, and how
+    /// many of those within distance 1 (both include whoever stands on
+    /// `center` itself). The cells of one diamond row are contiguous, so
+    /// each row costs one difference of the index's prefix sums: no walk
+    /// over the agents, no allocation (the reflex policy's crowd features).
+    pub fn crowd(&self, center: Pos, radius: u16) -> (u32, u32) {
+        let (w, h) = (self.bounds.width as i32, self.bounds.height as i32);
+        let r = radius as i32;
+        let (cx, cy) = (center.x as i32, center.y as i32);
+        let (mut near, mut adjacent) = (0u32, 0u32);
+        for dy in -r..=r {
+            let y = cy + dy;
+            if y < 0 || y >= h {
+                continue;
+            }
+            let row = y as usize * w as usize;
+            let span = r - dy.abs();
+            let (x0, x1) = ((cx - span).max(0), (cx + span).min(w - 1));
+            if x0 <= x1 {
+                near += self.count_cells(row + x0 as usize, row + x1 as usize);
+            }
+            // Of this row, the cells within distance 1 that the radius reaches.
+            let s = (1 - dy.abs()).min(span);
+            if s >= 0 {
+                let (a0, a1) = ((cx - s).max(0), (cx + s).min(w - 1));
+                if a0 <= a1 {
+                    adjacent += self.count_cells(row + a0 as usize, row + a1 as usize);
+                }
+            }
+        }
+        (near, adjacent)
+    }
+
+    /// Agents in cells `c0..=c1` (contiguous cell indices).
+    fn count_cells(&self, c0: usize, c1: usize) -> u32 {
+        let before = if c0 == 0 { 0 } else { self.ends[c0 - 1] };
+        self.ends[c1] - before
+    }
+
     /// Everyone within Manhattan `radius` of `center` (including `center`'s
     /// own cell), as `(distance, agent index)` sorted by distance then index.
     /// Because the agents slice is in id order, index order is id order.
@@ -147,5 +186,41 @@ mod tests {
         assert!(ix.is_empty());
         assert!(ix.cell(Pos::new(1, 1)).is_empty());
         assert!(ix.within(Pos::new(0, 0), 5).is_empty());
+    }
+
+    #[test]
+    fn crowd_counts_agree_with_within_everywhere() {
+        let bounds = Bounds {
+            width: 6,
+            height: 5,
+        };
+        let agents: Vec<Agent> = [
+            (0, 0, 0),
+            (1, 0, 0),
+            (2, 1, 0),
+            (3, 2, 2),
+            (4, 2, 2),
+            (5, 2, 3),
+            (6, 5, 4),
+            (7, 3, 1),
+            (8, 5, 0),
+        ]
+        .iter()
+        .map(|&(id, x, y)| agent(id, x, y))
+        .collect();
+        let index = SpatialIndex::build(bounds, &agents);
+        for y in 0..bounds.height {
+            for x in 0..bounds.width {
+                for r in 0..=4u16 {
+                    let c = Pos::new(x, y);
+                    let w = index.within(c, r);
+                    let expected = (
+                        w.len() as u32,
+                        w.iter().filter(|(d, _)| *d <= 1).count() as u32,
+                    );
+                    assert_eq!(index.crowd(c, r), expected, "centre {c:?} radius {r}");
+                }
+            }
+        }
     }
 }

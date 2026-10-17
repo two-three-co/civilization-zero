@@ -7,6 +7,7 @@
 mod common;
 
 use common::*;
+use simulation_core::policy::forager_weights;
 use simulation_core::world::SNAPSHOT_FORMAT;
 use simulation_core::{
     Action, Agent, AgentId, Event, Intervention, InterventionError, ParamsMode, PolicyKind,
@@ -47,8 +48,12 @@ fn learning_kinds_carry_blank_tables_and_for_now_decide_like_the_forager() {
         assert_eq!(
             a.params.table,
             Some(PolicyTable::Reflex {
-                weights: vec![0; REFLEX_FEATURES * Action::KIND_COUNT]
+                weights: forager_weights()
             })
+        );
+        assert_eq!(
+            forager_weights().len(),
+            REFLEX_FEATURES * Action::KIND_COUNT
         );
         assert_eq!(a.params.hunger_permille, cfg.initial_params.hunger_permille);
     }
@@ -66,8 +71,9 @@ fn learning_kinds_carry_blank_tables_and_for_now_decide_like_the_forager() {
         learner.step();
     }
     assert!(learner.ledger.births > 0, "generations passed");
-    // 3-5 frame: same bodies, same food, same ledger — only the kind and
-    // its table differ, and those are state the hash sees.
+    // Reflex: by construction of `forager_weights()` (3-6); Learner: the
+    // 3-5 placeholder. Same bodies, same food, same ledger — only the kind
+    // and its table differ, and those are state the hash sees.
     assert_eq!(bodies(&forager), bodies(&reflex));
     assert_eq!(bodies(&forager), bodies(&learner));
     assert_eq!(forager.resources.food, learner.resources.food);
@@ -297,8 +303,8 @@ fn learner_children_inherit_the_table_or_start_blank_and_reflex_weights_are_inhe
         assert!(matches!(&parent.params.table, Some(PolicyTable::Learner { q }) if q[1] == 9));
         w.check_invariants().unwrap();
     }
-    // Reflex weights travel to the child unchanged (their mutation is 3-6);
-    // the scalar still mutates.
+    // Reflex weights travel to the child mutated (3-6): every weight within
+    // ±mutation_step_permille of the parent's, and not all of them equal.
     let mut w = empty_world(base.clone());
     add_agent_with(
         &mut w,
@@ -314,7 +320,21 @@ fn learner_children_inherit_the_table_or_start_blank_and_reflex_weights_are_inhe
     }
     w.apply(intents(&[Action::Rest]));
     assert_eq!(w.agents[1].policy, PolicyKind::Reflex);
-    assert_eq!(w.agents[1].params.table, w.agents[0].params.table);
+    let (
+        Some(PolicyTable::Reflex { weights: parent }),
+        Some(PolicyTable::Reflex { weights: child }),
+    ) = (&w.agents[0].params.table, &w.agents[1].params.table)
+    else {
+        panic!("reflex tables");
+    };
+    let step = base.mutation_step_permille as i32;
+    assert!(parent.iter().zip(child).all(|(p, c)| (p - c).abs() <= step));
+    assert_ne!(parent, child);
+    assert_eq!(
+        (parent[0], parent[127]),
+        (1024, -3),
+        "the parent is untouched"
+    );
     w.check_invariants().unwrap();
 }
 
