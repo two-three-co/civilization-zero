@@ -1,4 +1,4 @@
-//! Civilization Zero in the browser (ADR-0010 2b-1).
+//! Civilization Zero in the browser (ADR-0010 2b-1, ADR-0013 3-9a).
 //!
 //! `WasmWorld` is the only type JavaScript sees. It owns a [`Multiverse`]
 //! with one branch and a *cursor*: `seek` to a past tick restores that tick's
@@ -7,6 +7,12 @@
 //! after which stepping advances the head itself. Interventions are accepted
 //! at the head only; intervening behind the head is a fork (2b-5).
 //!
+//! The social layer (3-9a) is read, never remembered: `social()` lists the
+//! transfers, harms and signals of the tick the view just executed, placed
+//! at the agents' positions in the view; `agent_json` is one agent with the
+//! memory the kernel wrote for it; `agent_events_json` filters the ledger
+//! to one agent; `ledger_json` is the running totals.
+//!
 //! Numbers cross the boundary as `u32` so JavaScript never needs `BigInt`;
 //! the state hash is a 16-hex-digit string. Errors are `String`s (wasm-bindgen
 //! throws them; natively they stay plain `Result`s, so the same code is
@@ -14,14 +20,64 @@
 //! `wasm-pack build crates/cz-web --target web` (see `web/package.json`).
 
 use multiverse::{replay, BranchId, Multiverse};
-use simulation_core::{Intervention, PolicyKind, World, WorldConfig};
+use simulation_core::{AgentId, Event, Intervention, PolicyKind, Pos, World, WorldConfig};
 use wasm_bindgen::prelude::*;
 
 /// Fields per agent in `agents()`, in the kernel's trace order.
 pub const AGENT_FIELDS: usize = 8;
 
+/// Fields per marker in `social()`: kind (`MARKER_TRANSFER` /
+/// `MARKER_HARM` / `MARKER_SIGNAL`), tick, x, y, x2, y2, value. `x2, y2` is
+/// the other party's position, `-1, -1` when there is none (a signal) or it
+/// is no longer in the view (died that tick).
+pub const MARKER_FIELDS: usize = 7;
+pub const MARKER_TRANSFER: i32 = 0;
+pub const MARKER_HARM: i32 = 1;
+pub const MARKER_SIGNAL: i32 = 2;
+
 fn js<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
+}
+
+/// How a fresh world's founding population is split between the fixed
+/// policies. The rule is `cz run --policy`'s, so a browser world and a CLI
+/// world with the same mix reach the same hashes. A forager-only world has
+/// no social behaviour at all (foragers never transfer, harm or signal), so
+/// the UI offers `mixed` and `random` to see the social layer at work.
+pub fn policy_mix(name: &str) -> Result<fn(u32) -> PolicyKind, String> {
+    match name {
+        "forager" => Ok(|_| PolicyKind::Forager),
+        "random" => Ok(|_| PolicyKind::Random),
+        "mixed" => Ok(|i| {
+            if i % 2 == 0 {
+                PolicyKind::Forager
+            } else {
+                PolicyKind::Random
+            }
+        }),
+        other => Err(format!(
+            "unknown policy mix {other:?}: expected forager, random or mixed"
+        )),
+    }
+}
+
+/// Whether `e` names `id` in any role (actor, target, child, parent, or the
+/// agent an intervention removed).
+fn involves(e: &Event, id: AgentId) -> bool {
+    match e {
+        Event::Born { child, parent, .. } => *child == id || *parent == id,
+        Event::Died { agent, .. } | Event::Acted { agent, .. } | Event::Signaled { agent, .. } => {
+            *agent == id
+        }
+        Event::Transferred { from, to, .. }
+        | Event::Proposed { from, to, .. }
+        | Event::Accepted { from, to, .. }
+        | Event::Rejected { from, to, .. } => *from == id || *to == id,
+        Event::Harmed { by, target, .. } => *by == id || *target == id,
+        Event::Intervened { intervention, .. } => {
+            matches!(intervention, Intervention::RemoveAgent { id: removed } if *removed == id)
+        }
+    }
 }
 
 #[wasm_bindgen]
@@ -34,9 +90,10 @@ pub struct WasmWorld {
 
 #[wasm_bindgen]
 impl WasmWorld {
-    /// A fresh forager world. `patches` is the number of food patches
-    /// (`cz` uses `width * height / 700`); `snapshot_every` bounds how far a
-    /// `seek` has to re-execute.
+    /// A fresh world. `patches` is the number of food patches (`cz` uses
+    /// `width * height / 700`); `snapshot_every` bounds how far a `seek` has
+    /// to re-execute; `policy` is `forager`, `random` or `mixed` (see
+    /// [`policy_mix`]).
     #[wasm_bindgen(constructor)]
     pub fn new(
         seed: u32,
@@ -45,6 +102,7 @@ impl WasmWorld {
         agents: u32,
         patches: u32,
         snapshot_every: u32,
+        policy: &str,
     ) -> Result<WasmWorld, String> {
         let config = WorldConfig {
             seed: seed as u64,
@@ -54,7 +112,7 @@ impl WasmWorld {
             patch_count: patches,
             ..WorldConfig::default()
         };
-        let world = World::generate(config, |_| PolicyKind::Forager).map_err(js)?;
+        let world = World::generate(config, policy_mix(policy)?).map_err(js)?;
         Ok(Self {
             mv: Multiverse::new(world, snapshot_every.max(1) as u64),
             branch: BranchId(0),
@@ -206,6 +264,100 @@ impl WasmWorld {
         out
     }
 
+    /// `MARKER_FIELDS` values per interaction of the tick the view just
+    /// executed (tick − 1; empty at the origin of a fresh world): transfers
+    /// and harms from the ledger, signals from each agent's kernel-written
+    /// `last_signal` (so nothing needs `record_signals`). Positions are the
+    /// view's, i.e. at most one move after the interaction. A transfer or
+    /// harm whose actor died that tick is placed at the other party; one
+    /// with neither party left is dropped. Ledger order, then signals in id
+    /// order.
+    pub fn social(&self) -> Vec<i32> {
+        let w = self.view();
+        let mut out = Vec::new();
+        let Some(prev) = w.tick.checked_sub(1) else {
+            return out;
+        };
+        let pos_of = |id: AgentId| -> Option<Pos> {
+            w.agents
+                .binary_search_by_key(&id, |a| a.id)
+                .ok()
+                .map(|i| w.agents[i].pos)
+        };
+        let branch = self.mv.branch(self.branch).expect("the branch exists");
+        for e in branch.log().at(prev) {
+            let (kind, actor, other, value) = match e {
+                Event::Transferred {
+                    from, to, amount, ..
+                } => (MARKER_TRANSFER, *from, *to, *amount as i32),
+                Event::Harmed {
+                    by, target, damage, ..
+                } => (
+                    MARKER_HARM,
+                    *by,
+                    *target,
+                    (*damage).clamp(0, i32::MAX as i64) as i32,
+                ),
+                _ => continue,
+            };
+            let (x, y, x2, y2) = match (pos_of(actor), pos_of(other)) {
+                (Some(p), Some(q)) => (p.x as i32, p.y as i32, q.x as i32, q.y as i32),
+                (Some(p), None) | (None, Some(p)) => (p.x as i32, p.y as i32, -1, -1),
+                (None, None) => continue,
+            };
+            out.extend_from_slice(&[kind, prev as i32, x, y, x2, y2, value]);
+        }
+        for a in &w.agents {
+            if let Some(s) = a.last_signal.filter(|s| s.tick == prev) {
+                out.extend_from_slice(&[
+                    MARKER_SIGNAL,
+                    prev as i32,
+                    a.pos.x as i32,
+                    a.pos.y as i32,
+                    -1,
+                    -1,
+                    s.message.value().clamp(0, i32::MAX as i64) as i32,
+                ]);
+            }
+        }
+        out
+    }
+
+    /// The view's `Ledger` (running totals since tick 0: food and energy
+    /// flows, births, deaths by cause, transfers, harms, signals,
+    /// interventions) as JSON.
+    pub fn ledger_json(&self) -> Result<String, String> {
+        serde_json::to_string(&self.view().ledger).map_err(js)
+    }
+
+    /// The living agent `id` of the view as JSON — the kernel's `Agent` as
+    /// serde renders it, including `last_signal` and the kernel-written
+    /// memory `recent` (oldest first) — or `null` when no such agent is
+    /// alive at this tick.
+    pub fn agent_json(&self, id: u32) -> Result<String, String> {
+        let w = self.view();
+        match w.agents.binary_search_by_key(&AgentId(id as u64), |a| a.id) {
+            Ok(i) => serde_json::to_string(&w.agents[i]).map_err(js),
+            Err(_) => Ok("null".into()),
+        }
+    }
+
+    /// Ledger events of ticks `from..to` (half-open) that name agent `id`
+    /// in any role, oldest first, as a JSON array. The ledger, not the
+    /// agent's memory: complete, and available after the agent has died.
+    pub fn agent_events_json(&self, id: u32, from: u32, to: u32) -> Result<String, String> {
+        let id = AgentId(id as u64);
+        let branch = self.mv.branch(self.branch).map_err(js)?;
+        let (from, to) = (from as u64, to as u64);
+        let events: Vec<&Event> = branch
+            .log()
+            .range(from..to.max(from))
+            .iter()
+            .filter(|e| involves(e, id))
+            .collect();
+        serde_json::to_string(&events).map_err(js)
+    }
+
     /// Binary snapshot of the view (ADR-0006).
     pub fn snapshot_bytes(&self) -> Vec<u8> {
         self.view().to_bytes()
@@ -235,11 +387,11 @@ impl WasmWorld {
     /// ledger, never from its own memory.
     pub fn interventions_json(&self) -> Result<String, String> {
         let branch = self.mv.branch(self.branch).map_err(js)?;
-        let events: Vec<&simulation_core::Event> = branch
+        let events: Vec<&Event> = branch
             .log()
             .events()
             .iter()
-            .filter(|e| matches!(e, simulation_core::Event::Intervened { .. }))
+            .filter(|e| matches!(e, Event::Intervened { .. }))
             .collect();
         serde_json::to_string(&events).map_err(js)
     }

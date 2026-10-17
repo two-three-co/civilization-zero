@@ -101,6 +101,12 @@ Decide の前に一様グリッドのバケット（セル → 個体 index 列�
 - インスペクタは `events_at` と新規 `agent_events(id, from..to)` で台帳から相互作用を読む（UI の記憶ではなく台帳）。
 - 「Compare: fixed vs learning」ボタン = `Fork here` + `SetPolicy`。カーブは人口・摂取量/tick・移転数/tick。
 
+**実装（3-9a、2026-10-17）と設計からの差分**:
+- `Frame.stats`（その tick の件数）は置かず、`Frame.ledger`（カーネルの `Ledger` 累計。状態の一部なので巻き戻し・分岐に追随する）を載せ、UI が直近 1 s の累計差分から tick あたりの移転・加害・発信数を出す。採集・消費も `food_consumed` などの累計で読める。
+- `Frame.social` はビューが直前に実行した tick（tick − 1）の移転・加害・発信だけで、位置はビューの個体位置（相互作用から最大 1 移動後）。移転・加害は常時記録の台帳から、発信は `record_signals` を要求せず各個体の `last_signal`（状態）から取る。したがって config は変わらず、`state_hash` は `cz run --policy …` と一致したまま。`fromSnapshot` で作った分岐の台帳は原点から始まるので、原点では発信だけが出る。30 tick/フレームでは 30 tick につき 1 tick 分のマーカーしか描かれない（統計は累計なので落ちない）。
+- インスペクタは `agent_json(id)`（カーネルが書いた `recent`、既定で最大 8 件）と `agent_events_json(id, from, to)`（台帳。上限なし、死後も残る）の両方を出し、記憶と台帳の違いを見せる。要求ごとの `watch` で選択個体の詳細がフレームに同梱されるので、追加の往復はない。
+- 方策構成は `WasmWorld::new(..., policy)`（`forager / random / mixed`。`mixed` は偶数 id が Forager、奇数 id が Random で `cz run --policy mixed` と同じ）。UI の既定は forager のまま（Toy 1 の記録値とゴールデンの経路を保つ）で、ヘッダの選択か `?policy=` で切り替える。3-9c の `SetPolicy` が入るまで、学習方策の選択はない。
+
 ### D9. 実験 EXP-002（3-8）: 学習は Forager に届くか（健全性チェック、事前登録）
 
 - 腕: Random（帰無）、Forager（設計者の上界参照）、Reflex（突然変異 ON）、Learner（32 状態）、Learner-128。
@@ -121,7 +127,7 @@ Decide の前に一様グリッドのバケット（セル → 個体 index 列�
 | 3-6 | Reflex 方策（特徴ベクトル・固定小数点スコア・Forager 等価の初期重み・突然変異 ON） | 3-3, 3-5 | 初期重みの Reflex が Forager と 1,000 tick 同一決定（ハッシュ一致）。`tests/forager.rs` 相当の決定規則テスト。1.3k 体で decide ≤ 150 ns/体·tick（計測） |
 | 3-7 | Learner 方策（離散状態・整数 Q・決定論的 ε-greedy・継承） | 3-3, 3-5 | 再生で bit 一致。スナップショット 1,300 体 ≤ 1 MB。同じ状態列で Q が単調に更新されるユニットテスト。1.3k 体で decide ≤ 200 ns/体·tick |
 | 3-8 | EXP-002（事前登録 → 実行 → 記録）、`cz sweep` の方策拡張と新指標（摂取量・移転・加害） | 3-6, 3-7 | 実験仕様が実行前にコミットされている。10 シードの結果表と限界の記述。予測の当否を明記 |
-| 3-9a | UI: `Frame.stats` / `social` マーカー、インスペクタの記憶・発信・相互作用（台帳から） | 3-3（UI 骨格は並行可） | 公開 URL で、個体を選ぶと最近の相互作用が tick 付きで見える。移転・加害・発信が地図に出る |
+| 3-9a ✅ | UI: `Frame.social` マーカー、`Frame.ledger` の集計、インスペクタの記憶・発信・相互作用（台帳から）、世界初期化の方策構成。**済 2026-10-17**: `crates/cz-web` に `social()`（直前 tick の移転・加害を台帳から、発信は各個体の `last_signal` から、ビューの位置に置いた `Int32Array`）、`ledger_json()`、`agent_json(id)`（`recent` と `last_signal` を含む `Agent`）、`agent_events_json(id, from, to)`（D8 の `agent_events`）、コンストラクタの `policy`（`forager / random / mixed`、`cz run --policy` と同じ割当規則）。`web/` はプロトコル v3（`Frame.social / ledger`、要求ごとの `watch`、`WorldInit.policy`）、地図マーカー（0.6 s で消える軌跡）、統計（台帳の累計と直近 1 s の tick あたり xfer / harm / sig）、インスペクタ（記憶を tick 付き、台帳の直近 100 tick）、ヘッダの世界選択。`tests/native.rs` +4、`tests/wasm.rs` +1。ローカルのブラウザ確認と計測は STATUS（公開 URL は push 後） | 3-3（UI 骨格は並行可） | 公開 URL で、個体を選ぶと最近の相互作用が tick 付きで見える。移転・加害・発信が地図に出る |
 | 3-9b | UI: 交渉スレッド表示（2 個体間の Propose/Accept/Transfer の時系列） | 3-4, 3-9a | 台本方策の世界で提案 → 受諾 → 移転 → 返済のスレッドが読める |
 | 3-9c | UI: 「Compare: fixed vs learning」（fork + SetPolicy）、人口・摂取量・移転数カーブ、方策選択（世界の初期化） | 3-5, 3-9a | PRODUCT.md Phase 3 デモ (d)。学習世界で ≥ 60 tick/s を画面に表示。Verify = MATCH |
 | 3-10 | 文書: ゴールデン表、STATUS、RISKS 追補（加害行動が生む退化均衡、報酬ハッキング、解釈可能性）、TUTORIAL 追補 | 全て | 新セッションが STATUS から Phase 3 の状態を再構築できる |

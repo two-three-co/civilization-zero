@@ -4,7 +4,19 @@
 // wasm first: `npm run build:wasm` (wasm-pack writes src/wasm/, gitignored).
 
 import init, { WasmWorld } from "../wasm/cz_web.js";
-import type { Envelope, Frame, InterventionEvent, Request, Response, Timing, WorldInit } from "../protocol";
+import type {
+  AgentDetail,
+  Envelope,
+  Frame,
+  InterventionEvent,
+  Ledger,
+  LedgerEvent,
+  Request,
+  Response,
+  Timing,
+  Watch,
+  WorldInit,
+} from "../protocol";
 
 const ready = init();
 let world: WasmWorld | null = null;
@@ -22,18 +34,21 @@ function create(c: WorldInit): WasmWorld {
   const every = c.snapshotEvery ?? 250;
   if (c.snapshot) return WasmWorld.fromSnapshot(c.snapshot, every);
   const patches = c.patches ?? Math.max(1, Math.floor((c.width * c.height) / 700));
-  return new WasmWorld(c.seed >>> 0, c.width, c.height, c.agents, patches, every);
+  return new WasmWorld(c.seed >>> 0, c.width, c.height, c.agents, patches, every, c.policy ?? "forager");
 }
 
-function frame(w: WasmWorld): Frame {
-  return {
+function frame(w: WasmWorld, watch?: Watch): Frame {
+  const tick = w.tick();
+  const f: Frame = {
     source: "kernel",
-    tick: w.tick(),
+    tick,
     width: w.width(),
     height: w.height(),
     hash: w.state_hash_hex(),
     food: w.food(),
     agents: w.agents(),
+    social: w.social(),
+    ledger: JSON.parse(w.ledger_json()) as Ledger,
     alive: w.alive(),
     foodTotal: w.food_total(),
     frontier: w.frontier(),
@@ -41,12 +56,26 @@ function frame(w: WasmWorld): Frame {
     origin: w.origin(),
     timing: { ...timing },
   };
+  if (watch) {
+    // Everything here is read from the kernel: the agent as it is in the
+    // view (with the memory the kernel wrote for it) and the ledger's events
+    // naming it in the last `window` ticks. Nothing is remembered page-side.
+    const id = Math.max(0, Math.floor(watch.id));
+    const window = Math.max(0, Math.floor(watch.window));
+    f.watched = {
+      id,
+      window,
+      agent: JSON.parse(w.agent_json(id)) as AgentDetail | null,
+      events: JSON.parse(w.agent_events_json(id, Math.max(0, tick - window), tick)) as LedgerEvent[],
+    };
+  }
+  return f;
 }
 
 const post = (msg: Envelope<Response>, transfer: Transferable[] = []) =>
   (self as unknown as { postMessage(m: Envelope<Response>, t: Transferable[]): void }).postMessage(msg, transfer);
 
-async function handle({ id, body }: Envelope<Request>): Promise<void> {
+async function handle({ id, body, watch }: Envelope<Request>): Promise<void> {
   try {
     await ready;
     let event: InterventionEvent | undefined;
@@ -82,8 +111,8 @@ async function handle({ id, body }: Envelope<Request>): Promise<void> {
       case "frame":
         break;
     }
-    const f = frame(need());
-    const transfer: Transferable[] = [f.food.buffer, f.agents.buffer];
+    const f = frame(need(), watch);
+    const transfer: Transferable[] = [f.food.buffer, f.agents.buffer, f.social.buffer];
     if (snapshot) transfer.push(snapshot.buffer);
     post({ id, body: { type: "frame", frame: f, event, history, snapshot } }, transfer);
   } catch (err) {

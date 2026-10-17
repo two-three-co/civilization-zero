@@ -348,3 +348,67 @@ dd {
 footer {
   padding: 8px 16px 16px;
 }
+/* Social markers (ADR-0013 3-9a): transfer, harm, signal. */
+:root {
+  --xfer: #0e7490;
+  --harm: #dc2626;
+  --sig: #a21caf;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --xfer: #22d3ee;
+    --harm: #f87171;
+    --sig: #e879f9;
+  }
+}
+.mark {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin: 0 4px -1px 6px;
+  box-sizing: border-box;
+}
+.mark.xfer {
+  width: 12px;
+  height: 0;
+  border-top: 2px solid var(--xfer);
+  margin-bottom: 3px;
+}
+.mark.harm {
+  position: relative;
+  width: 9px;
+  height: 9px;
+}
+.mark.harm::before,
+.mark.harm::after {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 3.5px;
+  width: 11px;
+  border-top: 2px solid var(--harm);
+  transform: rotate(45deg);
+}
+.mark.harm::after {
+  transform: rotate(-45deg);
+}
+.mark.sig {
+  border: 2px solid var(--sig);
+  border-radius: 50%;
+}
+.pick {
+  display: inline-flex;
+  gap: 4px;
+  align-items: baseline;
+}
+.pick select {
+  padding: 1px 6px;
+  font-size: 12px;
+}
+.history li .what {
+  color: var(--ink);
+}
+.history.memory li {
+  border-top-color: transparent;
+  padding: 1px 0;
+}

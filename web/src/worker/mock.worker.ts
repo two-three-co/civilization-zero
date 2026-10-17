@@ -3,9 +3,22 @@
 // foragers and random walkers, metabolism, birth by energy split, death by
 // starvation or age, regrowth every 10 ticks, snapshots for seeking — but it
 // is NOT the kernel: no conservation ledger, no determinism contract, no
-// hash. Nothing shown from it is a fact about Civilization Zero.
+// hash, no social layer (its random walkers never transfer, harm or speak,
+// so `social` is always empty and a watched agent remembers nothing).
+// Nothing shown from it is a fact about Civilization Zero.
 
-import { AGENT_FIELDS, type Envelope, type Frame, type Request, type Response, type WorldInit } from "../protocol";
+import {
+  AGENT_FIELDS,
+  type AgentDetail,
+  type Envelope,
+  type Frame,
+  type Ledger,
+  type Request,
+  type Response,
+  type Watch,
+  type Watched,
+  type WorldInit,
+} from "../protocol";
 
 interface State {
   tick: number;
@@ -23,6 +36,7 @@ const VISION = 4;
 
 let cfg: WorldInit | null = null;
 let cap = new Uint8Array(0);
+let foodInitial = 0;
 let state: State | null = null;
 let frontier = 0;
 const snapshots = new Map<number, State>();
@@ -41,6 +55,18 @@ function ensureCapacity(s: State, agents: number): void {
   const bigger = new Int32Array(Math.max(agents * F, s.agents.length * 2));
   bigger.set(s.agents);
   s.agents = bigger;
+}
+
+/** The kernel's rule for `WorldInit.policy` (`cz run --policy`): 1 = random walker. */
+function policyOf(c: WorldInit, i: number): number {
+  switch (c.policy ?? "forager") {
+    case "random":
+      return 1;
+    case "mixed":
+      return i % 2 === 1 ? 1 : 0;
+    default:
+      return 0;
+  }
 }
 
 function init(c: WorldInit): void {
@@ -75,6 +101,8 @@ function init(c: WorldInit): void {
     }
   }
   s.food.set(cap);
+  foodInitial = 0;
+  for (let k = 0; k < n; k++) foodInitial += cap[k];
   for (let i = 0; i < c.agents; i++) {
     const b = i * F;
     s.agents[b] = i;
@@ -82,7 +110,7 @@ function init(c: WorldInit): void {
     s.agents[b + 2] = Math.floor(rand(s) * c.height);
     s.agents[b + 3] = 50_000;
     s.agents[b + 4] = 0;
-    s.agents[b + 5] = i % 4 === 0 ? 1 : 0;
+    s.agents[b + 5] = policyOf(c, i);
     s.agents[b + 6] = 100;
     s.agents[b + 7] = Math.floor(rand(s) * 3000);
   }
@@ -234,7 +262,57 @@ function seek(target: number): void {
   advanceTo(target);
 }
 
-function frame(): Frame {
+/** The mock keeps no ledger; only the initial food is known. */
+function ledger(): Ledger {
+  return {
+    food_initial: foodInitial,
+    food_regrown: 0,
+    food_consumed: 0,
+    energy_initial: 0,
+    energy_gained: 0,
+    energy_spent: 0,
+    energy_written_off: 0,
+    births: 0,
+    deaths: 0,
+    deaths_by_cause: [0, 0, 0],
+    transfers: 0,
+    food_transferred: 0,
+    food_stored: 0,
+    harms: 0,
+    signals: 0,
+    proposals: 0,
+    acceptances: 0,
+    rejections: 0,
+    food_intervened: 0,
+    energy_intervened: 0,
+    interventions: 0,
+  };
+}
+
+/** The watched agent as the mock knows it: body only, no memory, no history. */
+function watched(s: State, watch: Watch): Watched {
+  let agent: AgentDetail | null = null;
+  for (let k = 0; k < s.alive * F; k += F) {
+    if (s.agents[k] !== watch.id) continue;
+    agent = {
+      id: s.agents[k],
+      pos: { x: s.agents[k + 1], y: s.agents[k + 2] },
+      energy: s.agents[k + 3],
+      inventory: s.agents[k + 4],
+      policy: s.agents[k + 5] === 1 ? "Random" : "Forager",
+      health: s.agents[k + 6],
+      age: s.agents[k + 7],
+      params: { hunger_permille: 500 },
+      memory: { target: null },
+      last_signal: null,
+      recent: [],
+    };
+    break;
+  }
+  return { id: watch.id, window: watch.window, agent, events: [] };
+}
+
+function frame(watch?: Watch): Frame {
   const s = state!;
   const c = cfg!;
   let foodTotal = 0;
@@ -246,11 +324,14 @@ function frame(): Frame {
     height: c.height,
     food: s.food.slice(),
     agents: s.agents.slice(0, s.alive * F),
+    social: new Int32Array(0),
+    ledger: ledger(),
     alive: s.alive,
     foodTotal,
     frontier,
     snapshotEvery: SNAP_EVERY,
     origin: 0,
+    watched: watch ? watched(s, watch) : undefined,
   };
 }
 
@@ -258,7 +339,7 @@ const post = (msg: Envelope<Response>, transfer: Transferable[] = []) =>
   (self as unknown as { postMessage(m: Envelope<Response>, t: Transferable[]): void }).postMessage(msg, transfer);
 
 self.onmessage = (ev: MessageEvent<Envelope<Request>>) => {
-  const { id, body } = ev.data;
+  const { id, body, watch } = ev.data;
   try {
     switch (body.type) {
       case "init":
@@ -283,10 +364,11 @@ self.onmessage = (ev: MessageEvent<Envelope<Request>>) => {
         if (!state) throw new Error("init first");
         break;
     }
-    const f = frame();
+    const f = frame(watch);
     post({ id, body: { type: "frame", frame: f, history: body.type === "history" ? [] : undefined } }, [
       f.food.buffer,
       f.agents.buffer,
+      f.social.buffer,
     ]);
   } catch (err) {
     post({ id, body: { type: "error", message: err instanceof Error ? err.message : String(err) } });

@@ -16,7 +16,7 @@ Phase 2 の計画は ADR-0010（Toy 1）に従う。
 - [ ] `Event::Acted { agent, intent, outcome }` の記録（2a-3、Store/Transfer と同時。全行動記録は設定で ON/OFF、台帳サイズを計測）。
 - [ ] 台帳のバイナリ形式（postcard は内部タグ付き enum を復号できないので別ワイヤ型が要る。JSON Lines で足りている間はやらない）。
 - [ ] 2b-6 の磨き込み（任意）: 分岐を 2 本以上、fork した B をさらに fork、B の介入履歴の表示、B 側の個体インスペクタ。
-- [ ] wasm サイズ（205 KB）: serde_json を境界から外す（介入とイベントを構造体で渡す）か、`--profile wasm` 相当の設定を wasm-pack に通せば縮む見込み。計測してから。
+- [ ] wasm サイズ（205 KB → 3-3 で 226 KB → 3-9a で 278 KB、3-4 と合わせて 286 KB。3-9a の +52 KB は `agent_json` / `ledger_json` / `agent_events_json` の serde_json 直列化が主）: serde_json を境界から外す（介入・イベント・個体を構造体や typed array で渡す）か、`--profile wasm` 相当の設定を wasm-pack に通せば縮む見込み。計測してから。
 
 ## Phase 3: Agent Cognition（ADR-0013 のタスク表に従う）
 
@@ -28,7 +28,8 @@ Phase 2 の計画は ADR-0010（Toy 1）に従う。
 - [ ] 3-6 Reflex 方策（固定小数点、Forager 等価の初期重み、突然変異 ON）
 - [ ] 3-7 Learner 方策（表形式 Q、整数、継承）
 - [ ] 3-8 EXP-002 事前登録 → 実行 → 記録
-- [ ] 3-9a/b/c UI: 社会マーカー・インスペクタの記憶/相互作用、交渉スレッド、fixed vs learning 比較
+- [x] 3-9a UI: 社会マーカー（`Frame.social`）・台帳集計（`Frame.ledger`）・インスペクタの記憶/相互作用・世界の方策構成選択（済 2026-10-17: プロトコル v3、cz-web に `social / ledger_json / agent_json / agent_events_json` と `policy` 引数。ローカルで確認済み、公開 URL は push 後）
+- [ ] 3-9b/c UI: 交渉スレッド（`Proposed / Accepted / Rejected / Transferred` の時系列。`agent_events_json` が材料）、fixed vs learning 比較
 - [ ] 3-10 文書（ゴールデン表、STATUS、RISKS 追補、TUTORIAL 追補）
 
 ## Phase 6 以降

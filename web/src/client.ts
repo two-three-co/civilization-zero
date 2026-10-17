@@ -1,4 +1,4 @@
-import type { Envelope, Frame, Intervention, InterventionEvent, Request, Response, WorldInit } from "./protocol";
+import type { Envelope, Frame, Intervention, InterventionEvent, Request, Response, Watch, WorldInit } from "./protocol";
 
 type FrameResponse = Extract<Response, { type: "frame" }>;
 
@@ -6,6 +6,8 @@ type FrameResponse = Extract<Response, { type: "frame" }>;
 export class WorldClient {
   private nextId = 1;
   private pending = new Map<number, { resolve: (r: FrameResponse) => void; reject: (e: Error) => void }>();
+  /** Attached to every request, so each frame carries the watched agent's detail (`Frame.watched`). */
+  private watched: Watch | null = null;
 
   constructor(private readonly worker: Worker) {
     worker.onmessage = (ev: MessageEvent<Envelope<Response>>) => {
@@ -36,9 +38,18 @@ export class WorldClient {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      const envelope: Envelope<Request> = { id, body };
+      const envelope: Envelope<Request> = { id, body, watch: this.watched ?? undefined };
       this.worker.postMessage(envelope);
     });
+  }
+
+  /**
+   * Follow one agent: from now on every frame this client returns carries
+   * the agent's kernel-written memory, last signal and ledger history
+   * (`Frame.watched`). `null` stops. Takes effect from the next request.
+   */
+  watch(w: Watch | null): void {
+    this.watched = w;
   }
 
   init(config: WorldInit): Promise<Frame> {

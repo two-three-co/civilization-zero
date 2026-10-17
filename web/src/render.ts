@@ -1,4 +1,4 @@
-import { AGENT_FIELDS, type Frame } from "./protocol";
+import { AGENT_FIELDS, MARKER_FIELDS, MARKER_HARM, MARKER_SIGNAL, MARKER_TRANSFER, type Frame } from "./protocol";
 
 export const SCALE = 4;
 
@@ -6,8 +6,120 @@ const css = (name: string) => getComputedStyle(document.documentElement).getProp
 
 let scratch: { canvas: OffscreenCanvas; image: ImageData; w: number; h: number } | null = null;
 
-/** Food as a translucent green layer (1 px per cell, scaled up), agents as squares whose opacity is their energy. */
-export function drawFrame(canvas: HTMLCanvasElement, frame: Frame, selected: number | null): void {
+/** Colours of the social markers, resolved once per frame. */
+interface Palette {
+  xfer: string;
+  harm: string;
+  sig: string;
+}
+
+/** How long a marker stays visible after the frame that produced it. */
+const TRAIL_MS = 600;
+
+/**
+ * Markers of the last few frames, so an interaction that happened in one
+ * 16 ms frame stays visible long enough to be seen. Each entry is drawn
+ * where its agents were in the frame that reported it, fading with age; the
+ * frame currently shown is drawn at full strength by `drawFrame`. Nothing
+ * here is state about the world — only about what was already shown.
+ */
+export class MarkerTrail {
+  private past: { at: number; tick: number; markers: Int32Array }[] = [];
+  private lastTick: number | null = null;
+
+  /** Remembers a frame's markers (once per tick). */
+  push(frame: Frame): void {
+    if (frame.tick === this.lastTick) return;
+    this.lastTick = frame.tick;
+    const now = performance.now();
+    if (frame.social.length > 0) this.past.push({ at: now, tick: frame.tick, markers: frame.social });
+    this.prune(now);
+  }
+
+  reset(): void {
+    this.past = [];
+    this.lastTick = null;
+  }
+
+  private prune(now: number): void {
+    while (this.past.length > 0 && now - this.past[0].at > TRAIL_MS) this.past.shift();
+  }
+
+  /** Older frames' markers, faded by age; the frame being shown is skipped. */
+  draw(ctx: CanvasRenderingContext2D, shownTick: number, palette: Palette): void {
+    const now = performance.now();
+    this.prune(now);
+    for (const e of this.past) {
+      if (e.tick === shownTick) continue;
+      const alpha = 0.7 * (1 - (now - e.at) / TRAIL_MS);
+      if (alpha > 0.02) drawMarkers(ctx, e.markers, alpha, palette);
+    }
+  }
+}
+
+/**
+ * Transfers (line from giver to receiver, dot at the receiver), harms (line
+ * from attacker to victim, cross at the victim) and signals (ring around
+ * the speaker) of one frame, at the agents' positions in that frame. A
+ * marker whose other party is gone (`x2 = -1`) is drawn at the one left.
+ */
+function drawMarkers(ctx: CanvasRenderingContext2D, m: Int32Array, alpha: number, palette: Palette): void {
+  if (m.length === 0) return;
+  const c = (v: number) => (v + 0.5) * SCALE;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.lineWidth = 1.5;
+  for (let k = 0; k < m.length; k += MARKER_FIELDS) {
+    const x = c(m[k + 2]);
+    const y = c(m[k + 3]);
+    const other = m[k + 4] >= 0;
+    const x2 = other ? c(m[k + 4]) : x;
+    const y2 = other ? c(m[k + 5]) : y;
+    switch (m[k]) {
+      case MARKER_TRANSFER:
+        ctx.strokeStyle = palette.xfer;
+        ctx.fillStyle = palette.xfer;
+        if (other) {
+          ctx.beginPath();
+          ctx.moveTo(x, y);
+          ctx.lineTo(x2, y2);
+          ctx.stroke();
+        }
+        ctx.beginPath();
+        ctx.arc(x2, y2, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+        break;
+      case MARKER_HARM:
+        ctx.strokeStyle = palette.harm;
+        ctx.beginPath();
+        if (other) {
+          ctx.moveTo(x, y);
+          ctx.lineTo(x2, y2);
+        }
+        ctx.moveTo(x2 - 3, y2 - 3);
+        ctx.lineTo(x2 + 3, y2 + 3);
+        ctx.moveTo(x2 + 3, y2 - 3);
+        ctx.lineTo(x2 - 3, y2 + 3);
+        ctx.stroke();
+        break;
+      case MARKER_SIGNAL:
+        ctx.strokeStyle = palette.sig;
+        ctx.beginPath();
+        ctx.arc(x, y, SCALE * 1.25, 0, Math.PI * 2);
+        ctx.stroke();
+        break;
+    }
+  }
+  ctx.restore();
+}
+
+/**
+ * Food as a translucent green layer (1 px per cell, scaled up), agents as
+ * squares whose opacity is their energy, then the social markers of the
+ * tick just executed (and, through `trail`, the fading ones of recent
+ * frames), then the selection ring.
+ */
+export function drawFrame(canvas: HTMLCanvasElement, frame: Frame, selected: number | null, trail?: MarkerTrail): void {
   const { width: w, height: h } = frame;
   if (canvas.width !== w * SCALE || canvas.height !== h * SCALE) {
     canvas.width = w * SCALE;
@@ -42,6 +154,14 @@ export function drawFrame(canvas: HTMLCanvasElement, frame: Frame, selected: num
     ctx.fillRect(A[k + 1] * SCALE + 0.5, A[k + 2] * SCALE + 0.5, SCALE - 1, SCALE - 1);
   }
   ctx.globalAlpha = 1;
+
+  const palette: Palette = { xfer: css("--xfer"), harm: css("--harm"), sig: css("--sig") };
+  if (trail) {
+    trail.push(frame);
+    trail.draw(ctx, frame.tick, palette);
+  }
+  drawMarkers(ctx, frame.social, 1, palette);
+
   if (selected !== null) {
     for (let k = 0; k < A.length; k += AGENT_FIELDS) {
       if (A[k] !== selected) continue;

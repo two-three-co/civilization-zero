@@ -76,6 +76,24 @@ export function BranchesPanel({ a, b, forkedAt, intervention, forkMs, verificati
             <td>{delta(a.foodTotal, b.foodTotal)}</td>
           </tr>
           <tr>
+            <td>transfers</td>
+            <td>{a.ledger.transfers}</td>
+            <td>{b.ledger.transfers}</td>
+            <td>{delta(a.ledger.transfers, b.ledger.transfers)}</td>
+          </tr>
+          <tr>
+            <td>harms</td>
+            <td>{a.ledger.harms}</td>
+            <td>{b.ledger.harms}</td>
+            <td>{delta(a.ledger.harms, b.ledger.harms)}</td>
+          </tr>
+          <tr>
+            <td>signals</td>
+            <td>{a.ledger.signals}</td>
+            <td>{b.ledger.signals}</td>
+            <td>{delta(a.ledger.signals, b.ledger.signals)}</td>
+          </tr>
+          <tr>
             <td>state hash</td>
             <td>
               <code className="hash">{a.hash}</code>
