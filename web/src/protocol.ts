@@ -13,12 +13,20 @@ export interface WorldInit {
   width: number;
   height: number;
   agents: number;
+  /** Food patches; the kernel worker defaults to `width * height / 700` like `cz`. */
+  patches?: number;
+  /** Snapshot cadence of the kernel worker; bounds how far a seek re-executes. */
+  snapshotEvery?: number;
 }
 
 export interface Frame {
+  /** Which world produced this frame. Only "kernel" frames are facts. */
+  source: "kernel" | "mock";
   tick: number;
   width: number;
   height: number;
+  /** Kernel `state_hash` as 16 hex digits; the mock has none. */
+  hash?: string;
   /** Row-major food per cell, clamped to 255. Transferred, not copied. */
   food: Uint8Array;
   /** `AGENT_FIELDS` values per living agent. Transferred, not copied. */

@@ -57,6 +57,14 @@ header h1 {
   border: 1px solid var(--warn);
   color: var(--warn);
 }
+.badge.kernel {
+  border-color: rgb(var(--food));
+  color: rgb(var(--food));
+}
+.hash {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
 main {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 300px;

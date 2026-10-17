@@ -20,7 +20,12 @@ export class WorldClient {
     };
   }
 
-  /** The stand-in world used until the wasm kernel worker lands (2b-1). */
+  /** The real kernel + multiverse runtime (crates/cz-web via wasm-bindgen), one world per worker. */
+  static kernel(): WorldClient {
+    return new WorldClient(new Worker(new URL("./worker/kernel.worker.ts", import.meta.url), { type: "module" }));
+  }
+
+  /** The stand-in world (kept for UI work without a wasm build; `?mock=1`). */
   static mock(): WorldClient {
     return new WorldClient(new Worker(new URL("./worker/mock.worker.ts", import.meta.url), { type: "module" }));
   }

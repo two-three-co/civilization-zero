@@ -27,7 +27,7 @@ Phase 2 を **2a（カーネル側、CLI で検証可能）** と **2b（ブラ�
 | 2a-4 ✅ | 再生: `replay(snapshot_at_k, log[k..t])` が直接実行と同一ハッシュに到達する。**済 2026-10-17**（ADR-0012、`crates/multiverse`） | 2a-2 | 任意 tick の復元 = 直接実行（テスト）。復元時間を計測 |
 | 2a-5 ✅ | fork: スナップショット + 介入 → 新しい世界（親世界 id・分岐 tick の系譜付き）。CLI `cz fork`。**済 2026-10-17** | 2a-1, 2a-4 | 同一介入を同一 tick で 2 回 fork してハッシュ一致（テスト + CLI） |
 | 2a-6 ✅ | バイナリスナップショット（postcard を第一候補に比較検討、ADR-0006 を更新）。**済 2026-10-17**（56.8 KB、0.69 ms） | – | 1,300 体で ≤ 100 KB、往復 ≤ 1 ms（native）。形式バージョン付き、壊れたデータを拒否 |
-| 2b-1 | `crates/cz-web`: wasm-bindgen API（new / step / snapshot / restore / fork / intervene / frame）。CI で wasm ビルドと native-wasm ハッシュ一致テスト | 2a-1, 2a-5, 2a-6 | CI 緑。ハッシュ一致テストが CI に入っている |
+| 2b-1 ✅ | `crates/cz-web`: wasm-bindgen API（new / step / seek / intervene / events_at / snapshot_bytes / state_hash_hex。fork の API は 2b-6 で追加）。CI で wasm ビルドと native-wasm ハッシュ一致テスト。**済 2026-10-17** | 2a-1, 2a-5, 2a-6 | CI 緑。ハッシュ一致テストが CI に入っている |
 | 2b-2 ✅ | Vite + React + TypeScript の UI 骨格、Worker プロトコル（型付き配列のフレーム転送）。**済 2026-10-17**（`web/`、`web/README.md`） | – | モック Worker でタイムラインとキャンバスが動く |
 | 2b-3 | 観察: Canvas2D 描画、人口・食料カーブ | 2b-1, 2b-2 | 1,300 体の世界が実時間 **≥ 60 tick/s** で描画される（画面に実測値を表示） |
 | 2b-4 | 巻き戻し: K tick ごとのスナップショット + 再生でタイムラインをスクラブ | 2b-3, 2a-4 | 任意 tick へ **≤ 200 ms** で移動（実測値を表示） |

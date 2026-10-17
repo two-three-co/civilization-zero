@@ -1,13 +1,13 @@
 # 実装進捗（新しいセッションはまずここを読む）
 
-最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · **Phase 2 = Toy 1 進行中（2a-1, 2a-2, 2a-4, 2a-5, 2a-6, 2b-2 済）**（ADR-0010）· カーネル版 `simulation-core 0.1.0`
+最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · **Phase 2 = Toy 1 進行中（2a-1, 2a-2, 2a-4, 2a-5, 2a-6, 2b-1, 2b-2 済）**（ADR-0010）· カーネル版 `simulation-core 0.1.0`
 リポジトリ: https://github.com/two-three-co/civilization-zero（private）· CI: GitHub Actions（fmt / clippy / test debug+release / wasm ビルド）
 
 ## 状態の区別
 
 - **実装済み・テスト通過・計測済み**: 下表の Phase 1 項目、ADR-0008 のライフサイクル、ADR-0009 の wasm 計測。
-- **設計のみ**: Phase 2 の 2a-3、2b-1、2b-3 以降（ADR-0010 のタスク表）、Phase 3 以降。
-- **未着手**: Nomos / Genesis の全コード、`crates/cz-web`（wasm-bindgen）。`web/` はモック Worker で動く骨格のみ。
+- **設計のみ**: Phase 2 の 2a-3、2b-3 以降（ADR-0010 のタスク表）、Phase 3 以降。
+- **未着手**: Nomos / Genesis の全コード。`web/` は本物のカーネル（wasm）で動くが、介入・分岐の UI はまだプレースホルダ。
 
 ## Phase 1 チェックリスト
 
@@ -43,7 +43,8 @@
 | 2a-4 | 再生 = 再実行（`multiverse::replay`）。台帳の介入を同じ tick に適用し、出生・死亡を台帳と照合、不一致は `Diverged { tick }` | 済 (2026-10-17) | `crates/multiverse/tests/replay.rs`（12 の tick で `state_at` = 直接実行、改竄・他シードの台帳を検出）。`cz replay`: バイナリスナップショット（tick 1,000）+ 台帳 → 2,000 まで **84 ms**、2,684 イベント照合、直接実行とハッシュ一致 |
 | 2a-5 | `Multiverse` / `Branch`（head + tick 0 からの台帳 + 周期スナップショット）、`fork(from, at, interventions)` と系譜（`parent`, `forked_at`）、`cz fork` | 済 (2026-10-17) | `tests/fork.rs`（同一介入 2 回 fork でハッシュ一致、fork の fork の系譜、無効 fork の拒否）。`cz fork`: **fork 0.07 ms**、`state_at` は間隔 500 で最大 33 ms、間隔 100 で 6.7 ms。ADR-0012 |
 | 2a-6 | バイナリスナップショット（postcard、マジック + 形式版 + ハッシュ照合）、`cz` は拡張子で切替 | 済 (2026-10-17) | `tests/snapshot_bin.rs`: 1,357 体で **56.8 KB**（JSON 304 KB）、往復 **0.69 ms**（JSON 1.63 ms）、改竄・切り詰め・JSON 誤投入を拒否。ADR-0006 改訂 |
-| 2a-3, 2b-1, 2b-3 〜 2b-7 | Store/Transfer + `Acted`、wasm パッケージ、実測表示、巻き戻し UI、介入 UI、分岐比較、配信 | 未 | — |
+| 2b-1 | `crates/cz-web`（wasm-bindgen）: `WasmWorld` が `Multiverse` を包み、cursor 方式で `seek` / `step`（head 以前は台帳照合付き再実行、追いつくと head を延伸）、`intervene(json)`、`events_at`、`snapshot_bytes`、`state_hash_hex`。`web/` の `kernel.worker.ts` がモックを置換（`?mock=1` で旧モック） | 済 (2026-10-17) | `tests/native.rs`（wrapper = カーネル、seek→step の合流、介入は head のみ）、`tests/wasm.rs` を **`wasm-pack test --node` で実行し native のゴールデンハッシュと一致**（CI）。wasm 205 KB（wasm-opt -O3）。`npm run build` が wasm ビルドを含む。**ブラウザで確認**: Play で tick 600・1,303 体、タイムラインで tick 300 / 100 に戻したときの state hash が native の `cz run --ticks 300 / 100`（`0x821ac350e76261c0` / `0x7068a87e706be374`）と一致、再度戻しても同一 |
+| 2a-3, 2b-3 〜 2b-7 | Store/Transfer + `Acted`、実測表示、巻き戻し UI の目標計測、介入 UI、分岐比較、配信 | 未 | — |
 
 ## 計測値（Apple M1, rustc 1.99.1, release, 2026-10-17）
 

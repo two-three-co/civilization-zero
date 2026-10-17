@@ -3,8 +3,10 @@ import { WorldClient } from "./client";
 import { AGENT_FIELDS, type Frame, type WorldInit } from "./protocol";
 import { drawFrame, drawSparkline, pickAgent, SCALE } from "./render";
 
-const DEFAULT_WORLD: WorldInit = { seed: 42, width: 128, height: 128, agents: 1000 };
+const DEFAULT_WORLD: WorldInit = { seed: 42, width: 128, height: 128, agents: 1000, snapshotEvery: 250 };
 const SPEEDS = [1, 4, 15, 30];
+// `?mock=1` keeps the stand-in world available for UI work without a wasm build.
+const USE_MOCK = new URLSearchParams(location.search).get("mock") === "1";
 
 export default function App() {
   const client = useRef<WorldClient | null>(null);
@@ -25,7 +27,7 @@ export default function App() {
 
   // One world worker for the lifetime of the page.
   useEffect(() => {
-    const c = WorldClient.mock();
+    const c = USE_MOCK ? WorldClient.mock() : WorldClient.kernel();
     client.current = c;
     c.init(DEFAULT_WORLD).then(show, (e: Error) => setError(e.message));
     return () => c.terminate();
@@ -83,7 +85,11 @@ export default function App() {
     <>
       <header>
         <h1>Civilization Zero · Toy 1</h1>
-        <span className="badge mock">mock worker — not the kernel</span>
+        {frame?.source === "kernel" ? (
+          <span className="badge kernel">kernel · wasm</span>
+        ) : (
+          <span className="badge mock">{USE_MOCK ? "mock worker — not the kernel" : "loading kernel…"}</span>
+        )}
         <span className="muted">
           {frame ? `${frame.width}×${frame.height} · seed ${DEFAULT_WORLD.seed} · frontier ${frame.frontier}` : "starting…"}
         </span>
@@ -130,6 +136,10 @@ export default function App() {
               <dd>{frame?.foodTotal ?? "–"}</dd>
               <dt>frontier</dt>
               <dd>{frame?.frontier ?? "–"}</dd>
+              <dt>state hash</dt>
+              <dd>
+                <code className="hash">{frame?.hash ?? "–"}</code>
+              </dd>
             </dl>
           </div>
           <div className="card">

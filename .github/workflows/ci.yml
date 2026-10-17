@@ -17,15 +17,24 @@ jobs:
       - run: cargo build -p cz-wasm-probe --target wasm32-unknown-unknown --profile wasm
   web:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: web
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - name: Install wasm-pack
+        run: curl -sSf https://rustwasm.github.io/wasm-pack/installer/init.sh | sh
+      # The kernel under wasm must reach the golden hash computed natively.
+      - run: wasm-pack test --node crates/cz-web --release
       - run: npm ci
+        working-directory: web
       - run: npm run build
+        working-directory: web

@@ -6,6 +6,8 @@
 
 ```
 viewer/ (static HTML)      ← trace JSON / wasm を読むだけ。カーネルに依存しない
+web/ (Vite + React + TS)   ← Toy 1 UI。Worker 経由で cz-web の wasm を駆動。カーネルの型には依存しない
+crates/cz-web  (cdylib)    ← wasm-bindgen 境界。multiverse と simulation-core に依存。数値は u32、ハッシュは hex 文字列
 crates/cz-cli  (bin: cz)   ← 実験ランナー。simulation-core と multiverse に依存
 crates/multiverse          ← Multiverse Runtime: 再生・分岐・系譜（ADR-0012）。simulation-core にのみ依存
 crates/cz-wasm-probe       ← wasm32 可否の計測用 C-ABI（ADR-0009）。製品 API ではない
@@ -23,8 +25,8 @@ crates/simulation-core     ← Deterministic World Kernel。外部依存は serd
 | `cz-cli` | `cz run` / `cz resume` / `cz sweep`、計測、trace 出力 | 実装済み |
 | `cz-wasm-probe` | カーネルを wasm32 で動かす最小 C-ABI（`probe_init/step/hash`） | 実装済み（計測用） |
 | `multiverse` | 再生（再実行 + 台帳照合）、`Multiverse` / `Branch`（head + 台帳 + 周期スナップショット）、fork と系譜 | 実装済み（ADR-0012） |
-| `web/`（npm, 非 Cargo） | Toy 1 UI: Vite + React + TS、UI ↔ Worker プロトコル、モック Worker | 骨格 実装済み（2b-2） |
-| `cz-web` | wasm-bindgen パッケージ（モック Worker を置き換える） | Phase 2（2b-1） |
+| `web/`（npm, 非 Cargo） | Toy 1 UI: Vite + React + TS、UI ↔ Worker プロトコル、カーネル Worker（wasm）とモック Worker | 骨格 実装済み（2b-2）、カーネル接続済み（2b-1） |
+| `cz-web` | wasm-bindgen パッケージ: `WasmWorld` = `Multiverse` + cursor（巻き戻し用の復元ビュー） | 実装済み（2b-1） |
 | `cognition` | 学習する方策・記憶・通信 | Phase 3 |
 | `nomos` | Institution DSL / 解釈器 | Phase 4 |
 
@@ -82,7 +84,9 @@ wasm32 と native の一致は ADR-0009 で計測。
 ## フロントエンド通信
 
 Phase 1: ファイル（trace JSON）のみ。ビューアは静的 HTML（ADR-0007）。
-Phase 2（Toy 1）: カーネルを wasm としてブラウザ内で実行し、Web Worker 1 つ = 世界 1 つ。サーバーは置かない（ADR-0009, 0010）。
+Phase 2（Toy 1）: カーネルを wasm としてブラウザ内で実行し、Web Worker 1 つ = 世界 1 つ（`WasmWorld`）。サーバーは置かない（ADR-0009, 0010）。
+UI ↔ Worker は `web/src/protocol.ts`（`init / step / seek / frame`、各要求に現フレームで応答。フレームは食料 `Uint8Array` + 個体 `Int32Array` を Transferable で転送）。
+巻き戻しは Worker 内の cursor（`state_at` の復元ビュー）で、head 以前の `step` は台帳照合付きの再実行。
 
 ## テスト構成
 

@@ -239,6 +239,7 @@ function frame(): Frame {
   let foodTotal = 0;
   for (let k = 0; k < s.food.length; k++) foodTotal += s.food[k];
   return {
+    source: "mock",
     tick: s.tick,
     width: c.width,
     height: c.height,

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/simulation-core", "crates/multiverse", "crates/cz-cli", "crates/cz-wasm-probe"]
+members = ["crates/simulation-core", "crates/multiverse", "crates/cz-cli", "crates/cz-wasm-probe", "crates/cz-web"]
 
 [workspace.package]
 version = "0.1.0"
