@@ -64,6 +64,13 @@ export class WorldClient {
   history(): Promise<{ frame: Frame; history: InterventionEvent[] }> {
     return this.send({ type: "history" }).then((r) => ({ frame: r.frame, history: r.history ?? [] }));
   }
+  /** Binary snapshot of the current view (the state its tick starts with), to fork from. */
+  snapshot(): Promise<{ frame: Frame; snapshot: Uint8Array }> {
+    return this.send({ type: "snapshot" }).then((r) => {
+      if (!r.snapshot) throw new Error("worker returned no snapshot");
+      return { frame: r.frame, snapshot: r.snapshot };
+    });
+  }
   terminate(): void {
     this.worker.terminate();
   }

@@ -89,6 +89,52 @@ main {
   display: block;
   cursor: crosshair;
 }
+.worlds {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+.stage.split .worlds {
+  grid-template-columns: 1fr 1fr;
+}
+.worlds figure {
+  margin: 0;
+}
+.worlds figcaption {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.compare {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  margin: 6px 0;
+}
+.compare th,
+.compare td {
+  text-align: right;
+  padding: 2px 4px;
+  border-top: 1px solid var(--line);
+}
+.compare th:first-child,
+.compare td:first-child {
+  text-align: left;
+  color: var(--muted);
+}
+.compare th {
+  color: var(--muted);
+  font-weight: 600;
+  border-top: none;
+}
+.hint.ok {
+  color: rgb(var(--food));
+}
+.hint.bad {
+  color: #dc2626;
+}
 .controls {
   display: flex;
   gap: 8px;

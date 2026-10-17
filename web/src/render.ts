@@ -72,8 +72,17 @@ export interface Sample {
   food: number;
 }
 
-/** Population (forager colour) and food on the map (food colour) over the ticks seen so far, each on its own scale. */
-export function drawSparkline(canvas: HTMLCanvasElement, series: Map<number, Sample>, frontier: number): void {
+/**
+ * Population (forager colour) and food on the map (food colour) over the
+ * ticks seen so far, each on its own scale. A second world (`other`, the
+ * fork) is drawn dashed on the same scales so the two can be compared.
+ */
+export function drawSparkline(
+  canvas: HTMLCanvasElement,
+  series: Map<number, Sample>,
+  frontier: number,
+  other?: Map<number, Sample>,
+): void {
   const r = canvas.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
   canvas.width = Math.max(1, Math.round(r.width * dpr));
@@ -81,25 +90,34 @@ export function drawSparkline(canvas: HTMLCanvasElement, series: Map<number, Sam
   const ctx = canvas.getContext("2d")!;
   ctx.scale(dpr, dpr);
   const pts = [...series.entries()].sort((a, b) => a[0] - b[0]);
+  const opts = other ? [...other.entries()].sort((a, b) => a[0] - b[0]) : [];
   if (pts.length < 2) return;
-  const span = Math.max(1, frontier);
-  const line = (pick: (s: Sample) => number, color: string) => {
-    const max = Math.max(1, ...pts.map(([, s]) => pick(s)));
+  const span = Math.max(1, frontier, ...opts.map(([t]) => t));
+  const line = (data: [number, Sample][], pick: (s: Sample) => number, max: number, color: string, dashed: boolean) => {
+    if (data.length < 2) return;
     ctx.strokeStyle = color;
     ctx.lineWidth = 1.5;
+    ctx.setLineDash(dashed ? [3, 3] : []);
     ctx.beginPath();
-    pts.forEach(([t, s], i) => {
+    data.forEach(([t, s], i) => {
       const x = (t / span) * r.width;
       const y = r.height - 4 - (pick(s) / max) * (r.height - 18);
       if (i === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     });
     ctx.stroke();
-    return max;
+    ctx.setLineDash([]);
   };
-  const foodMax = line((s) => s.food, `rgb(${css("--food")})`);
-  const aliveMax = line((s) => s.alive, css("--forager"));
+  const all = [...pts, ...opts];
+  const aliveMax = Math.max(1, ...all.map(([, s]) => s.alive));
+  const foodMax = Math.max(1, ...all.map(([, s]) => s.food));
+  const foodColor = `rgb(${css("--food")})`;
+  const aliveColor = css("--forager");
+  line(pts, (s) => s.food, foodMax, foodColor, false);
+  line(pts, (s) => s.alive, aliveMax, aliveColor, false);
+  line(opts, (s) => s.food, foodMax, foodColor, true);
+  line(opts, (s) => s.alive, aliveMax, aliveColor, true);
   ctx.fillStyle = css("--muted");
   ctx.font = "11px system-ui";
-  ctx.fillText(`alive max ${aliveMax} · food max ${foodMax}`, 2, 11);
+  ctx.fillText(`alive max ${aliveMax} · food max ${foodMax}${other ? " · dashed = fork" : ""}`, 2, 11);
 }

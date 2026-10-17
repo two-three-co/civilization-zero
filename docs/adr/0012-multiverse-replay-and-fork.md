@@ -65,3 +65,5 @@ T の介入を適用する**前**の状態と定義する。スナップショ�
 - `crates/multiverse` は `simulation-core` にのみ依存。カーネルはファイルも分岐も知らない。
 - Phase 5（実験スケジューラ）は `fork` を多シード・条件格子で呼ぶだけで済む。
 - 2b-1（wasm パッケージ）は `Multiverse` をそのまま包む。Worker 1 つ = `Multiverse` 1 つ（複数ブランチを持てる）か、ブランチごとに Worker かは 2b-1 で決める。
+  → 2b-6 で **ブランチごとに Worker** を採用した。fork は親が `state_at(T)` のバイナリスナップショットを書き出し、子ワーカーが `WasmWorld::fromSnapshot` で原点にして介入を適用する。
+  子の台帳は T から始まる（親の過去は持たない）が、`Multiverse::fork` と状態・ハッシュが bit 一致することをテストで確認済み（`cz-web/tests/native.rs`）。各ブランチが別スレッドで走るので、2 世界の同期再生でも 1 世界と同じ tick/s が出る。

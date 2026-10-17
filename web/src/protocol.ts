@@ -17,6 +17,12 @@ export interface WorldInit {
   patches?: number;
   /** Snapshot cadence of the kernel worker; bounds how far a seek re-executes. */
   snapshotEvery?: number;
+  /**
+   * Fork origin: a binary snapshot exported by another world (`snapshot`
+   * request). When set, seed/width/height/agents/patches are ignored and the
+   * new world starts at the snapshot's tick, which becomes its `origin`.
+   */
+  snapshot?: Uint8Array;
 }
 
 /** Exactly the kernel's `Intervention` as serde renders it (ADR-0010 2a-1). */
@@ -60,6 +66,8 @@ export interface Frame {
   frontier: number;
   /** Snapshot cadence: a seek to tick T re-executes at most T mod this. */
   snapshotEvery: number;
+  /** Tick this world's history begins at: 0, or the fork tick for a fork. It cannot seek earlier. */
+  origin: number;
   timing?: Timing;
 }
 
@@ -69,10 +77,18 @@ export type Request =
   | { type: "seek"; tick: number }
   | { type: "frame" }
   | { type: "intervene"; intervention: Intervention }
-  | { type: "history" };
+  | { type: "history" }
+  /** Binary snapshot of the current view, to fork from in another worker. */
+  | { type: "snapshot" };
 
 export type Response =
-  | { type: "frame"; frame: Frame; event?: InterventionEvent; history?: InterventionEvent[] }
+  | {
+      type: "frame";
+      frame: Frame;
+      event?: InterventionEvent;
+      history?: InterventionEvent[];
+      snapshot?: Uint8Array;
+    }
   | { type: "error"; message: string };
 
 export interface Envelope<T> {

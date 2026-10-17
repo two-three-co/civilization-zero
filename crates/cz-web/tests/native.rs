@@ -106,6 +106,73 @@ fn interventions_apply_at_the_head_only_and_are_logged() {
 }
 
 #[test]
+fn a_fork_built_from_a_snapshot_matches_multiverse_fork_and_is_reproducible() {
+    use multiverse::{BranchId, Multiverse};
+
+    let mut parent = WasmWorld::new(42, 128, 128, 1000, 24, 100).unwrap();
+    parent.step(400).unwrap();
+    parent.seek(300).unwrap(); // the view is the state tick 300 starts with
+    let bytes = parent.snapshot_bytes();
+
+    let fork = || {
+        let mut child = WasmWorld::from_snapshot(&bytes, 50).unwrap();
+        child
+            .intervene(r#"{"op":"scale_food","permille":500}"#)
+            .unwrap();
+        child.step(150).unwrap();
+        child
+    };
+    let (b, c) = (fork(), fork());
+    assert_eq!((b.origin(), b.tick(), b.frontier()), (300, 450, 450));
+    assert_eq!(
+        b.state_hash_hex(),
+        c.state_hash_hex(),
+        "same fork twice, same history"
+    );
+
+    // Bit-identical to forking inside one Multiverse.
+    let mut mv = Multiverse::new(
+        World::new(WorldConfig {
+            seed: 42,
+            ..WorldConfig::default()
+        })
+        .unwrap(),
+        100,
+    );
+    mv.step(BranchId(0), 400).unwrap();
+    let f = mv
+        .fork(
+            BranchId(0),
+            300,
+            &[Intervention::ScaleFood { permille: 500 }],
+        )
+        .unwrap();
+    mv.step(f, 150).unwrap();
+    assert_eq!(b.state_hash_hex(), hex(mv.branch(f).unwrap().head()));
+
+    // The parent is untouched and its own history differs from the fork's.
+    parent.seek(450).unwrap();
+    assert_eq!(parent.state_hash_hex(), hex(&direct(42, 450)));
+    assert_ne!(parent.state_hash_hex(), b.state_hash_hex());
+
+    // A fork seeks within its own history only.
+    let mut d = WasmWorld::from_snapshot(&bytes, 50).unwrap();
+    assert!(d.seek(299).is_err(), "before the origin");
+    d.seek(300).unwrap();
+    assert_eq!(d.state_hash_hex(), hex(&direct(42, 300)));
+    assert_eq!(d.interventions_json().unwrap(), "[]");
+    assert_eq!(
+        b.interventions_json()
+            .unwrap()
+            .matches("scale_food")
+            .count(),
+        1
+    );
+
+    assert!(WasmWorld::from_snapshot(b"not a snapshot", 50).is_err());
+}
+
+#[test]
 fn intervention_history_comes_from_the_ledger() {
     let mut ww = WasmWorld::new(7, 64, 64, 200, 5, 50).unwrap();
     assert_eq!(ww.interventions_json().unwrap(), "[]");

@@ -1,13 +1,13 @@
 # 実装進捗（新しいセッションはまずここを読む）
 
-最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · **Phase 2 = Toy 1 進行中（2a-1, 2a-2, 2a-4〜2a-6, 2b-1〜2b-5 済。残り 2b-6 分岐比較、2b-7 配信、2a-3）**（ADR-0010）· カーネル版 `simulation-core 0.1.0`
+最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · **Phase 2 = Toy 1 進行中（2a-1, 2a-2, 2a-4〜2a-6, 2b-1〜2b-6 済。残り 2b-7 配信とチュートリアル、2a-3）**（ADR-0010）· カーネル版 `simulation-core 0.1.0`
 リポジトリ: https://github.com/two-three-co/civilization-zero（private）· CI: GitHub Actions（fmt / clippy / test debug+release / wasm ビルド）
 
 ## 状態の区別
 
 - **実装済み・テスト通過・計測済み**: 下表の Phase 1 項目、ADR-0008 のライフサイクル、ADR-0009 の wasm 計測。
-- **設計のみ**: Phase 2 の 2a-3、2b-6、2b-7（ADR-0010 のタスク表）、Phase 3 以降。
-- **未着手**: Nomos / Genesis の全コード。`web/` は本物のカーネル（wasm）で観察・巻き戻し・介入ができるが、分岐の並列比較と配信はまだ。
+- **設計のみ**: Phase 2 の 2a-3、2b-7（ADR-0010 のタスク表）、Phase 3 以降。
+- **未着手**: Nomos / Genesis の全コード。`web/` は本物のカーネル（wasm）で観察・巻き戻し・介入・分岐比較ができる（PRODUCT.md の Toy 1 基準 1〜3 を満たす機能は揃った）。残りは静的配信とチュートリアル（基準 4、2b-7）。
 
 ## Phase 1 チェックリスト
 
@@ -47,7 +47,8 @@
 | 2b-3 | 実測表示: Worker が `step` の所要時間をフレームに載せ、UI が直近 1 秒の sim tick/s・描画 fps・Worker ms/tick を表示。スパークラインを人口 + 食料の 2 系列に | 済 (2026-10-17) | **ブラウザ実測（M1、内蔵ブラウザ、約 1,330 体）**: 4 tick/フレームで 240 tick/s・60 fps、30 tick/フレームで **1,802 tick/s・60 fps**、Worker 0.22 ms/tick（165 ns/体·tick。native の 1.65 倍）。目標 ≥ 60 tick/s |
 | 2b-4 | 巻き戻し: Worker が `seek` の所要時間を計測、UI に「last seek: N ms（re-ran M）」を表示。ドラッグ中のシークは最新のみ処理（間引き）。任意 tick への `Go` 入力 | 済 (2026-10-17) | 最悪ケース（間隔 250 → 249 tick 再実行）**45〜56 ms**、124 tick 再実行 30 ms、スナップショット上 0 ms。目標 ≤ 200 ms |
 | 2b-5 | 介入パネル（干ばつ・資源量スケール・個体追加・個体除去）、プロトコルに `intervene` / `history`、履歴は **台帳から読み戻し**（`WasmWorld::interventions_json`）。head 以外では Apply 無効（分岐は 2b-6） | 済 (2026-10-17) | UI で tick 300 に干ばつ（regrow 0 / 10）を適用 → 履歴「tick 300 drought」→ tick 600 / 900 のハッシュが native `cz run --drought-at 300 --drought-amount 0 --drought-interval 10` と一致（`0x4392fb01743338c5` / `0x4be57883bb1d1a06`）。`tests/native.rs::intervention_history_comes_from_the_ledger` |
-| 2a-3, 2b-6, 2b-7 | Store/Transfer + `Acted`、分岐比較（fork API + 2 ワーカー）、配信とチュートリアル | 未 | — |
+| 2b-6 | 分岐の並列比較: `WasmWorld::fromSnapshot`（fork はワーカー境界をバイナリスナップショットで越える。`Multiverse::fork` と bit 一致）、プロトコル v2（`snapshot` 要求、`init` に `snapshot`、`Frame.origin`）、「Fork here」（任意 tick）、2 ワーカー同期再生・同期シーク、分割表示、A/B の人口・食料・ハッシュ比較表、スパークライン重ね描き、「Verify: fork again」（同一スナップショット + 同一介入で作り直して同 tick のハッシュ照合） | 済 (2026-10-17) | `tests/native.rs::a_fork_built_from_a_snapshot_matches_multiverse_fork_and_is_reproducible`。**ブラウザ**: fork 21 ms、2 世界同期で 1,800 tick/s・60 fps、tick 400 で A / B のハッシュが native `cz run --ticks 400`（無介入 / `--drought-at 300`）と一致、Verify = MATCH（90 ms） |
+| 2a-3, 2b-7 | Store/Transfer + `Acted`、配信とチュートリアル | 未 | — |
 
 ## 計測値（Apple M1, rustc 1.99.1, release, 2026-10-17）
 
@@ -91,6 +92,9 @@
 | 巻き戻し、249 tick 再実行（間隔 250 の最悪） | 45〜56 ms |
 | 巻き戻し、124 tick 再実行 / スナップショット上 | 30 ms / 0 ms |
 | 0 → 300 tick の延伸（`Go`） | 185 ms（出生の多い序盤、0.6 ms/tick） |
+| fork（スナップショット転送 + 新ワーカー + 介入） | 21 ms |
+| 2 世界の同期再生、30 tick/フレーム | 1,800 tick/s、60 fps（1 世界と同じ。別ワーカーで並列） |
+| Verify（同一 fork を作り直して tick 400 で照合） | 90 ms、MATCH |
 
 ### ブラウザ内 wasm — 計測プローブ（ADR-0009、`--profile wasm`、73.7 KB、ADR-0011 前のカーネル）
 

@@ -19,8 +19,10 @@ function need(): WasmWorld {
 
 function create(c: WorldInit): WasmWorld {
   world?.free();
+  const every = c.snapshotEvery ?? 250;
+  if (c.snapshot) return WasmWorld.fromSnapshot(c.snapshot, every);
   const patches = c.patches ?? Math.max(1, Math.floor((c.width * c.height) / 700));
-  return new WasmWorld(c.seed >>> 0, c.width, c.height, c.agents, patches, c.snapshotEvery ?? 250);
+  return new WasmWorld(c.seed >>> 0, c.width, c.height, c.agents, patches, every);
 }
 
 function frame(w: WasmWorld): Frame {
@@ -36,6 +38,7 @@ function frame(w: WasmWorld): Frame {
     foodTotal: w.food_total(),
     frontier: w.frontier(),
     snapshotEvery: w.snapshot_every(),
+    origin: w.origin(),
     timing: { ...timing },
   };
 }
@@ -48,6 +51,7 @@ async function handle({ id, body }: Envelope<Request>): Promise<void> {
     await ready;
     let event: InterventionEvent | undefined;
     let history: InterventionEvent[] | undefined;
+    let snapshot: Uint8Array | undefined;
     switch (body.type) {
       case "init":
         world = create(body.config);
@@ -72,11 +76,16 @@ async function handle({ id, body }: Envelope<Request>): Promise<void> {
       case "history":
         history = JSON.parse(need().interventions_json()) as InterventionEvent[];
         break;
+      case "snapshot":
+        snapshot = need().snapshot_bytes();
+        break;
       case "frame":
         break;
     }
     const f = frame(need());
-    post({ id, body: { type: "frame", frame: f, event, history } }, [f.food.buffer, f.agents.buffer]);
+    const transfer: Transferable[] = [f.food.buffer, f.agents.buffer];
+    if (snapshot) transfer.push(snapshot.buffer);
+    post({ id, body: { type: "frame", frame: f, event, history, snapshot } }, transfer);
   } catch (err) {
     post({ id, body: { type: "error", message: err instanceof Error ? err.message : String(err) } });
   }

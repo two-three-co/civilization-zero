@@ -11,6 +11,8 @@ interface Props {
   /** The ledger's record of every intervention so far, oldest first. */
   events: InterventionEvent[];
   onApply: (intervention: Intervention) => void;
+  /** Fork the current view (any tick) into a second world with this intervention applied there. */
+  onFork: (intervention: Intervention) => void;
 }
 
 type Op = Intervention["op"];
@@ -22,7 +24,7 @@ const OPS: { op: Op; label: string; hint: string }[] = [
   { op: "remove_agent", label: "Remove agent", hint: "remove one living agent by id (click the map to pick one)" },
 ];
 
-export function InterventionPanel({ atHead, tick, width, height, selectedAgent, events, onApply }: Props) {
+export function InterventionPanel({ atHead, tick, width, height, selectedAgent, events, onApply, onFork }: Props) {
   const [op, setOp] = useState<Op>("drought");
   const [amount, setAmount] = useState(0);
   const [interval, setInterval] = useState(10);
@@ -63,8 +65,15 @@ export function InterventionPanel({ atHead, tick, width, height, selectedAgent, 
             </option>
           ))}
         </select>
-        <button onClick={() => onApply(build())} disabled={!atHead} title={atHead ? "" : "rewind in progress"}>
+        <button
+          onClick={() => onApply(build())}
+          disabled={!atHead}
+          title={atHead ? "apply to this world's head" : "the view is behind the frontier: fork instead"}
+        >
           Apply
+        </button>
+        <button onClick={() => onFork(build())} title="start a second world from this tick with the intervention applied">
+          Fork here
         </button>
       </div>
       <p className="muted hint">{current.hint}</p>
@@ -94,8 +103,8 @@ export function InterventionPanel({ atHead, tick, width, height, selectedAgent, 
       </div>
       {!atHead && (
         <p className="muted hint">
-          The view is behind the frontier. Interventions change the head only; applying one here would be a fork
-          (2b-6). Seek to the frontier to intervene.
+          The view is behind the frontier, so Apply is off (it changes the head only). Fork here instead: the
+          second world starts from this tick with the intervention, and the two run side by side.
         </p>
       )}
       <h2 className="sub">Ledger · interventions ({events.length})</h2>

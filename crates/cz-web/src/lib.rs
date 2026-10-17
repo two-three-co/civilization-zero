@@ -62,6 +62,31 @@ impl WasmWorld {
         })
     }
 
+    /// A world restored from a binary snapshot (ADR-0006) as the origin of
+    /// a new branch: this is how a fork crosses worker boundaries (2b-6).
+    /// The parent exports `snapshot_bytes()` of the tick to fork at, the
+    /// child is built from it and then `intervene`s — exactly
+    /// `Multiverse::fork` semantics (the child's ledger starts at the fork
+    /// tick with its own interventions). It cannot seek before its origin.
+    #[wasm_bindgen(js_name = fromSnapshot)]
+    pub fn from_snapshot(bytes: &[u8], snapshot_every: u32) -> Result<WasmWorld, String> {
+        let world = World::from_bytes(bytes).map_err(js)?;
+        Ok(Self {
+            mv: Multiverse::new(world, snapshot_every.max(1) as u64),
+            branch: BranchId(0),
+            cursor: None,
+        })
+    }
+
+    /// Tick this branch began at: 0 for a fresh world, the fork tick for a
+    /// world built with `fromSnapshot`.
+    pub fn origin(&self) -> u32 {
+        self.mv
+            .branch(self.branch)
+            .expect("the branch exists")
+            .origin_tick() as u32
+    }
+
     fn head(&self) -> &World {
         self.mv
             .branch(self.branch)

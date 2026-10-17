@@ -44,6 +44,7 @@ function ensureCapacity(s: State, agents: number): void {
 }
 
 function init(c: WorldInit): void {
+  if (c.snapshot) throw new Error("the mock world cannot start from a snapshot: use the kernel worker");
   cfg = c;
   snapshots.clear();
   frontier = 0;
@@ -249,6 +250,7 @@ function frame(): Frame {
     foodTotal,
     frontier,
     snapshotEvery: SNAP_EVERY,
+    origin: 0,
   };
 }
 
@@ -275,6 +277,8 @@ self.onmessage = (ev: MessageEvent<Envelope<Request>>) => {
         break;
       case "intervene":
         throw new Error("the mock world has no interventions: use the kernel worker");
+      case "snapshot":
+        throw new Error("the mock world cannot be forked: use the kernel worker");
       case "history":
         if (!state) throw new Error("init first");
         break;
