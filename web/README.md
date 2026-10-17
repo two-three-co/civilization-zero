@@ -47,7 +47,7 @@ cd web && npm install && npm run build:wasm && npm run dev
 - 巻き戻し: 249 tick 再実行（間隔 250 の最悪）45〜56 ms、スナップショット上 0 ms。
 - 介入: UI で tick 300 に干ばつ → tick 600 / 900 の state hash が `cz run --drought-at 300 --drought-amount 0 --drought-interval 10` と一致。
 - 分岐: fork 21 ms、2 世界の同期再生 1,800 tick/s・60 fps。tick 400 で A / B のハッシュが native（無介入 / 干ばつ）と一致、Verify = MATCH（90 ms）。
-- 固定 vs 学習（3-9c、A forager ≈ 1,330 体 + B learner ≈ 1,600 体の同期再生、前面）: 15 tick/フレームで 899 tick/s・60 fps（B のワーカー 0.55〜0.57 ms/tick）、30 tick/フレームで 1,008〜1,043 tick/s・34〜35 fps（B が律速）。fork 18〜23 ms、Verify = MATCH（143 ms、tick 600）。A / B の tick 600 のハッシュが `cz run --seed 42 --ticks 600`（`--set-policy learner --set-policy-at 300`）と一致。学習世界単独の画面値は未計測（STATUS）。
+- 固定 vs 学習（3-9c、A forager ≈ 1,330 体 + B learner ≈ 1,600 体の同期再生、前面）: 15 tick/フレームで 899 tick/s・60 fps（B のワーカー 0.55〜0.57 ms/tick）、30 tick/フレームで 1,008〜1,043 tick/s・34〜35 fps（B が律速）。fork 18〜23 ms、Verify = MATCH（143 ms、tick 600）。A / B の tick 600 のハッシュが `cz run --seed 42 --ticks 600`（`--set-policy learner --set-policy-at 300`）と一致。学習世界単独（`?policy=learner`、約 1,570〜1,600 体）は 30 tick/フレームで 1,100〜1,248 tick/s・37〜42 fps・0.49〜0.59 ms/tick（STATUS）。
 
 ## 検証
 
