@@ -13,11 +13,11 @@ Phase 2 の計画は ADR-0010（Toy 1）に従う。
 ## Phase 2: Toy 1（ADR-0010）
 
 - [ ] Store / Transfer 行動（イベント台帳と同時に実装）。
-- [ ] イベント台帳: `Event::Acted { agent, intent, outcome }` と `Event::Intervened { … }` を追加し、tick ごとの JSON Lines に追記。
+- [ ] `Event::Acted { agent, intent, outcome }` の記録（2a-3、Store/Transfer と同時。全行動記録は設定で ON/OFF、台帳サイズを計測）。
 - [ ] 分岐: スナップショットから `fork(intervention)`、同一介入の 2 回適用でハッシュ一致を検証するテスト。
 - [ ] バイナリスナップショット（postcard 等を比較検討、ADR-0006 の再評価）。
 - [ ] WASM パッケージ（wasm-bindgen、Web Worker 1 世界 1 ワーカー）。
-- [ ] Toy 1 UI（Vite + React + Canvas）: タイムライン、介入パネル、分岐の並列表示、人口・食料カーブ。
+- [ ] Toy 1 UI の続き（2b-3〜2b-7）: 実測 tick/s の表示、巻き戻し ≤ 200 ms、介入パネル、分岐の並列表示、静的配信。
 - [ ] ブラウザでの性能計測（1,000〜2,000 体で ≥ 60 tick/s）。
 
 ## Phase 3 以降

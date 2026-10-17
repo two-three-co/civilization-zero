@@ -23,7 +23,8 @@ crates/simulation-core     ← Deterministic World Kernel。外部依存は serd
 | `cz-cli` | `cz run` / `cz resume` / `cz sweep`、計測、trace 出力 | 実装済み |
 | `cz-wasm-probe` | カーネルを wasm32 で動かす最小 C-ABI（`probe_init/step/hash`） | 実装済み（計測用） |
 | `multiverse` | イベント台帳・介入・fork | Phase 2 |
-| `cz-web` | wasm-bindgen パッケージ + Toy 1 UI | Phase 2 |
+| `web/`（npm, 非 Cargo） | Toy 1 UI: Vite + React + TS、UI ↔ Worker プロトコル、モック Worker | 骨格 実装済み（2b-2） |
+| `cz-web` | wasm-bindgen パッケージ（モック Worker を置き換える） | Phase 2（2b-1） |
 | `cognition` | 学習する方策・記憶・通信 | Phase 3 |
 | `nomos` | Institution DSL / 解釈器 | Phase 4 |
 
@@ -36,6 +37,7 @@ crates/simulation-core     ← Deterministic World Kernel。外部依存は serd
   `params`（`PolicyParams { hunger_permille }`）は親から継承、突然変異は既定 OFF（ADR-0008）。
 - **Ledger**: 食料・エネルギーの流入/流出、出生数、死因別死亡数を累計し、保存則を任意の tick で検証可能にする。
 - **Event**: `Born` / `Died` / `Intervened` の自己完結レコード（tick 入り、serde 内部タグ）。前 2 つは `TickReport.events` で、`Intervened` は `World::intervene()` の戻り値で返す。Phase 2 の台帳形式そのもの。
+- **EventLog**（ADR-0010 2a-2）: 追記専用の `Vec<Event>`。tick 非減少を検証、`range(from..to)` は二分探索。JSON Lines（先頭にヘッダ行 `{"format":1,"kernel":…}`）の書き出し/読み戻しは `Write` / `BufRead` を受け取り、カーネルはファイルを開かない。
 - **Intervention**（ADR-0010 2a-1）: `Drought` / `ScaleFood` / `SpawnAgents` / `RemoveAgent`。tick の合間に `World::intervene()` で適用。乱数を使わず、無効なら状態を変えずに `Err`。差分は台帳の `food_intervened` / `energy_intervened` に計上され、保存則の検査式に入る。
 
 ECS ライブラリは使わない（ADR-0001）。

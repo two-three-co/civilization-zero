@@ -1,13 +1,13 @@
 # 実装進捗（新しいセッションはまずここを読む）
 
-最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · **Phase 2 = Toy 1 進行中（2a-1 済）**（ADR-0010）· カーネル版 `simulation-core 0.1.0`
+最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · **Phase 2 = Toy 1 進行中（2a-1, 2a-2, 2b-2 済）**（ADR-0010）· カーネル版 `simulation-core 0.1.0`
 リポジトリ: https://github.com/two-three-co/civilization-zero（private）· CI: GitHub Actions（fmt / clippy / test debug+release / wasm ビルド）
 
 ## 状態の区別
 
 - **実装済み・テスト通過・計測済み**: 下表の Phase 1 項目、ADR-0008 のライフサイクル、ADR-0009 の wasm 計測。
-- **設計のみ**: Phase 2 の 2a-2 以降（ADR-0010 のタスク表）、Phase 3 以降。
-- **未着手**: Multiverse / Nomos / Genesis の全コード、`crates/cz-web`。
+- **設計のみ**: Phase 2 の 2a-3 以降と 2b-1 / 2b-3 以降（ADR-0010 のタスク表）、Phase 3 以降。
+- **未着手**: Multiverse（再生・fork）/ Nomos / Genesis の全コード、`crates/cz-web`（wasm-bindgen）。`web/` はモック Worker で動く骨格のみ。
 
 ## Phase 1 チェックリスト
 
@@ -38,7 +38,9 @@
 | # | タスク | 状態 | 根拠 |
 |---|---|---|---|
 | 2a-1 | `Intervention` enum（Drought / ScaleFood / SpawnAgents / RemoveAgent）、`World::intervene()`、`Event::Intervened`、台帳 `food_intervened` / `energy_intervened` / `interventions` | 済 (2026-10-17) | `src/intervention.rs`、`tests/intervention.rs`（8 テスト + proptest 32 ケース: 不変条件・無効時の無変更・同一列の再現・スナップショット往復）、`cz run --drought-at` |
-| 2a-2 〜 2a-6, 2b-1 〜 2b-7 | 台帳ファイル、Store/Transfer、再生、fork、バイナリスナップショット、wasm パッケージ、UI | 未 | — |
+| 2a-2 | `EventLog`（追記専用、tick 非減少を検証、`range(from..to)` は二分探索、JSON Lines のヘッダ付き書き出し/読み戻し）、`cz run --log` / `cz log` | 済 (2026-10-17) | `src/event_log.rs`、`tests/event_log.rs`（6 テスト: 台帳と World.ledger の一致、範囲取得、往復、順序違反・壊れたファイルの拒否）。**20,000 tick × 1,000 体の台帳 = 54,649 イベント、6.27 MB（約 115 B/イベント、313 B/tick）**、書き出し込みで 3 秒未満 |
+| 2b-2 | `web/`: Vite + React + TypeScript、UI ↔ Worker プロトコル（`Frame` を Transferable な `Uint8Array` / `Int32Array` で転送）、モック Worker（スナップショットで seek）、Canvas2D 描画、タイムライン、個体インスペクタ、介入・分岐のプレースホルダ | 済 (2026-10-17) | `web/src/*`、`npm run build` 通過（JS 150 KB / gzip 48.7 KB）、CI に `web` ジョブ追加。ブラウザで再生・スクラブ・個体選択を確認 |
+| 2a-3 〜 2a-6, 2b-1, 2b-3 〜 2b-7 | Store/Transfer + `Acted`、再生、fork、バイナリスナップショット、wasm パッケージ、実測表示、巻き戻し、介入 UI、分岐比較、配信 | 未 | — |
 
 ## 計測値（Apple M1, rustc 1.99.1, release, 2026-10-17）
 

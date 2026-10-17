@@ -1,3 +1,5 @@
 target/
 out/
 *.trace.json
+web/node_modules/
+web/dist/

@@ -44,6 +44,18 @@ python3 -m http.server 8765 --bind 127.0.0.1
 
 ブラウザで `http://127.0.0.1:8765/viewer/index.html?trace=../out/trace.json` を開くと再生できます。
 
+イベント台帳（JSON Lines）を書き、tick 範囲を読む:
+
+```bash
+cargo run --release -p cz-cli -- run --ticks 20000 --log out/events.jsonl && cargo run --release -p cz-cli -- log --path out/events.jsonl --from 1000 --to 1002
+```
+
+Toy 1 の UI 骨格（現状はモック Worker。`web/README.md` 参照）:
+
+```bash
+cd web && npm install && npm run dev
+```
+
 スナップショットの保存と再開:
 
 ```bash

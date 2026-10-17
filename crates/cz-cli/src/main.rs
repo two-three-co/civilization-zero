@@ -4,14 +4,16 @@
 //!             [--policy forager|random|mixed] [--check]
 //!             [--trace PATH --every K] [--snapshot PATH]
 //!             [--drought-at TICK [--drought-amount N] [--drought-interval N]]
+//!             [--log PATH]
 //!   cz resume --snapshot PATH [--ticks N] [--check]
+//!   cz log    --path PATH [--from TICK] [--to TICK] [--limit N]
 //!   cz sweep  [--seeds N] [--seed-start S] [--ticks N] [--policy ...]
 //!             [--window PCT] [--sample K] [--out PREFIX] [--check]
 //!
 //! Timing printed by `run` covers `World::step` only (trace I/O excluded).
 
 use serde::Serialize;
-use simulation_core::{DeathCause, Intervention, PolicyKind, World, WorldConfig};
+use simulation_core::{DeathCause, Event, EventLog, Intervention, PolicyKind, World, WorldConfig};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
@@ -26,6 +28,7 @@ fn main() {
         "run" => cmd_run(&opts),
         "resume" => cmd_resume(&opts),
         "sweep" => cmd_sweep(&opts),
+        "log" => cmd_log(&opts),
         _ => usage(),
     };
     if let Err(e) = result {
@@ -36,7 +39,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  cz run [--seed N] [--agents N] [--side N] [--ticks N] [--policy forager|random|mixed]\n         [--check] [--trace PATH --every K] [--snapshot PATH]\n         [--drought-at TICK [--drought-amount N] [--drought-interval N]]\n  cz resume --snapshot PATH [--ticks N] [--check]\n  cz sweep [--seeds N] [--seed-start S] [--ticks N] [--policy ...] [--window PCT]\n           [--sample K] [--out PREFIX] [--check]"
+        "usage:\n  cz run [--seed N] [--agents N] [--side N] [--ticks N] [--policy forager|random|mixed]\n         [--check] [--trace PATH --every K] [--snapshot PATH]\n         [--drought-at TICK [--drought-amount N] [--drought-interval N]] [--log PATH]\n  cz log --path PATH [--from TICK] [--to TICK] [--limit N]\n  cz resume --snapshot PATH [--ticks N] [--check]\n  cz sweep [--seeds N] [--seed-start S] [--ticks N] [--policy ...] [--window PCT]\n           [--sample K] [--out PREFIX] [--check]"
     );
     std::process::exit(2)
 }
@@ -134,6 +137,7 @@ fn simulate(mut world: World, o: &Opts) -> R {
         regrow_amount: get(o, "drought-amount", 0)?,
         regrow_interval: get(o, "drought-interval", world.config.regrow_interval)?,
     };
+    let mut log = o.get("log").map(|_| EventLog::new());
 
     println!(
         "seed={} grid={}x{} agents={} ticks={} check={}",
@@ -161,11 +165,17 @@ fn simulate(mut world: World, o: &Opts) -> R {
         if drought_at == Some(world.tick) {
             let e = world.intervene(drought)?;
             println!("intervention: {}", serde_json::to_string(&e)?);
+            if let Some(l) = log.as_mut() {
+                l.push(e)?;
+            }
         }
         agent_steps += world.agents.len() as u64;
         let t0 = Instant::now();
         let r = world.step();
         step_time += t0.elapsed();
+        if let Some(l) = log.as_mut() {
+            l.record(&r)?;
+        }
         gathered += r.food_gathered;
         consumed += r.food_consumed;
         births += r.births as u64;
@@ -211,6 +221,51 @@ fn simulate(mut world: World, o: &Opts) -> R {
     if let Some(path) = o.get("snapshot") {
         std::fs::write(path, world.to_snapshot())?;
         println!("snapshot -> {path}");
+    }
+    if let (Some(l), Some(path)) = (log.as_ref(), o.get("log")) {
+        let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
+        l.write_jsonl(&mut w)?;
+        std::io::Write::flush(&mut w)?;
+        println!(
+            "log: {} events -> {path} ({} bytes)",
+            l.len(),
+            std::fs::metadata(path)?.len()
+        );
+    }
+    Ok(())
+}
+
+/// Summarises a ledger file and prints the events of a tick range.
+fn cmd_log(o: &Opts) -> R {
+    let path = o.get("path").ok_or("--path required")?;
+    let file = std::fs::File::open(path)?;
+    let log = EventLog::read_jsonl(std::io::BufReader::new(file))?;
+    let from: u64 = get(o, "from", 0)?;
+    let to: u64 = get(o, "to", u64::MAX)?;
+    let limit: usize = get(o, "limit", 50)?;
+    let mut counts: BTreeMap<&str, u64> = BTreeMap::new();
+    for e in log.events() {
+        let kind = match e {
+            Event::Born { .. } => "born",
+            Event::Died { .. } => "died",
+            Event::Intervened { .. } => "intervened",
+        };
+        *counts.entry(kind).or_default() += 1;
+    }
+    let summary: Vec<String> = counts.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    println!(
+        "{path}: {} events, last tick {}, {}",
+        log.len(),
+        log.last_tick().map_or("-".to_string(), |t| t.to_string()),
+        summary.join(" ")
+    );
+    let slice = log.range(from..to);
+    println!(
+        "ticks {from}..{to}: {} events (showing up to {limit})",
+        slice.len()
+    );
+    for e in slice.iter().take(limit) {
+        println!("{}", serde_json::to_string(e)?);
     }
     Ok(())
 }
