@@ -124,7 +124,8 @@
 | fork（スナップショット転送 + 新ワーカー + 介入） | 21 ms |
 | 2 世界の同期再生、30 tick/フレーム | 1,800 tick/s、60 fps（1 世界と同じ。別ワーカーで並列） |
 | Verify（同一 fork を作り直して tick 400 で照合） | 90 ms、MATCH |
-| **3-9a 後（プロトコル v3、wasm 278 KB）** mixed 世界、30 tick/フレーム、約 1,310 体（tick 9,300） | **1,797〜1,801 tick/s、60 fps**、Worker 0.23〜0.24 ms/tick（内蔵ブラウザのペインが前面のときの実測。ペインが隠れると rAF が 1〜2 Hz に間引かれ画面の値は 0 になる。**forager 世界（既定）の画面値は、このセッションでは 2 回ともペインが間引かれていて取得できなかった**。同じコード経路・同じ個体数帯で、マーカーも台帳イベントも少ない世界なので mixed より遅くなる理由はないが、未計測は未計測として残す。フレーム非依存の値は下行） |
+| **3-9a 後（プロトコル v3、wasm 278 KB）** mixed 世界、30 tick/フレーム、約 1,310 体（tick 9,300） | **1,797〜1,801 tick/s、60 fps**、Worker 0.23〜0.24 ms/tick（内蔵ブラウザのペインが前面のときの実測。ペインが隠れると rAF が 1〜2 Hz に間引かれ画面の値は 0 になるので、以後の計測は同時に rAF 周波数を測って有効性を確かめている） |
+| 3-9a 後、**公開 URL**（commit 8fa9ac1）、30 tick/フレーム、rAF 61 Hz を同時確認 | **forager（既定）1,315 体: 1,800〜1,801 tick/s、60 fps、0.25 ms/tick**。mixed 1,308〜1,322 体: 1,798〜1,799 tick/s、60 fps、0.24〜0.25 ms/tick。mixed の序盤（tick 180、4 tick/フレーム）: 247 tick/s・62 fps・0.35 ms/tick、tick あたり xfer 0.83 / harm 4.20 / sig 19.39 でマーカー多数 |
 | 3-9a 後、mixed 世界、fork（tick 100、干ばつ）→ 2 世界同期 15 tick/フレーム | fork 27 ms、932 tick/s・62 fps、Verify = MATCH（25 ms） |
 | 3-9a 後、フレーム非依存（同ページで `WorldClient` を直接駆動、30 tick/step × 40） | mixed 1,316 体: 往復 6.3 ms/step（watch あり/なし同じ）、Worker 0.199 ms/tick、4,700 tick/s。forager 1,299 体: 6.15 ms/step、0.194 ms/tick、4,878 tick/s。`drawFrame`（食料 + 個体 + マーカー + 軌跡）0.41 ms/フレーム |
 
@@ -175,4 +176,4 @@ ADR-0011 で走査を行スライス化（ハッシュ不変、-16%）→ 2 パ�
 
 ## 次のタスク
 
-**Phase 3（Agent Cognition）**: 設計は [ADR-0013](adr/0013-phase3-agent-cognition.md)、タスクは docs/TODO.md。3-1〜3-4、3-9a 済。次は 3-5（`PolicyKind::{Reflex, Learner}` の枠、`Intervention::SetPolicy`、CLI の方策拡張）。3-9b（交渉スレッド表示）は 3-4 の台帳イベント `Proposed / Accepted / Rejected / Transferred` と 3-9a の `agent_events_json` / `watch` から作れる。3-9a の公開 URL での確認は push 後に行う。
+**Phase 3（Agent Cognition）**: 設計は [ADR-0013](adr/0013-phase3-agent-cognition.md)、タスクは docs/TODO.md。3-1〜3-4、3-9a 済。次は 3-5（`PolicyKind::{Reflex, Learner}` の枠、`Intervention::SetPolicy`、CLI の方策拡張）。3-9b（交渉スレッド表示）は 3-4 の台帳イベント `Proposed / Accepted / Rejected / Transferred` と 3-9a の `agent_events_json` / `watch` から作れる。

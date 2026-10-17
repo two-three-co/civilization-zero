@@ -28,7 +28,7 @@ Phase 2 の計画は ADR-0010（Toy 1）に従う。
 - [ ] 3-6 Reflex 方策（固定小数点、Forager 等価の初期重み、突然変異 ON）
 - [ ] 3-7 Learner 方策（表形式 Q、整数、継承）
 - [ ] 3-8 EXP-002 事前登録 → 実行 → 記録
-- [x] 3-9a UI: 社会マーカー（`Frame.social`）・台帳集計（`Frame.ledger`）・インスペクタの記憶/相互作用・世界の方策構成選択（済 2026-10-17: プロトコル v3、cz-web に `social / ledger_json / agent_json / agent_events_json` と `policy` 引数。ローカルで確認済み、公開 URL は push 後）
+- [x] 3-9a UI: 社会マーカー（`Frame.social`）・台帳集計（`Frame.ledger`）・インスペクタの記憶/相互作用・世界の方策構成選択（済 2026-10-17: プロトコル v3、cz-web に `social / ledger_json / agent_json / agent_events_json` と `policy` 引数。ローカルと公開 URL で確認済み）
 - [ ] 3-9b/c UI: 交渉スレッド（`Proposed / Accepted / Rejected / Transferred` の時系列。`agent_events_json` が材料）、fixed vs learning 比較
 - [ ] 3-10 文書（ゴールデン表、STATUS、RISKS 追補、TUTORIAL 追補）
 
