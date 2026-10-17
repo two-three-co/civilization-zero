@@ -3,7 +3,7 @@
 //!   cz run    [--seed N] [--agents N] [--side N] [--ticks N]
 //!             [--policy forager|random|mixed|reflex|learner|mixed-learning] [--check]
 //!             [--mutate | --no-mutate] [--learner-states N] [--learner-epsilon PERMILLE]
-//!             [--nomos] [--learner-health-weight W] [--record-violations]
+//!             [--harm-cost COST] [--nomos] [--learner-health-weight W] [--record-violations]
 //!             [--enact KIND[:STANDING[:SANCTION[:EXCEPT]]] [--enact-at TICK]]
 //!             [--repeal ID [--repeal-at TICK]] [--charter Q,TH,TICKS,AMENDABLE]
 //!             [--trace PATH --every K] [--snapshot PATH]
@@ -22,7 +22,8 @@
 //! Policies: `reflex` and `mixed-learning` (forager / reflex / learner in
 //! rotation) switch mutation on unless `--no-mutate` (ADR-0013 D6).
 //! `--learner-states` / `--learner-epsilon` size and explore a learner's Q
-//! table (3-7). `--set-policy KIND` applies `SetPolicy { who: All, params:
+//! table (3-7). `--harm-cost COST` is the energy a Harm attempt costs
+//! (default 2,000; an axis of EXP-003's grid, ADR-0014 D10). `--set-policy KIND` applies `SetPolicy { who: All, params:
 //! Default }` at `--set-policy-at` (default 0) and logs it like a drought.
 //! `--nomos` switches the tracking of social facts on (ADR-0014 4-1: first
 //! occupancy, encroachments, the audit of accepted deals) and
@@ -49,7 +50,8 @@
 //! overall and per policy kind, promises due / broken, standing food and
 //! regrowth, and since 4-2 the rules in force, violations and sanctions per
 //! tick, episodes closed / sanctioned and H1's S = episodes sanctioned /
-//! closed and S' = sanctions / violations), `PREFIX_series.csv` (every
+//! closed and S' = sanctions / violations, and since 4-4 the Harm cost),
+//! `PREFIX_series.csv` (every
 //! `--sample` ticks: population, food and the interval's counts — the
 //! EXP-002 columns first, the 4-1 counts, then the 4-2 counts) and, with
 //! learners, `PREFIX_qpolicy.csv` (per Q row, how many learners prefer each
@@ -94,7 +96,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  cz run [--seed N] [--agents N] [--side N] [--ticks N]\n         [--policy forager|random|mixed|reflex|learner|mixed-learning] [--mutate | --no-mutate]\n         [--learner-states N] [--learner-epsilon PERMILLE] [--nomos] [--learner-health-weight W]\n         [--enact KIND[:STANDING[:SANCTION[:EXCEPT]]] [--enact-at TICK]] [--repeal ID [--repeal-at TICK]]\n         [--charter Q,TH,TICKS,AMENDABLE] [--record-violations]\n         [--check] [--trace PATH --every K] [--snapshot PATH]\n         [--drought-at TICK [--drought-amount N] [--drought-interval N]]\n         [--set-policy KIND [--set-policy-at TICK]] [--log PATH] [--record-actions]\n  cz log --path PATH [--from TICK] [--to TICK] [--limit N]\n  cz resume --snapshot PATH [--ticks N] [--check]\n  cz replay --snapshot PATH --log PATH [--to TICK]\n  cz fork [--seed N] [--agents N] [--side N] [--ticks N] [--at TICK] [--every K]\n          [--scale-food PERMILLE] [--drought-amount N --drought-interval N] [--set-policy KIND]\n          [--enact SPEC] [--repeal ID]\n  cz sweep [--seeds N] [--seed-start S] [--ticks N] [--policy ...] [--window PCT]\n           [--sample K] [--out PREFIX] [--check]\n  (run, fork and sweep also take --nomos, --learner-health-weight W, --charter, --record-violations;\n   --enact KIND is encroach | broken_promise | harm, SANCTION is harm | reject | harm+reject | none)"
+        "usage:\n  cz run [--seed N] [--agents N] [--side N] [--ticks N]\n         [--policy forager|random|mixed|reflex|learner|mixed-learning] [--mutate | --no-mutate]\n         [--learner-states N] [--learner-epsilon PERMILLE] [--harm-cost COST] [--nomos] [--learner-health-weight W]\n         [--enact KIND[:STANDING[:SANCTION[:EXCEPT]]] [--enact-at TICK]] [--repeal ID [--repeal-at TICK]]\n         [--charter Q,TH,TICKS,AMENDABLE] [--record-violations]\n         [--check] [--trace PATH --every K] [--snapshot PATH]\n         [--drought-at TICK [--drought-amount N] [--drought-interval N]]\n         [--set-policy KIND [--set-policy-at TICK]] [--log PATH] [--record-actions]\n  cz log --path PATH [--from TICK] [--to TICK] [--limit N]\n  cz resume --snapshot PATH [--ticks N] [--check]\n  cz replay --snapshot PATH --log PATH [--to TICK]\n  cz fork [--seed N] [--agents N] [--side N] [--ticks N] [--at TICK] [--every K]\n          [--scale-food PERMILLE] [--drought-amount N --drought-interval N] [--set-policy KIND]\n          [--enact SPEC] [--repeal ID]\n  cz sweep [--seeds N] [--seed-start S] [--ticks N] [--policy ...] [--window PCT]\n           [--sample K] [--out PREFIX] [--check]\n  (run, fork and sweep also take --harm-cost COST, --nomos, --learner-health-weight W, --charter, --record-violations;\n   --enact KIND is encroach | broken_promise | harm, SANCTION is harm | reject | harm+reject | none)"
     );
     std::process::exit(2)
 }
@@ -132,6 +134,9 @@ fn build_world(seed: u64, o: &Opts) -> Result<World, Box<dyn std::error::Error>>
     let policy = o.get("policy").map(String::as_str).unwrap_or("forager");
     // Evolving policies mutate by default (ADR-0013 D6); `--no-mutate` wins.
     let evolving = matches!(policy, "reflex" | "mixed-learning");
+    // Every flag defaults to the base config's value, so a flag given
+    // explicitly overrides it and one left out keeps it.
+    let base = WorldConfig::default();
     let cfg = WorldConfig {
         seed,
         width: side,
@@ -140,16 +145,17 @@ fn build_world(seed: u64, o: &Opts) -> Result<World, Box<dyn std::error::Error>>
         patch_count: get(o, "patches", ((side as u32 * side as u32) / 700).max(1))?,
         mutation_enabled: o.contains_key("mutate") || (evolving && !o.contains_key("no-mutate")),
         record_actions: o.contains_key("record-actions"),
-        learner_states: get(o, "learner-states", 32)?,
-        learner_epsilon_permille: get(o, "learner-epsilon", 50)?,
-        learner_health_weight: get(o, "learner-health-weight", 0)?,
-        nomos: o.contains_key("nomos"),
+        harm_cost: get(o, "harm-cost", base.harm_cost)?,
+        learner_states: get(o, "learner-states", base.learner_states)?,
+        learner_epsilon_permille: get(o, "learner-epsilon", base.learner_epsilon_permille)?,
+        learner_health_weight: get(o, "learner-health-weight", base.learner_health_weight)?,
+        nomos: o.contains_key("nomos") || base.nomos,
         record_violations: o.contains_key("record-violations"),
         charter: match o.get("charter") {
             Some(spec) => parse_charter(spec)?,
-            None => Charter::default(),
+            None => base.charter,
         },
-        ..WorldConfig::default()
+        ..base
     };
     Ok(match policy {
         "mixed" => World::generate(cfg, |i| {
@@ -1018,7 +1024,7 @@ fn cmd_sweep(o: &Opts) -> R {
     let win_start = ticks - ticks * window_pct / 100;
 
     let mut summary = String::from(
-        "seed,policy,final_alive,extinct_at,win_mean,win_min,win_max,win_max_over_min,births,deaths_starvation,deaths_old_age,deaths_violence,mutation,learner_states,learner_epsilon,win_ticks,win_agent_ticks,win_consumed_per_agent_tick,win_gathered_per_agent_tick,win_births_per_tick,win_transfers_per_tick,win_harms_per_tick,win_signals_per_tick,win_proposals_per_tick,win_acceptances_per_tick,win_rejections_per_tick,win_deaths_starvation,win_deaths_old_age,win_deaths_violence,win_act_move,win_act_gather,win_act_consume,win_act_rest,win_act_transfer,win_act_store,win_act_harm,win_act_signal,hunger_permille_mean,q_abs_mean,q_delta_window,reflex_weight_drift,nomos,learner_health_weight,win_gathers_per_tick,win_encroachments_per_tick,win_encroach_rate,win_encroach_rate_forager,win_encroach_rate_random,win_encroach_rate_reflex,win_encroach_rate_learner,win_promises_due_per_tick,win_promises_broken_per_tick,win_food_standing_mean,win_regrown_per_tick,rules,win_violations_per_tick,win_sanctions_per_tick,win_episodes_closed,win_episodes_sanctioned,win_s,win_s_prime,ticks_per_s\n",
+        "seed,policy,final_alive,extinct_at,win_mean,win_min,win_max,win_max_over_min,births,deaths_starvation,deaths_old_age,deaths_violence,mutation,learner_states,learner_epsilon,win_ticks,win_agent_ticks,win_consumed_per_agent_tick,win_gathered_per_agent_tick,win_births_per_tick,win_transfers_per_tick,win_harms_per_tick,win_signals_per_tick,win_proposals_per_tick,win_acceptances_per_tick,win_rejections_per_tick,win_deaths_starvation,win_deaths_old_age,win_deaths_violence,win_act_move,win_act_gather,win_act_consume,win_act_rest,win_act_transfer,win_act_store,win_act_harm,win_act_signal,hunger_permille_mean,q_abs_mean,q_delta_window,reflex_weight_drift,nomos,learner_health_weight,win_gathers_per_tick,win_encroachments_per_tick,win_encroach_rate,win_encroach_rate_forager,win_encroach_rate_random,win_encroach_rate_reflex,win_encroach_rate_learner,win_promises_due_per_tick,win_promises_broken_per_tick,win_food_standing_mean,win_regrown_per_tick,rules,win_violations_per_tick,win_sanctions_per_tick,win_episodes_closed,win_episodes_sanctioned,win_s,win_s_prime,harm_cost,ticks_per_s\n",
     );
     let decrees = decrees(o)?;
     let mut series = format!("seed,tick,alive,food,{}\n", Tally::COUNT_COLUMNS);
@@ -1220,9 +1226,11 @@ fn cmd_sweep(o: &Opts) -> R {
         );
         // 4-2: the rules in force at the end, the window's violations and
         // sanctions, and H1's S / S'.
+        // 4-4: the Harm cost (an axis of EXP-003's grid), so that a grid's
+        // CSVs describe their own cell.
         let _ = writeln!(
             row,
-            ",{},{:.4},{:.4},{},{},{},{},{:.0}",
+            ",{},{:.4},{:.4},{},{},{},{},{},{:.0}",
             world.nomos.rules.len(),
             window.per_tick(window.violations),
             window.per_tick(window.sanctions),
@@ -1230,6 +1238,7 @@ fn cmd_sweep(o: &Opts) -> R {
             window.episodes_sanctioned,
             opt_csv(window.s(), 5),
             opt_csv(window.s_prime(), 5),
+            world.config.harm_cost,
             ticks as f64 / secs
         );
         summary.push_str(&row);
