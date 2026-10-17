@@ -10,15 +10,13 @@ Phase 2 の計画は ADR-0010（Toy 1）に従う。
 - [ ] EXP-001 のパラメータ格子版（再生量・代謝・出生閾値を振って帯域と絶滅確率を測る）。
 - [ ] `Vec<Intent>` の tick ごとの確保を避ける（`decide_all` のバッファ再利用）— 計測して効果があれば。
 
-## Phase 2: Toy 1（ADR-0010）
+## Phase 2: Toy 1（ADR-0010）— 完了。残っているのは任意の磨き込みのみ
 
 - [ ] Store / Transfer 行動（イベント台帳と同時に実装）。
 - [ ] `Event::Acted { agent, intent, outcome }` の記録（2a-3、Store/Transfer と同時。全行動記録は設定で ON/OFF、台帳サイズを計測）。
 - [ ] 台帳のバイナリ形式（postcard は内部タグ付き enum を復号できないので別ワイヤ型が要る。JSON Lines で足りている間はやらない）。
-- [ ] Toy 1 UI の続き: 2b-7 静的配信（GitHub Pages 等）と 5 分チュートリアル。配信 URL を STATUS.md に記録。
 - [ ] 2b-6 の磨き込み（任意）: 分岐を 2 本以上、fork した B をさらに fork、B の介入履歴の表示、B 側の個体インスペクタ。
 - [ ] wasm サイズ（205 KB）: serde_json を境界から外す（介入とイベントを構造体で渡す）か、`--profile wasm` 相当の設定を wasm-pack に通せば縮む見込み。計測してから。
-- [ ] ブラウザでの性能計測（1,000〜2,000 体で ≥ 60 tick/s）。
 
 ## Phase 3: Agent Cognition（ADR-0013 のタスク表に従う）
 
