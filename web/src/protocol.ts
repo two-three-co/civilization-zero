@@ -12,8 +12,14 @@
 // `WorldInit.policy` (how a fresh world's population is split between the
 // fixed policies) and a per-request `watch` that attaches one agent's
 // kernel-written memory and ledger history to the frame.
+//
+// v4 adds negotiation threads (ADR-0013 3-9b): a `watch` may name a
+// `partner`, and the frame then also carries `Watched.thread` — the ledger
+// between the two agents with every accepted deal judged (kept / open /
+// broken) by the kernel-side reader, never by the page — and a `deals`
+// request lists every deal of a tick window so a thread can be found.
 
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 /** Fields per agent in `Frame.agents`, matching the kernel's trace layout. */
 export const AGENT_FIELDS = 8; // id, x, y, energy, inventory, policy (0 forager / 1 random), health, age
@@ -170,6 +176,10 @@ export interface Watch {
   id: number;
   /** How many ticks of ledger history (ending at the view's tick) to include. */
   window: number;
+  /** 3-9b: also attach the negotiation thread between `id` and this agent (`Watched.thread`). */
+  partner?: number;
+  /** Ticks of ledger history the thread covers (ending at the view's tick); `window` when omitted. */
+  threadWindow?: number;
 }
 
 /** What a `watch` yields: the agent as it is in the view (null if not alive there) and its ledger history. */
@@ -179,6 +189,65 @@ export interface Watched {
   agent: AgentDetail | null;
   /** Ledger events of the last `window` ticks that name the agent, oldest first. */
   events: LedgerEvent[];
+  /** Present when the watch named a `partner` (3-9b). */
+  thread?: Thread;
+}
+
+// --- Negotiation threads (ADR-0013 3-9b): `WasmWorld::thread_json` / `deals_json` as serde renders them ---
+
+/** What became of a proposal, as of the thread's `now`. */
+export type Answer = "accepted" | "rejected" | "pending" | "lapsed";
+/** Which side of a deal a transfer served: the proposer's `give` or the acceptor's `want`. */
+export type Role = "give" | "repay";
+export type DealStatus = "open" | "fulfilled" | "broken";
+
+/**
+ * An accepted proposal, judged from the transfers between the pair in its
+ * window (`offer_tick..=deadline`): fulfilled once `given >= give` and
+ * `repaid >= want`, broken once the deadline has passed with a side short,
+ * open otherwise. The judgement is the kernel-side reader's (ADR-0013 D5 as
+ * 3-9b reads it); the page only displays it.
+ */
+export interface Deal {
+  proposer: number;
+  acceptor: number;
+  offer_tick: number;
+  accepted_tick: number;
+  /** `offer_tick + by`: the last tick a transfer counts. */
+  deadline: number;
+  give: number;
+  want: number;
+  /** Food the proposer handed the acceptor within the window. */
+  given: number;
+  /** Food the acceptor handed back within the window. */
+  repaid: number;
+  status: DealStatus;
+  /** Tick at which both sides had delivered (never before the acceptance). */
+  settled_tick: number | null;
+  /** Who fell short when broken: the proposer, the acceptor, or both. */
+  broken_by: number[];
+}
+
+/** One ledger event between the two agents of a thread, with its place in the deals (`deal` indexes `Thread.deals`). */
+export type ThreadEntry =
+  | { kind: "proposed"; tick: number; from: number; to: number; give: number; want: number; by: number; deadline: number; answer: Answer; deal: number | null }
+  | { kind: "accepted"; tick: number; from: number; to: number; offer_tick: number; give: number; want: number; by: number; deadline: number; deal: number }
+  /** `offer_tick` is the latest earlier offer from `to` (the kernel records none for a rejection). */
+  | { kind: "rejected"; tick: number; from: number; to: number; offer_tick: number | null }
+  /** `deal` / `role` name the promise the transfer went toward, null when no promise still called for it. */
+  | { kind: "transferred"; tick: number; from: number; to: number; amount: number; deal: number | null; role: Role | null }
+  | { kind: "harmed"; tick: number; by: number; target: number; damage: number };
+
+/** The ledger between two agents over ticks `from..now`, read at tick `now` (the view's). */
+export interface Thread {
+  a: number;
+  b: number;
+  from: number;
+  now: number;
+  /** Every ledger event naming both agents, oldest first. */
+  entries: ThreadEntry[];
+  /** One per accepted entry, in ledger order. */
+  deals: Deal[];
 }
 
 /** Wall-clock measurements the worker took while serving a request. */
@@ -231,7 +300,9 @@ export type Request =
   | { type: "intervene"; intervention: Intervention }
   | { type: "history" }
   /** Binary snapshot of the current view, to fork from in another worker. */
-  | { type: "snapshot" };
+  | { type: "snapshot" }
+  /** Every deal of ticks `from..to` (capped at the view's tick), judged as of the window's end (3-9b). */
+  | { type: "deals"; from: number; to: number };
 
 export type Response =
   | {
@@ -240,6 +311,7 @@ export type Response =
       event?: InterventionEvent;
       history?: InterventionEvent[];
       snapshot?: Uint8Array;
+      deals?: Deal[];
     }
   | { type: "error"; message: string };
 

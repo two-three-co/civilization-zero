@@ -6,6 +6,7 @@ import {
   AGENT_FIELDS,
   POLICY_MIXES,
   PROTOCOL_VERSION,
+  type Deal,
   type Frame,
   type Interaction,
   type Intervention,
@@ -13,6 +14,8 @@ import {
   type LedgerEvent,
   type Message,
   type PolicyMix,
+  type ThreadEntry,
+  type Watched,
   type WorldInit,
 } from "./protocol";
 import { drawFrame, drawSparkline, MarkerTrail, pickAgent, SCALE, type Sample } from "./render";
@@ -28,10 +31,19 @@ const USE_MOCK = PARAMS.get("mock") === "1";
 const POLICY: PolicyMix = (POLICY_MIXES as string[]).includes(PARAMS.get("policy") ?? "")
   ? (PARAMS.get("policy") as PolicyMix)
   : "forager";
-const DEFAULT_WORLD: WorldInit = { seed: 42, width: 128, height: 128, agents: 1000, snapshotEvery: 250, policy: POLICY };
+// `?seed=N` picks the world's seed (3-9b). 42 is the Toy 1 world whose hashes
+// STATUS records; `cz run --seed N --policy …` reproduces any other.
+const SEED_PARAM = PARAMS.get("seed");
+const SEED = SEED_PARAM !== null && /^\d{1,9}$/.test(SEED_PARAM) ? Number(SEED_PARAM) : 42;
+const DEFAULT_WORLD: WorldInit = { seed: SEED, width: 128, height: 128, agents: 1000, snapshotEvery: 250, policy: POLICY };
 const SPEEDS = [1, 4, 15, 30];
 /** Ticks of ledger history shown for the watched agent. */
 const WATCH_WINDOW = 100;
+/** Ticks of ledger history a negotiation thread (and the deals finder) covers (3-9b). */
+const THREAD_WINDOW = 2000;
+/** Most recent thread entries / deals listed. */
+const THREAD_ROWS = 40;
+const DEAL_ROWS = 15;
 
 interface Rates {
   /** Simulated ticks per wall-clock second over the last ~1 s of play (both worlds advance together). */
@@ -85,6 +97,11 @@ export default function App() {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(4);
   const [selected, setSelected] = useState<number | null>(null);
+  /** The other agent of the thread read with the selected one (3-9b). */
+  const [partner, setPartner] = useState<number | null>(null);
+  const [partnerInput, setPartnerInput] = useState("");
+  /** Deals the kernel-side reader found in the window ending at `at` (3-9b). */
+  const [deals, setDeals] = useState<{ at: number; from: number; list: Deal[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [rates, setRates] = useState<Rates>(NO_RATES);
   const [lastSeek, setLastSeek] = useState<SeekInfo | null>(null);
@@ -131,15 +148,20 @@ export default function App() {
   }, [show, discardBranch]);
 
   // The selected agent is "watched": every frame from A then carries its
-  // kernel-written memory, last signal and ledger history. While paused,
+  // kernel-written memory, last signal and ledger history — and, once a
+  // partner is picked, the thread between the two (3-9b). While paused,
   // ask for a frame so the inspector updates at once.
   useEffect(() => {
     const c = client.current;
     if (!c) return;
-    c.watch(selected === null ? null : { id: selected, window: WATCH_WINDOW });
+    c.watch(
+      selected === null
+        ? null
+        : { id: selected, window: WATCH_WINDOW, partner: partner ?? undefined, threadWindow: THREAD_WINDOW },
+    );
     if (!playing && frame && selected !== null) c.frame().then(show).catch((e: Error) => setError(e.message));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected]);
+  }, [selected, partner]);
 
   // Play loop: ask both worlds for `speed` ticks per animation frame, never
   // overlapping, and measure what actually happened over the last second.
@@ -322,6 +344,28 @@ export default function App() {
     const cx = ((ev.clientX - r.left) / r.width) * f.width;
     const cy = ((ev.clientY - r.top) / r.height) * f.height;
     setSelected(pickAgent(f, cx, cy));
+    setPartner(null);
+  };
+
+  // Read the thread between two agents: select one, watch it with the other.
+  const readPair = (a: number, b: number) => {
+    setSelected(a);
+    setPartner(b);
+  };
+
+  // Every deal of the last THREAD_WINDOW ticks, judged by the kernel-side
+  // reader as of the view's tick (a one-shot request, not part of frames).
+  const findDeals = async () => {
+    const c = client.current;
+    if (!c || !frame) return;
+    try {
+      const to = frame.tick;
+      const from = Math.max(0, to - THREAD_WINDOW);
+      const r = await c.deals(from, to);
+      setDeals({ at: to, from, list: r.deals });
+    } catch (e) {
+      setError((e as Error).message);
+    }
   };
 
   // A different founding population is a different world: reload with it.
@@ -334,6 +378,8 @@ export default function App() {
   const agent = frame && selected !== null ? findAgent(frame, selected) : null;
   const watched = frame?.watched && frame.watched.id === selected ? frame.watched : null;
   const detail = watched?.agent ?? null;
+  const thread = watched?.thread && partner !== null && watched.thread.b === partner ? watched.thread : null;
+  const partners = watched ? partnersOf(watched) : [];
   const atHead = !!frame && frame.tick === frame.frontier;
   const L = frame?.ledger;
   const per = (v: number | null) => (v === null ? "–" : v.toFixed(2));
@@ -503,6 +549,50 @@ export default function App() {
             />
           )}
           <div className="card">
+            <h2>Deals · ledger</h2>
+            <p className="muted hint">
+              Every accepted proposal of the last {THREAD_WINDOW} ticks, judged by the kernel-side reader from the
+              transfers that followed it (ADR-0013 D5): <b>kept</b>, <b>open</b> or <b>broken</b>. The page adds nothing.
+            </p>
+            <div className="row">
+              <button onClick={() => void findDeals()} disabled={!frame} title="asks the worker; foragers never negotiate">
+                Find deals
+              </button>
+              {deals && (
+                <span className="muted">
+                  as of tick {deals.at}: {deals.list.length} deals · {countDeals(deals.list)}
+                </span>
+              )}
+            </div>
+            {deals &&
+              (deals.list.length === 0 ? (
+                <p className="muted hint">none in ticks {deals.from}–{Math.max(deals.from, deals.at - 1)} — pick the mixed or random world</p>
+              ) : (
+                <>
+                  <p className="muted hint">kept deals with food on both sides first, then newest first; pick one to read its thread</p>
+                  <ol className="history deals">
+                    {rankDeals(deals.list)
+                      .slice(0, DEAL_ROWS)
+                      .map((d, i) => (
+                        <li key={`${d.accepted_tick}-${d.proposer}-${d.acceptor}-${i}`}>
+                          <span className="when">tick {d.accepted_tick}</span>
+                          <span className="who">
+                            #{d.proposer} → #{d.acceptor}
+                          </span>
+                          <span className="what">
+                            {d.give} for {d.want} by tick {d.deadline}
+                          </span>
+                          <Pill status={d.status} />
+                          <button className="link" onClick={() => readPair(d.proposer, d.acceptor)}>
+                            read
+                          </button>
+                        </li>
+                      ))}
+                  </ol>
+                </>
+              ))}
+          </div>
+          <div className="card">
             <h2>Agent (click a map)</h2>
             {agent ? (
               <dl>
@@ -582,6 +672,72 @@ export default function App() {
                         </li>
                       ))}
                   </ol>
+                )}
+                <h2 className="sub">Thread · with {partner !== null ? `#${partner}` : "…"}</h2>
+                <p className="muted hint">
+                  The ledger between agent {watched.id} and one other agent, oldest first (last {THREAD_WINDOW} ticks). Pick
+                  a partner: those in the memory and ledger above, negotiation partners first, or any id.
+                </p>
+                <div className="partners">
+                  {partners.map((id) => (
+                    <button key={id} className={id === partner ? "on" : ""} onClick={() => setPartner(id)}>
+                      #{id}
+                    </button>
+                  ))}
+                  <input
+                    type="number"
+                    min={0}
+                    className="goto"
+                    value={partnerInput}
+                    onChange={(e) => setPartnerInput(e.target.value)}
+                    placeholder="id"
+                    aria-label="partner id"
+                  />
+                  <button
+                    onClick={() => setPartner(Math.max(0, Math.floor(Number(partnerInput))))}
+                    disabled={partnerInput === ""}
+                  >
+                    read
+                  </button>
+                </div>
+                {thread && (
+                  <>
+                    <p className="muted hint">
+                      ticks {thread.from}–{Math.max(thread.from, thread.now - 1)}: {thread.entries.length} events,{" "}
+                      {thread.deals.length} deals. Each acceptance is judged by the kernel-side reader from the transfers in
+                      its window (offer tick to deadline): kept once both sides delivered, broken once the deadline passed
+                      with a side short, open until then.
+                    </p>
+                    {thread.entries.length === 0 ? (
+                      <p className="muted hint">
+                        nothing between #{thread.a} and #{thread.b} in this window
+                      </p>
+                    ) : (
+                      <ol className="history thread">
+                        {thread.entries.length > THREAD_ROWS && (
+                          <li className="muted">… {thread.entries.length - THREAD_ROWS} earlier</li>
+                        )}
+                        {thread.entries.slice(-THREAD_ROWS).map((e, i) => (
+                          <li key={`${e.tick}-${i}`}>
+                            <span className="when">tick {e.tick}</span>
+                            <span className="who">{whoOf(e)}</span>
+                            <span className="what">{describeThreadEntry(e)}</span>
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                    {thread.deals.length > 0 && (
+                      <ol className="history deals">
+                        {thread.deals.map((d, i) => (
+                          <li key={`${d.accepted_tick}-${i}`}>
+                            <span className="when">deal {i + 1}</span>
+                            <span className="what">{describeDeal(d)}</span>
+                            <Pill status={d.status} />
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                  </>
                 )}
               </>
             )}
@@ -678,4 +834,97 @@ function describeEvent(e: LedgerEvent, id: number): string {
     case "acted":
       return `acted: ${JSON.stringify(e.action)} → ${JSON.stringify(e.outcome)}`;
   }
+}
+
+/** `kept` / `open` / `broken` as a small label. */
+function Pill({ status }: { status: Deal["status"] }) {
+  const cls = status === "fulfilled" ? "ok" : status === "broken" ? "bad" : "open";
+  return <span className={`pill ${cls}`}>{status === "fulfilled" ? "kept" : status}</span>;
+}
+
+function countDeals(list: Deal[]): string {
+  const n = (s: Deal["status"]) => list.filter((d) => d.status === s).length;
+  return `kept ${n("fulfilled")} · open ${n("open")} · broken ${n("broken")}`;
+}
+
+/** Kept deals with food on both sides first (the threads worth reading), then kept, open, broken; newest first within each. */
+function rankDeals(list: Deal[]): Deal[] {
+  const rank = (d: Deal) =>
+    d.status === "fulfilled" ? (d.give > 0 && d.want > 0 ? 0 : 1) : d.status === "open" ? 2 : 3;
+  return list.slice().sort((p, q) => rank(p) - rank(q) || q.accepted_tick - p.accepted_tick);
+}
+
+/**
+ * Who the watched agent could read a thread with: every other agent its
+ * memory or ledger window names, negotiation partners first, then by the
+ * most recent contact.
+ */
+function partnersOf(w: Watched): number[] {
+  const seen = new Map<number, { tick: number; nego: boolean }>();
+  const note = (id: number, tick: number, nego: boolean) => {
+    if (id === w.id) return;
+    const cur = seen.get(id);
+    seen.set(id, { tick: Math.max(cur?.tick ?? -1, tick), nego: (cur?.nego ?? false) || nego });
+  };
+  for (const r of w.agent?.recent ?? []) {
+    note(r.other, r.tick, r.kind === "proposal_from" || r.kind === "accepted" || r.kind === "rejected" || r.kind === "promised");
+  }
+  for (const e of w.events) {
+    switch (e.kind) {
+      case "proposed":
+      case "accepted":
+      case "rejected":
+        note(e.from === w.id ? e.to : e.from, e.tick, true);
+        break;
+      case "transferred":
+        note(e.from === w.id ? e.to : e.from, e.tick, false);
+        break;
+      case "harmed":
+        note(e.by === w.id ? e.target : e.by, e.tick, false);
+        break;
+      default:
+        break;
+    }
+  }
+  return [...seen.entries()]
+    .sort((p, q) => Number(q[1].nego) - Number(p[1].nego) || q[1].tick - p[1].tick)
+    .map(([id]) => id)
+    .slice(0, 8);
+}
+
+function whoOf(e: ThreadEntry): string {
+  return e.kind === "harmed" ? `#${e.by} → #${e.target}` : `#${e.from} → #${e.to}`;
+}
+
+/** One thread entry in words; the judgement words come from the reader's fields, not from the page. */
+function describeThreadEntry(e: ThreadEntry): string {
+  const dealNo = (i: number | null) => (i === null ? "" : ` · deal ${i + 1}`);
+  switch (e.kind) {
+    case "proposed": {
+      const answer =
+        e.answer === "pending" ? "no answer yet" : e.answer === "lapsed" ? "unanswered, deadline passed" : e.answer;
+      return `proposed: give ${e.give} now, want ${e.want} back by tick ${e.deadline} · ${answer}${dealNo(e.deal)}`;
+    }
+    case "accepted":
+      return `accepted the offer of tick ${e.offer_tick}: #${e.to} gives ${e.give} now, #${e.from} returns ${e.want} by tick ${e.deadline}${dealNo(e.deal)}`;
+    case "rejected":
+      return e.offer_tick === null ? "rejected (no earlier offer in this window)" : `rejected the offer of tick ${e.offer_tick}`;
+    case "transferred":
+      return e.role === null
+        ? `gave ${e.amount} food (no promise called for it)`
+        : `gave ${e.amount} food · ${e.role === "give" ? "the give" : "repayment"}${dealNo(e.deal)}`;
+    case "harmed":
+      return `harmed (−${e.damage} health)`;
+  }
+}
+
+function describeDeal(d: Deal): string {
+  const who = d.broken_by.map((id) => `#${id}`).join(" and ");
+  const outcome =
+    d.status === "fulfilled"
+      ? `kept at tick ${d.settled_tick}`
+      : d.status === "broken"
+        ? `broken by ${who}: deadline tick ${d.deadline} passed`
+        : `open until tick ${d.deadline}`;
+  return `offer tick ${d.offer_tick}, accepted tick ${d.accepted_tick}: #${d.proposer} gives ${d.give} (given ${d.given}), #${d.acceptor} returns ${d.want} (repaid ${d.repaid}) · ${outcome}`;
 }

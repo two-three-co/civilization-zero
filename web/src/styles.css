@@ -412,3 +412,68 @@ footer {
   border-top-color: transparent;
   padding: 1px 0;
 }
+/* Negotiation threads (ADR-0013 3-9b). */
+.history .who {
+  color: var(--muted);
+  margin-right: 6px;
+  white-space: nowrap;
+}
+.history.thread li,
+.history.deals li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 6px;
+  align-items: baseline;
+}
+.history.thread .when,
+.history.deals .when {
+  flex: none;
+  min-width: 58px;
+  margin-right: 0;
+}
+.history .what {
+  flex: 1 1 160px;
+}
+.pill {
+  flex: none;
+  font-size: 10px;
+  line-height: 1.4;
+  padding: 0 6px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.pill.ok {
+  border-color: rgb(var(--food));
+  color: rgb(var(--food));
+}
+.pill.bad {
+  border-color: #dc2626;
+  color: #dc2626;
+}
+.pill.open {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+.partners {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  margin: 6px 0;
+}
+.partners button {
+  padding: 1px 8px;
+  font-size: 12px;
+}
+.partners button.on {
+  border-color: var(--ink);
+  font-weight: 600;
+}
+.partners .goto {
+  width: 70px;
+  padding: 2px 6px;
+  font-size: 12px;
+}

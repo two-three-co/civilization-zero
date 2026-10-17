@@ -11,13 +11,19 @@
 //! transfers, harms and signals of the tick the view just executed, placed
 //! at the agents' positions in the view; `agent_json` is one agent with the
 //! memory the kernel wrote for it; `agent_events_json` filters the ledger
-//! to one agent; `ledger_json` is the running totals.
+//! to one agent; `ledger_json` is the running totals. Negotiation threads
+//! (3-9b) are the same ledger read for a pair: `thread_json` lists what
+//! passed between two agents and judges each accepted deal from the
+//! transfers that followed ([`thread`]); `deals_json` lists every deal of
+//! a window so one can be found.
 //!
 //! Numbers cross the boundary as `u32` so JavaScript never needs `BigInt`;
 //! the state hash is a 16-hex-digit string. Errors are `String`s (wasm-bindgen
 //! throws them; natively they stay plain `Result`s, so the same code is
 //! testable without a JS runtime). Built with
 //! `wasm-pack build crates/cz-web --target web` (see `web/package.json`).
+
+pub mod thread;
 
 use multiverse::{replay, BranchId, Multiverse};
 use simulation_core::{AgentId, Event, Intervention, PolicyKind, Pos, World, WorldConfig};
@@ -356,6 +362,38 @@ impl WasmWorld {
             .filter(|e| involves(e, id))
             .collect();
         serde_json::to_string(&events).map_err(js)
+    }
+
+    /// The negotiation thread between agents `a` and `b` (ADR-0013 3-9b) as
+    /// JSON (`thread::Thread`): every ledger event naming both of them in
+    /// ticks `from..now`, ledger order, with each acceptance read as a deal
+    /// and judged from the transfers in its window. `now` is `to` capped at
+    /// the view's tick — the thread is the ledger as the world stood at
+    /// `now`, so a deal still inside its deadline there is `open` even if
+    /// the branch has run further. Transfers before `from` are not seen.
+    pub fn thread_json(&self, a: u32, b: u32, from: u32, to: u32) -> Result<String, String> {
+        let branch = self.mv.branch(self.branch).map_err(js)?;
+        let now = (to as u64).min(self.view().tick);
+        let from = (from as u64).min(now);
+        let t = thread::thread(
+            branch.log().range(from..now),
+            AgentId(a as u64),
+            AgentId(b as u64),
+            from,
+            now,
+        );
+        serde_json::to_string(&t).map_err(js)
+    }
+
+    /// Every deal (accepted proposal) between any two agents in ticks
+    /// `from..now` (`now` = `to` capped at the view's tick), judged as of
+    /// `now` exactly as in [`thread_json`], ledger order, as a JSON array
+    /// of `thread::Deal`. How the UI finds a thread worth reading.
+    pub fn deals_json(&self, from: u32, to: u32) -> Result<String, String> {
+        let branch = self.mv.branch(self.branch).map_err(js)?;
+        let now = (to as u64).min(self.view().tick);
+        let from = (from as u64).min(now);
+        serde_json::to_string(&thread::deals(branch.log().range(from..now), now)).map_err(js)
     }
 
     /// Binary snapshot of the view (ADR-0006).

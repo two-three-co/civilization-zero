@@ -68,3 +68,69 @@ fn the_social_surface_works_under_wasm() {
 
     assert!(WasmWorld::new(3, 32, 32, 200, 3, 25, "learner").is_err());
 }
+
+/// Negotiation threads (ADR-0013 3-9b) under wasm: in the crowded random
+/// world the deals finder and the pair thread agree with each other and
+/// with the ledger, and the same world built twice reads the same.
+/// (`tests/native.rs` checks the judgement itself against hand-built
+/// ledgers and the kernel; this checks the code path under wasm.)
+#[wasm_bindgen_test]
+fn negotiation_threads_work_under_wasm() {
+    let mut w = WasmWorld::new(3, 32, 32, 200, 3, 25, "random").unwrap();
+    w.step(40).unwrap();
+    let deals: Vec<serde_json::Value> =
+        serde_json::from_str(&w.deals_json(0, 40).unwrap()).unwrap();
+    let ledger: serde_json::Value = serde_json::from_str(&w.ledger_json().unwrap()).unwrap();
+    assert_eq!(
+        deals.len() as u64,
+        ledger["acceptances"].as_u64().unwrap(),
+        "one deal per acceptance"
+    );
+    assert!(deals
+        .iter()
+        .all(|d| ["open", "fulfilled", "broken"].contains(&d["status"].as_str().unwrap())));
+
+    let d = &deals[0];
+    let (p, q) = (
+        d["proposer"].as_u64().unwrap() as u32,
+        d["acceptor"].as_u64().unwrap() as u32,
+    );
+    let json = w.thread_json(p, q, 0, 40).unwrap();
+    let t: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        (
+            t["a"].as_u64(),
+            t["b"].as_u64(),
+            t["from"].as_u64(),
+            t["now"].as_u64()
+        ),
+        (Some(p as u64), Some(q as u64), Some(0), Some(40))
+    );
+    assert!(t["deals"].as_array().unwrap().contains(d));
+    let entries = t["entries"].as_array().unwrap();
+    assert!(entries
+        .iter()
+        .any(|e| e["kind"] == "accepted" && e["offer_tick"] == d["offer_tick"]));
+    assert!(
+        entries
+            .windows(2)
+            .all(|w| w[0]["tick"].as_u64() <= w[1]["tick"].as_u64()),
+        "ledger order"
+    );
+    // Read at the view: `to` past the view is capped, and an earlier view is shorter.
+    assert_eq!(w.thread_json(p, q, 0, 1000).unwrap(), json);
+    w.seek(20).unwrap();
+    let early: serde_json::Value =
+        serde_json::from_str(&w.thread_json(p, q, 0, 40).unwrap()).unwrap();
+    assert_eq!(early["now"], 20);
+    assert!(early["entries"].as_array().unwrap().len() <= entries.len());
+    w.seek(40).unwrap();
+
+    let mut again = WasmWorld::new(3, 32, 32, 200, 3, 25, "random").unwrap();
+    again.step(40).unwrap();
+    assert_eq!(again.thread_json(p, q, 0, 40).unwrap(), json);
+    assert_eq!(
+        again.deals_json(0, 40).unwrap(),
+        w.deals_json(0, 40).unwrap()
+    );
+}

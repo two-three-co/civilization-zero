@@ -448,3 +448,672 @@ fn agent_events_json_filters_the_ledger_by_agent_and_window() {
     assert!(story.iter().any(|e| e["kind"] == "died"));
     assert_eq!(ww.agent_json(dead_id as u32).unwrap(), "null");
 }
+
+// --- ADR-0013 3-9b: negotiation threads ---
+
+mod threads {
+    use cz_web::thread::{deals, thread, Answer, Deal, Entry, Role, Status};
+    use cz_web::WasmWorld;
+    use serde_json::Value;
+    use simulation_core::{AgentId, Event};
+
+    const A: AgentId = AgentId(0);
+    const B: AgentId = AgentId(1);
+
+    fn proposed(tick: u64, from: AgentId, to: AgentId, give: u8, want: u8, by: u16) -> Event {
+        Event::Proposed {
+            tick,
+            from,
+            to,
+            give,
+            want,
+            by,
+        }
+    }
+
+    fn accepted(
+        tick: u64,
+        from: AgentId,
+        to: AgentId,
+        offer_tick: u64,
+        give: u8,
+        want: u8,
+        by: u16,
+    ) -> Event {
+        Event::Accepted {
+            tick,
+            from,
+            to,
+            offer_tick,
+            give,
+            want,
+            by,
+        }
+    }
+
+    fn rejected(tick: u64, from: AgentId, to: AgentId) -> Event {
+        Event::Rejected { tick, from, to }
+    }
+
+    fn transferred(tick: u64, from: AgentId, to: AgentId, amount: u32) -> Event {
+        Event::Transferred {
+            tick,
+            from,
+            to,
+            amount,
+        }
+    }
+
+    fn harmed(tick: u64, by: AgentId, target: AgentId) -> Event {
+        Event::Harmed {
+            tick,
+            by,
+            target,
+            damage: 20,
+        }
+    }
+
+    /// The honest reciprocator of `simulation-core/tests/negotiation.rs`,
+    /// as the ledger records it: A offers 2 for 3 within 10 ticks, B
+    /// accepts, A gives, B repays. Read as a thread it is one deal,
+    /// fulfilled at the repayment; read earlier it is still open.
+    #[test]
+    fn the_happy_path_is_one_deal_fulfilled_at_the_repayment() {
+        let log = [
+            proposed(0, A, B, 2, 3, 10),
+            accepted(1, B, A, 0, 2, 3, 10),
+            transferred(3, A, B, 2),
+            transferred(4, B, A, 3),
+        ];
+        let t = thread(&log, A, B, 0, 5);
+        assert_eq!((t.a, t.b, t.from, t.now), (A, B, 0, 5));
+        assert_eq!(
+            t.deals,
+            vec![Deal {
+                proposer: A,
+                acceptor: B,
+                offer_tick: 0,
+                accepted_tick: 1,
+                deadline: 10,
+                give: 2,
+                want: 3,
+                given: 2,
+                repaid: 3,
+                status: Status::Fulfilled,
+                settled_tick: Some(4),
+                broken_by: vec![],
+            }]
+        );
+        assert_eq!(
+            t.entries,
+            vec![
+                Entry::Proposed {
+                    tick: 0,
+                    from: A,
+                    to: B,
+                    give: 2,
+                    want: 3,
+                    by: 10,
+                    deadline: 10,
+                    answer: Answer::Accepted,
+                    deal: Some(0),
+                },
+                Entry::Accepted {
+                    tick: 1,
+                    from: B,
+                    to: A,
+                    offer_tick: 0,
+                    give: 2,
+                    want: 3,
+                    by: 10,
+                    deadline: 10,
+                    deal: 0,
+                },
+                Entry::Transferred {
+                    tick: 3,
+                    from: A,
+                    to: B,
+                    amount: 2,
+                    deal: Some(0),
+                    role: Some(Role::Give),
+                },
+                Entry::Transferred {
+                    tick: 4,
+                    from: B,
+                    to: A,
+                    amount: 3,
+                    deal: Some(0),
+                    role: Some(Role::Repay),
+                },
+            ]
+        );
+        // The same thread read from B's side is the same thread.
+        let mirrored = thread(&log, B, A, 0, 5);
+        assert_eq!(
+            (mirrored.entries, mirrored.deals),
+            (t.entries.clone(), t.deals.clone())
+        );
+
+        // Read at tick 4 (the repayment not yet known): open, 2 given.
+        let early = thread(&log[..3], A, B, 0, 4);
+        let d = &early.deals[0];
+        assert_eq!(
+            (d.status, d.given, d.repaid, d.settled_tick),
+            (Status::Open, 2, 0, None)
+        );
+        assert!(matches!(
+            early.entries[0],
+            Entry::Proposed {
+                answer: Answer::Accepted,
+                ..
+            }
+        ));
+
+        // `deals` over any-pair events agrees with the thread's reading.
+        assert_eq!(deals(&log, 5), t.deals);
+    }
+
+    /// `a_broken_promise_changes_nothing_physical` in the kernel's tests:
+    /// A gives, B never repays, the deadline (tick 4) passes. The thread
+    /// says so — open until the deadline, broken by B after it — while the
+    /// kernel, as that test shows, does nothing at all.
+    #[test]
+    fn a_breach_is_open_until_the_deadline_and_then_broken_by_the_debtor() {
+        let log = [
+            proposed(0, A, B, 2, 3, 4),
+            accepted(1, B, A, 0, 2, 3, 4),
+            transferred(2, A, B, 2),
+        ];
+        for now in 3..=4 {
+            let d = &thread(&log, A, B, 0, now).deals[0];
+            assert_eq!((d.status, d.deadline), (Status::Open, 4), "now {now}");
+            assert!(d.broken_by.is_empty());
+        }
+        let d = &thread(&log, A, B, 0, 5).deals[0];
+        assert_eq!((d.status, d.given, d.repaid), (Status::Broken, 2, 0));
+        assert_eq!(d.broken_by, vec![B], "the acceptor owed the `want`");
+        // A late repayment does not mend it: the window closed at tick 4.
+        let late = [log.as_slice(), &[transferred(9, B, A, 3)]].concat();
+        let t = thread(&late, A, B, 0, 10);
+        assert_eq!((t.deals[0].status, t.deals[0].repaid), (Status::Broken, 0));
+        assert!(matches!(
+            t.entries[3],
+            Entry::Transferred {
+                deal: None,
+                role: None,
+                ..
+            }
+        ));
+        // Had A never given either, both would be named.
+        let neither = [proposed(0, A, B, 2, 3, 4), accepted(1, B, A, 0, 2, 3, 4)];
+        assert_eq!(thread(&neither, A, B, 0, 5).deals[0].broken_by, vec![A, B]);
+        // A deal with nothing to deliver is settled by the acceptance itself.
+        let nothing = [proposed(0, A, B, 0, 0, 4), accepted(1, B, A, 0, 0, 0, 4)];
+        let d = &thread(&nothing, A, B, 0, 2).deals[0];
+        assert_eq!((d.status, d.settled_tick), (Status::Fulfilled, Some(1)));
+    }
+
+    /// A rejection names no offer; the thread attributes it to the latest
+    /// earlier offer from the rejected party. Unanswered offers are pending
+    /// until their deadline, then lapsed. Harms between the pair are part
+    /// of the thread; everything else in the ledger is not.
+    #[test]
+    fn rejections_are_linked_to_the_latest_earlier_offer_and_other_events_are_ignored() {
+        let c = AgentId(2);
+        let log = [
+            proposed(0, A, B, 1, 1, 5),
+            proposed(1, B, A, 2, 2, 3), // B's own offer the other way
+            proposed(2, A, B, 3, 3, 20),
+            rejected(3, B, A), // declines A's latest: tick 2
+            harmed(3, A, B),
+            rejected(4, A, B),          // declines B's: tick 1
+            proposed(5, A, c, 1, 1, 1), // another pair
+            transferred(6, c, A, 4),    // another pair
+            rejected(6, B, A),          // declines tick 2 again (no newer offer)
+        ];
+        let t = thread(&log, A, B, 0, 7);
+        assert!(t.deals.is_empty());
+        let kinds: Vec<&str> = t
+            .entries
+            .iter()
+            .map(|e| match e {
+                Entry::Proposed { .. } => "proposed",
+                Entry::Accepted { .. } => "accepted",
+                Entry::Rejected { .. } => "rejected",
+                Entry::Transferred { .. } => "transferred",
+                Entry::Harmed { .. } => "harmed",
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            ["proposed", "proposed", "proposed", "rejected", "harmed", "rejected", "rejected"]
+        );
+        let answers: Vec<Answer> = t
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Proposed { answer, .. } => Some(*answer),
+                _ => None,
+            })
+            .collect();
+        // Tick 0: never answered, deadline 5 passed → lapsed. Tick 1 (B's):
+        // rejected at 4. Tick 2: rejected at 3 (and 6).
+        assert_eq!(
+            answers,
+            [Answer::Lapsed, Answer::Rejected, Answer::Rejected]
+        );
+        let linked: Vec<Option<u64>> = t
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Rejected { offer_tick, .. } => Some(*offer_tick),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(linked, [Some(2), Some(1), Some(2)]);
+        // Pending while the deadline is ahead; a rejection with no earlier
+        // offer links to nothing.
+        let t = thread(&[proposed(0, A, B, 1, 1, 5), rejected(1, A, B)], A, B, 0, 2);
+        assert!(matches!(
+            t.entries[0],
+            Entry::Proposed {
+                answer: Answer::Pending,
+                ..
+            }
+        ));
+        assert!(matches!(
+            t.entries[1],
+            Entry::Rejected {
+                offer_tick: None,
+                ..
+            }
+        ));
+    }
+
+    /// Two deals between the same pair whose windows overlap: D5's sums are
+    /// per deal (a transfer inside both windows counts for both), and each
+    /// transfer is shown against the oldest deal that still owed on that
+    /// side — or against none, when every promise it could serve was
+    /// already kept (a gift, as far as the ledger can tell).
+    #[test]
+    fn overlapping_deals_are_judged_independently_and_transfers_are_attributed_in_order() {
+        let log = [
+            proposed(0, A, B, 2, 1, 10),
+            accepted(1, B, A, 0, 2, 1, 10),
+            transferred(4, A, B, 2), // deal 0's give, in full
+            proposed(5, A, B, 1, 1, 10),
+            accepted(6, B, A, 5, 1, 1, 10),
+            transferred(7, A, B, 1), // deal 0 is given in full → deal 1's give
+            transferred(8, B, A, 1), // repays deal 0 (the oldest owed)…
+            transferred(9, B, A, 1), // …deal 1 was repaid by tick 8 too: owed by nobody
+        ];
+        let t = thread(&log, A, B, 0, 10);
+        assert_eq!(t.deals.len(), 2);
+        // Deal 0's window (0..=10) holds all four transfers; deal 1's (5..=15)
+        // holds the last three.
+        assert_eq!((t.deals[0].given, t.deals[0].repaid), (3, 2));
+        assert_eq!((t.deals[1].given, t.deals[1].repaid), (1, 2));
+        assert!(t.deals.iter().all(|d| d.status == Status::Fulfilled));
+        assert_eq!(
+            (t.deals[0].settled_tick, t.deals[1].settled_tick),
+            (Some(8), Some(8))
+        );
+        let tags: Vec<(Option<usize>, Option<Role>)> = t
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Transferred { deal, role, .. } => Some((*deal, *role)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            tags,
+            [
+                (Some(0), Some(Role::Give)),
+                (Some(1), Some(Role::Give)),
+                (Some(0), Some(Role::Repay)),
+                (None, None),
+            ]
+        );
+    }
+
+    /// In a crowded world of random walkers the thread of a pair is exactly
+    /// the pair's slice of what `agent_events_json` reports for either
+    /// agent, read at the view's tick: seeking back shortens it and can
+    /// reopen a deal, `to` beyond the view is capped, and `deals_json`
+    /// over the same window lists every acceptance the pair threads hold.
+    #[test]
+    fn thread_json_is_the_pairs_slice_of_the_ledger_read_at_the_view() {
+        let mut ww = WasmWorld::new(3, 32, 32, 200, 3, 25, "random").unwrap();
+        ww.step(60).unwrap();
+        let all: Vec<Value> = (0..60)
+            .flat_map(|t| serde_json::from_str::<Vec<Value>>(&ww.events_at(t).unwrap()).unwrap())
+            .collect();
+        let pair_of = |e: &Value| -> Option<(u64, u64)> {
+            let (x, y) = match e["kind"].as_str().unwrap() {
+                "transferred" | "proposed" | "accepted" | "rejected" => ("from", "to"),
+                "harmed" => ("by", "target"),
+                _ => return None,
+            };
+            let (x, y) = (e[x].as_u64().unwrap(), e[y].as_u64().unwrap());
+            Some((x.min(y), x.max(y)))
+        };
+        // The pair with the most acceptances, then the most events.
+        let accepted_pairs: Vec<(u64, u64)> = all
+            .iter()
+            .filter(|e| e["kind"] == "accepted")
+            .filter_map(pair_of)
+            .collect();
+        assert!(!accepted_pairs.is_empty(), "random walkers accept offers");
+        let (a, b) = *accepted_pairs
+            .iter()
+            .max_by_key(|p| {
+                (
+                    accepted_pairs.iter().filter(|q| q == p).count(),
+                    all.iter().filter(|e| pair_of(e) == Some(**p)).count(),
+                )
+            })
+            .unwrap();
+        let want: Vec<&Value> = all.iter().filter(|e| pair_of(e) == Some((a, b))).collect();
+
+        let t: Value =
+            serde_json::from_str(&ww.thread_json(a as u32, b as u32, 0, 60).unwrap()).unwrap();
+        assert_eq!(
+            (
+                t["a"].as_u64(),
+                t["b"].as_u64(),
+                t["from"].as_u64(),
+                t["now"].as_u64()
+            ),
+            (Some(a), Some(b), Some(0), Some(60))
+        );
+        let entries = t["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), want.len());
+        for (got, exp) in entries.iter().zip(&want) {
+            assert_eq!(got["kind"], exp["kind"]);
+            assert_eq!(got["tick"], exp["tick"]);
+            for k in [
+                "from",
+                "to",
+                "by",
+                "target",
+                "amount",
+                "give",
+                "want",
+                "offer_tick",
+                "damage",
+            ] {
+                if !exp[k].is_null() {
+                    assert_eq!(got[k], exp[k], "{k} of {exp}");
+                }
+            }
+        }
+        // Every entry is in one of the two agents' own ledger views.
+        let story_a: Vec<Value> =
+            serde_json::from_str(&ww.agent_events_json(a as u32, 0, 60).unwrap()).unwrap();
+        assert!(want.iter().all(|e| story_a.contains(e)));
+
+        // Deals: one per acceptance, the terms copied from it, and the sums
+        // recomputed here from the pair's transfers.
+        let deals = t["deals"].as_array().unwrap();
+        let acceptances: Vec<&&Value> = want.iter().filter(|e| e["kind"] == "accepted").collect();
+        assert_eq!(deals.len(), acceptances.len());
+        for (d, acc) in deals.iter().zip(&acceptances) {
+            let (acceptor, proposer) = (acc["from"].as_u64().unwrap(), acc["to"].as_u64().unwrap());
+            let offer = acc["offer_tick"].as_u64().unwrap();
+            let deadline = offer + acc["by"].as_u64().unwrap();
+            assert_eq!(
+                (d["proposer"].as_u64(), d["acceptor"].as_u64()),
+                (Some(proposer), Some(acceptor))
+            );
+            assert_eq!(
+                (
+                    d["offer_tick"].as_u64(),
+                    d["accepted_tick"].as_u64(),
+                    d["deadline"].as_u64()
+                ),
+                (Some(offer), acc["tick"].as_u64(), Some(deadline))
+            );
+            let sum = |from: u64, to: u64| -> u64 {
+                want.iter()
+                    .filter(|e| e["kind"] == "transferred" && e["from"] == from && e["to"] == to)
+                    .filter(|e| (offer..=deadline).contains(&e["tick"].as_u64().unwrap()))
+                    .map(|e| e["amount"].as_u64().unwrap())
+                    .sum()
+            };
+            assert_eq!(d["given"].as_u64().unwrap(), sum(proposer, acceptor));
+            assert_eq!(d["repaid"].as_u64().unwrap(), sum(acceptor, proposer));
+            let full = d["given"].as_u64() >= acc["give"].as_u64()
+                && d["repaid"].as_u64() >= acc["want"].as_u64();
+            let expected = if full {
+                "fulfilled"
+            } else if 60 > deadline {
+                "broken"
+            } else {
+                "open"
+            };
+            assert_eq!(d["status"], expected, "{d}");
+            assert_eq!(
+                d["broken_by"].as_array().unwrap().is_empty(),
+                expected != "broken"
+            );
+        }
+        // The proposal each deal came from is marked accepted.
+        assert!(entries
+            .iter()
+            .filter(|e| e["kind"] == "proposed")
+            .filter(|e| deals
+                .iter()
+                .any(|d| d["offer_tick"] == e["tick"] && d["proposer"] == e["from"]))
+            .all(|e| e["answer"] == "accepted"));
+
+        // Read at the view: seeking back cuts the thread at the view's tick
+        // and judges open deadlines there; `to` beyond the view is capped.
+        let first_deal_tick = deals[0]["accepted_tick"].as_u64().unwrap();
+        ww.seek(first_deal_tick as u32 + 1).unwrap();
+        let early: Value =
+            serde_json::from_str(&ww.thread_json(a as u32, b as u32, 0, 1000).unwrap()).unwrap();
+        assert_eq!(early["now"], first_deal_tick + 1);
+        assert!(early["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["tick"].as_u64().unwrap() <= first_deal_tick));
+        let d0 = &early["deals"][0];
+        assert_eq!(d0["accepted_tick"], first_deal_tick);
+        let status0 = if d0["given"].as_u64() >= d0["give"].as_u64()
+            && d0["repaid"].as_u64() >= d0["want"].as_u64()
+        {
+            "fulfilled"
+        } else if first_deal_tick + 1 > d0["deadline"].as_u64().unwrap() {
+            "broken"
+        } else {
+            "open"
+        };
+        assert_eq!(d0["status"], status0);
+        ww.seek(60).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&ww.thread_json(a as u32, b as u32, 0, 60).unwrap())
+                .unwrap(),
+            t,
+            "a function of the view, not of how it was reached"
+        );
+        for (from, to) in [(60, 60), (60, 10), (70, 90)] {
+            let v: Value =
+                serde_json::from_str(&ww.thread_json(a as u32, b as u32, from, to).unwrap())
+                    .unwrap();
+            assert_eq!(
+                v["entries"],
+                Value::Array(vec![]),
+                "{from}..{to} at the view 60 is empty"
+            );
+            assert!(v["from"].as_u64() <= v["now"].as_u64() && v["now"].as_u64() <= Some(60));
+        }
+
+        // `deals_json`: every acceptance of the window, each equal to the
+        // deal its own pair thread holds.
+        let found: Vec<Value> = serde_json::from_str(&ww.deals_json(0, 60).unwrap()).unwrap();
+        assert_eq!(
+            found.len(),
+            all.iter().filter(|e| e["kind"] == "accepted").count()
+        );
+        for d in &found {
+            let (p, q) = (
+                d["proposer"].as_u64().unwrap() as u32,
+                d["acceptor"].as_u64().unwrap() as u32,
+            );
+            let pt: Value = serde_json::from_str(&ww.thread_json(p, q, 0, 60).unwrap()).unwrap();
+            assert!(pt["deals"].as_array().unwrap().contains(d), "{d}");
+        }
+        assert!(found
+            .windows(2)
+            .all(|w| w[0]["accepted_tick"].as_u64() <= w[1]["accepted_tick"].as_u64()));
+    }
+
+    /// The page's worlds are 128², 1,000 agents, 23 patches (as `cz` and
+    /// the kernel worker compute them), snapshots every 250. In the seed
+    /// the page defaults to (42) no deal is kept in order — proposal,
+    /// acceptance, the give, the repayment — before the random walkers die
+    /// out, which is why the page takes `?seed=`. In seed 23, in both the
+    /// `mixed` and the `random` world, #909 and #363 hold one: offered at
+    /// tick 17 (2 for 1 by tick 33), accepted at 19, given at 19, repaid at
+    /// 20. TUTORIAL.md names it; if this test fails the tutorial is stale.
+    #[test]
+    fn seed_23_holds_the_kept_deal_the_tutorial_names_and_seed_42_none_in_order() {
+        let page_world = |seed: u32, mix: &str, ticks: u32| {
+            let mut ww = WasmWorld::new(seed, 128, 128, 1000, 23, 250, mix).unwrap();
+            ww.step(ticks).unwrap();
+            ww
+        };
+        // A deal kept in order: food on both sides, accepted by the
+        // deadline, the give after the acceptance, the repayment after the give.
+        let in_order = |ww: &WasmWorld, ticks: u32| -> Vec<Value> {
+            let found: Vec<Value> =
+                serde_json::from_str(&ww.deals_json(0, ticks).unwrap()).unwrap();
+            found
+                .into_iter()
+                .filter(|d| {
+                    d["status"] == "fulfilled"
+                        && d["give"].as_u64() > Some(0)
+                        && d["want"].as_u64() > Some(0)
+                })
+                .filter(|d| {
+                    let (p, q) = (
+                        d["proposer"].as_u64().unwrap() as u32,
+                        d["acceptor"].as_u64().unwrap() as u32,
+                    );
+                    let (acc, deadline) = (
+                        d["accepted_tick"].as_u64().unwrap(),
+                        d["deadline"].as_u64().unwrap(),
+                    );
+                    let t: Value =
+                        serde_json::from_str(&ww.thread_json(p, q, 0, ticks).unwrap()).unwrap();
+                    let xfer = |from: u32, after: u64| {
+                        t["entries"].as_array().unwrap().iter().find_map(|e| {
+                            let tick = e["tick"].as_u64().unwrap();
+                            (e["kind"] == "transferred"
+                                && e["from"] == from
+                                && tick >= after
+                                && tick <= deadline)
+                                .then_some(tick)
+                        })
+                    };
+                    acc <= deadline && xfer(p, acc).and_then(|g| xfer(q, g)).is_some()
+                })
+                .collect()
+        };
+        for mix in ["mixed", "random"] {
+            let ww = page_world(42, mix, 300);
+            assert!(
+                in_order(&ww, 300).is_empty(),
+                "seed 42 {mix}: the tutorial says there is none"
+            );
+        }
+        for mix in ["mixed", "random"] {
+            let ww = page_world(23, mix, 100);
+            let kept = in_order(&ww, 100);
+            let d = kept
+                .iter()
+                .find(|d| d["proposer"] == 909 && d["acceptor"] == 363 && d["offer_tick"] == 17)
+                .unwrap_or_else(|| {
+                    panic!("seed 23 {mix}: the tutorial's deal is missing from {kept:?}")
+                });
+            assert_eq!(
+                (
+                    d["accepted_tick"].as_u64(),
+                    d["deadline"].as_u64(),
+                    d["give"].as_u64(),
+                    d["want"].as_u64()
+                ),
+                (Some(19), Some(33), Some(2), Some(1))
+            );
+            assert_eq!(
+                (
+                    d["given"].as_u64(),
+                    d["repaid"].as_u64(),
+                    d["settled_tick"].as_u64()
+                ),
+                (Some(2), Some(1), Some(20))
+            );
+            // The thread reads in order around it.
+            let t: Value =
+                serde_json::from_str(&ww.thread_json(909, 363, 0, 100).unwrap()).unwrap();
+            let rows: Vec<(u64, &str, u64)> = t["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| {
+                    let who = if e["kind"] == "harmed" {
+                        &e["by"]
+                    } else {
+                        &e["from"]
+                    };
+                    (
+                        e["tick"].as_u64().unwrap(),
+                        e["kind"].as_str().unwrap(),
+                        who.as_u64().unwrap(),
+                    )
+                })
+                .collect();
+            let i = rows
+                .iter()
+                .position(|r| *r == (17, "proposed", 909))
+                .unwrap();
+            assert_eq!(
+                &rows[i..i + 5],
+                &[
+                    (17, "proposed", 909),
+                    (18, "transferred", 909),
+                    (19, "accepted", 363),
+                    (19, "transferred", 909),
+                    (20, "transferred", 363),
+                ],
+                "{mix}"
+            );
+            let deals = t["deals"].as_array().unwrap();
+            assert_eq!(
+                deals.len(),
+                5,
+                "{mix}: three broken, then this one kept, then its late second acceptance"
+            );
+            assert_eq!(deals[3]["status"], "fulfilled");
+            assert_eq!(deals[3]["settled_tick"], 20);
+            assert_eq!(
+                deals[4]["offer_tick"], 17,
+                "the same offer accepted again at tick 32"
+            );
+            assert_eq!(deals[4]["accepted_tick"], 32);
+            assert!(deals[..3].iter().all(|d| d["status"] == "broken"));
+            // The thread is identical in the two worlds this far (the pair's
+            // neighbourhood is all random walkers); the worlds are not.
+            if mix == "random" {
+                let mixed = page_world(23, "mixed", 100);
+                assert_eq!(
+                    mixed.thread_json(909, 363, 0, 100).unwrap(),
+                    ww.thread_json(909, 363, 0, 100).unwrap()
+                );
+                assert_ne!(mixed.state_hash_hex(), ww.state_hash_hex());
+            }
+        }
+    }
+}

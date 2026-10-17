@@ -25,8 +25,8 @@ crates/simulation-core     ← Deterministic World Kernel。外部依存は serd
 | `cz-cli` | `cz run` / `cz resume` / `cz sweep`、計測、trace 出力 | 実装済み |
 | `cz-wasm-probe` | カーネルを wasm32 で動かす最小 C-ABI（`probe_init/step/hash`） | 実装済み（計測用） |
 | `multiverse` | 再生（再実行 + 台帳照合）、`Multiverse` / `Branch`（head + 台帳 + 周期スナップショット）、fork と系譜 | 実装済み（ADR-0012） |
-| `web/`（npm, 非 Cargo） | Toy 1 UI: Vite + React + TS、UI ↔ Worker プロトコル（v3）、カーネル Worker（wasm）とモック Worker、社会マーカーとインスペクタ（ADR-0013 3-9a） | 実装済み（2b-1/2b-2、3-9a） |
-| `cz-web` | wasm-bindgen パッケージ: `WasmWorld` = `Multiverse` + cursor（巻き戻し用の復元ビュー）。社会層の読み出し `social / ledger_json / agent_json / agent_events_json`、方策構成付きコンストラクタ | 実装済み（2b-1、3-9a） |
+| `web/`（npm, 非 Cargo） | Toy 1 UI: Vite + React + TS、UI ↔ Worker プロトコル（v4）、カーネル Worker（wasm）とモック Worker、社会マーカーとインスペクタ、交渉スレッドと取引の一覧（ADR-0013 3-9a/b） | 実装済み（2b-1/2b-2、3-9a/b） |
+| `cz-web` | wasm-bindgen パッケージ: `WasmWorld` = `Multiverse` + cursor（巻き戻し用の復元ビュー）。社会層の読み出し `social / ledger_json / agent_json / agent_events_json`、方策構成付きコンストラクタ、交渉スレッドの読み手 `thread.rs`（`thread_json / deals_json`: 2 者間の台帳と、各受諾を窓内の移転から kept / open / broken と判定。表示のための読み方で世界には何も返さない） | 実装済み（2b-1、3-9a/b） |
 | （`simulation-core/src/policy/`） | 方策は遷移関数の一部なので別クレートにしない（ADR-0013 D1）。Phase 3 で `forager / random / reflex / learner` に分割し、他者観測・相互作用・記憶・通信もカーネル内 | Phase 3（ADR-0013） |
 | `nomos` | Institution DSL / 解釈器 | Phase 4 |
 
@@ -92,8 +92,8 @@ wasm32 と native の一致は ADR-0009 で計測し、CI（`wasm-pack test --no
 
 Phase 1: ファイル（trace JSON）のみ。ビューアは静的 HTML（ADR-0007）。
 Phase 2（Toy 1）: カーネルを wasm としてブラウザ内で実行し、Web Worker 1 つ = 世界 1 つ（`WasmWorld`）。サーバーは置かない（ADR-0009, 0010）。
-UI ↔ Worker は `web/src/protocol.ts`（v3: `init / step / seek / frame / intervene / history / snapshot`、各要求に現フレームで応答。フレームは食料 `Uint8Array` + 個体 `Int32Array` + 社会マーカー `Int32Array`（直前 tick の移転・加害・発信、7 値/件）を Transferable で転送し、台帳の累計 `ledger` と Worker の計測値（step ms、seek ms）を載せる）。介入は台帳の `Intervention` と同じ JSON で、履歴は台帳から読み戻す。
-要求には `watch { id, window }` を添えられ、Worker はその個体の `Agent`（カーネルが書いた `recent` と `last_signal` 込み）と、直近 `window` tick の台帳からその個体を名指しする出来事を `Frame.watched` に同梱する（ADR-0013 D8。UI は個体について何も覚えない）。`init` の `policy`（`forager / random / mixed`）は `cz run --policy` と同じ割当規則。
+UI ↔ Worker は `web/src/protocol.ts`（v4: `init / step / seek / frame / intervene / history / snapshot / deals`、各要求に現フレームで応答。フレームは食料 `Uint8Array` + 個体 `Int32Array` + 社会マーカー `Int32Array`（直前 tick の移転・加害・発信、7 値/件）を Transferable で転送し、台帳の累計 `ledger` と Worker の計測値（step ms、seek ms）を載せる）。介入は台帳の `Intervention` と同じ JSON で、履歴は台帳から読み戻す。
+要求には `watch { id, window, partner?, threadWindow? }` を添えられ、Worker はその個体の `Agent`（カーネルが書いた `recent` と `last_signal` 込み）と、直近 `window` tick の台帳からその個体を名指しする出来事を `Frame.watched` に同梱する（ADR-0013 D8。UI は個体について何も覚えない）。`partner` があれば 2 者間の交渉スレッド `Watched.thread`（`WasmWorld::thread_json`: 台帳順のイベントと、各受諾の kept / open / broken 判定）も載る（3-9b）。`deals` 要求は窓内の全取引を同じ判定で返す（スレッドを探すため、フレームには載せない）。`init` の `policy`（`forager / random / mixed`）は `cz run --policy` と同じ割当規則、`seed` は `?seed=`（既定 42）。
 分岐はブランチごとに Worker 1 つ: 親が現在の tick のバイナリスナップショットを書き出し、子は `init({ snapshot })`（`WasmWorld::fromSnapshot`）で原点にして介入を適用する。UI は 2 つの `WorldClient` を同じ tick 数だけ進め、同じ tick へシークする。
 巻き戻しは Worker 内の cursor（`state_at` の復元ビュー）で、head 以前の `step` は台帳照合付きの再実行。
 

@@ -4,7 +4,8 @@
 // starvation or age, regrowth every 10 ticks, snapshots for seeking — but it
 // is NOT the kernel: no conservation ledger, no determinism contract, no
 // hash, no social layer (its random walkers never transfer, harm or speak,
-// so `social` is always empty and a watched agent remembers nothing).
+// so `social` is always empty, a watched agent remembers nothing and every
+// thread is empty).
 // Nothing shown from it is a fact about Civilization Zero.
 
 import {
@@ -309,7 +310,12 @@ function watched(s: State, watch: Watch): Watched {
     };
     break;
   }
-  return { id: watch.id, window: watch.window, agent, events: [] };
+  const w: Watched = { id: watch.id, window: watch.window, agent, events: [] };
+  if (watch.partner !== undefined) {
+    const span = watch.threadWindow ?? watch.window;
+    w.thread = { a: watch.id, b: watch.partner, from: Math.max(0, s.tick - span), now: s.tick, entries: [], deals: [] };
+  }
+  return w;
 }
 
 function frame(watch?: Watch): Frame {
@@ -361,15 +367,22 @@ self.onmessage = (ev: MessageEvent<Envelope<Request>>) => {
       case "snapshot":
         throw new Error("the mock world cannot be forked: use the kernel worker");
       case "history":
+      case "deals":
         if (!state) throw new Error("init first");
         break;
     }
     const f = frame(watch);
-    post({ id, body: { type: "frame", frame: f, history: body.type === "history" ? [] : undefined } }, [
-      f.food.buffer,
-      f.agents.buffer,
-      f.social.buffer,
-    ]);
+    post(
+      {
+        id,
+        body: { type: "frame", frame: f, history: body.type === "history" ? [] : undefined, deals: body.type === "deals" ? [] : undefined },
+      },
+      [
+        f.food.buffer,
+        f.agents.buffer,
+        f.social.buffer,
+      ],
+    );
   } catch (err) {
     post({ id, body: { type: "error", message: err instanceof Error ? err.message : String(err) } });
   }

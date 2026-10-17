@@ -6,6 +6,7 @@
 import init, { WasmWorld } from "../wasm/cz_web.js";
 import type {
   AgentDetail,
+  Deal,
   Envelope,
   Frame,
   InterventionEvent,
@@ -13,6 +14,7 @@ import type {
   LedgerEvent,
   Request,
   Response,
+  Thread,
   Timing,
   Watch,
   WorldInit,
@@ -68,6 +70,13 @@ function frame(w: WasmWorld, watch?: Watch): Frame {
       agent: JSON.parse(w.agent_json(id)) as AgentDetail | null,
       events: JSON.parse(w.agent_events_json(id, Math.max(0, tick - window), tick)) as LedgerEvent[],
     };
+    if (watch.partner !== undefined) {
+      // The thread between the two, with every deal judged by the
+      // kernel-side reader (3-9b); the page only displays it.
+      const partner = Math.max(0, Math.floor(watch.partner));
+      const span = Math.max(0, Math.floor(watch.threadWindow ?? window));
+      f.watched.thread = JSON.parse(w.thread_json(id, partner, Math.max(0, tick - span), tick)) as Thread;
+    }
   }
   return f;
 }
@@ -81,6 +90,7 @@ async function handle({ id, body, watch }: Envelope<Request>): Promise<void> {
     let event: InterventionEvent | undefined;
     let history: InterventionEvent[] | undefined;
     let snapshot: Uint8Array | undefined;
+    let deals: Deal[] | undefined;
     switch (body.type) {
       case "init":
         world = create(body.config);
@@ -108,13 +118,16 @@ async function handle({ id, body, watch }: Envelope<Request>): Promise<void> {
       case "snapshot":
         snapshot = need().snapshot_bytes();
         break;
+      case "deals":
+        deals = JSON.parse(need().deals_json(Math.max(0, Math.floor(body.from)), Math.max(0, Math.floor(body.to)))) as Deal[];
+        break;
       case "frame":
         break;
     }
     const f = frame(need(), watch);
     const transfer: Transferable[] = [f.food.buffer, f.agents.buffer, f.social.buffer];
     if (snapshot) transfer.push(snapshot.buffer);
-    post({ id, body: { type: "frame", frame: f, event, history, snapshot } }, transfer);
+    post({ id, body: { type: "frame", frame: f, event, history, snapshot, deals } }, transfer);
   } catch (err) {
     post({ id, body: { type: "error", message: err instanceof Error ? err.message : String(err) } });
   }

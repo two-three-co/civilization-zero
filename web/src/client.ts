@@ -1,4 +1,4 @@
-import type { Envelope, Frame, Intervention, InterventionEvent, Request, Response, Watch, WorldInit } from "./protocol";
+import type { Deal, Envelope, Frame, Intervention, InterventionEvent, Request, Response, Watch, WorldInit } from "./protocol";
 
 type FrameResponse = Extract<Response, { type: "frame" }>;
 
@@ -46,7 +46,9 @@ export class WorldClient {
   /**
    * Follow one agent: from now on every frame this client returns carries
    * the agent's kernel-written memory, last signal and ledger history
-   * (`Frame.watched`). `null` stops. Takes effect from the next request.
+   * (`Frame.watched`), and — when the watch names a `partner` — the
+   * negotiation thread between the two (`Watched.thread`, 3-9b). `null`
+   * stops. Takes effect from the next request.
    */
   watch(w: Watch | null): void {
     this.watched = w;
@@ -74,6 +76,10 @@ export class WorldClient {
   /** Every intervention on this world, read from the ledger. */
   history(): Promise<{ frame: Frame; history: InterventionEvent[] }> {
     return this.send({ type: "history" }).then((r) => ({ frame: r.frame, history: r.history ?? [] }));
+  }
+  /** Every deal (accepted proposal) of ticks `from..to`, judged by the kernel-side reader as of the window's end (3-9b). */
+  deals(from: number, to: number): Promise<{ frame: Frame; deals: Deal[] }> {
+    return this.send({ type: "deals", from, to }).then((r) => ({ frame: r.frame, deals: r.deals ?? [] }));
   }
   /** Binary snapshot of the current view (the state its tick starts with), to fork from. */
   snapshot(): Promise<{ frame: Frame; snapshot: Uint8Array }> {

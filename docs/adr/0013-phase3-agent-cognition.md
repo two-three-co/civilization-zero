@@ -133,6 +133,14 @@ Decide の前に一様グリッドのバケット（セル → 個体 index 列�
 - インスペクタは `agent_json(id)`（カーネルが書いた `recent`、既定で最大 8 件）と `agent_events_json(id, from, to)`（台帳。上限なし、死後も残る）の両方を出し、記憶と台帳の違いを見せる。要求ごとの `watch` で選択個体の詳細がフレームに同梱されるので、追加の往復はない。
 - 方策構成は `WasmWorld::new(..., policy)`（`forager / random / mixed`。`mixed` は偶数 id が Forager、奇数 id が Random で `cz run --policy mixed` と同じ）。UI の既定は forager のまま（Toy 1 の記録値とゴールデンの経路を保つ）で、ヘッダの選択か `?policy=` で切り替える。3-9c の `SetPolicy` が入るまで、学習方策の選択はない。
 
+**実装（3-9b、2026-10-17）と設計からの差分**:
+- スレッドの材料は 3-4 の常時記録イベント（`Proposed / Accepted / Rejected / Transferred`、それに同じ 2 者間の `Harmed`）だけで、新しいイベントも config も要らない。**判定は UI ではなく wasm 境界の Rust（`crates/cz-web/src/thread.rs`）で行い**、UI は返ってきた語彙（kept / open / broken、the give / repayment）を並べるだけ。カーネル（simulation-core）には触れていない。
+- **D5 追補の判定を 3-9b の読み方として確定**: 取引 = `Accepted` 1 件（条件を複写しているので単独で立つ）。窓 = `offer_tick ..= offer_tick + by`。提案者の「今」は提案 tick から数える（正直な提案者は返事を待たずに `give` を渡しうるので、D5 の「受諾後」より広い）。`given` = 窓内の提案者 → 受諾者の移転合計、`repaid` = 逆向きの合計。ビューの tick `now` で、両方が条件に達していれば **fulfilled**（画面では kept）、`now > deadline` で不足があれば **broken**（不足側を `broken_by` に。両側もありうる）、それ以外は **open**。カーネルは移転と約束の対応を記録しないので、合計は取引ごとに独立に取る（窓が重なる 2 取引は同じ移転を両方で数える = D5 の式そのもの）。エントリの `deal` / `role` タグは「その向きにまだ不足のある最古の取引」への帰属で、どの約束も要求していない移転はタグなし。これは表示のための読み方であってカーネルの事実ではない。
+- `Rejected` は `offer_tick` を持たないので、同じ相手からの直前の提案に紐付ける（`Option`、推定）。カーネルは何も失効させない（期限切れの提案も受諾できる）ので、未応答の提案は `pending` / `lapsed` の表示上の区別だけ。同じ提案の 2 度目の受諾（Random がやる）は別の取引として並ぶ。
+- スレッドは「ビューの tick で読んだ台帳」: `now = min(to, view.tick)`、イベントは `from..now`。巻き戻せばスレッドも短くなり、期限内に戻った取引は open に戻る（seek 後も同じ関数 = ビューの関数）。
+- 発見のために `deals_json(from, to)`（窓内の全 `Accepted` を同じ判定で）と UI の「Deals · ledger」カード（要求時だけ、フレームには載せない）を足した。Random 歩行者は 14 行動を一様に抽選するので提案 → 受諾 → 移転 → 返済が順にそろう取引は稀で（**既定の seed 42 では random / mixed とも歩行者が絶滅する tick 300 までに 0 件**）、地図から 2 個体を手で選んで見つけることは現実的でない。
+- `?seed=` を足した（カーネル worker は元から seed を受け取る。既定は 42 のまま）。seed 23 では random / mixed とも #909 → #363 の取引（tick 17 提案、19 受諾、19 移転、20 返済）が読める。
+
 ### D9. 実験 EXP-002（3-8）: 学習は Forager に届くか（健全性チェック、事前登録）
 
 - 腕: Random（帰無）、Forager（設計者の上界参照）、Reflex（突然変異 ON）、Learner（32 状態）、Learner-128。
@@ -154,7 +162,7 @@ Decide の前に一様グリッドのバケット（セル → 個体 index 列�
 | 3-7 | Learner 方策（離散状態・整数 Q・決定論的 ε-greedy・継承） | 3-3, 3-5 | 再生で bit 一致。スナップショット 1,300 体 ≤ 1 MB。同じ状態列で Q が単調に更新されるユニットテスト。1.3k 体で decide ≤ 200 ns/体·tick |
 | 3-8 | EXP-002（事前登録 → 実行 → 記録）、`cz sweep` の方策拡張と新指標（摂取量・移転・加害） | 3-6, 3-7 | 実験仕様が実行前にコミットされている。10 シードの結果表と限界の記述。予測の当否を明記 |
 | 3-9a ✅ | UI: `Frame.social` マーカー、`Frame.ledger` の集計、インスペクタの記憶・発信・相互作用（台帳から）、世界初期化の方策構成。**済 2026-10-17**: `crates/cz-web` に `social()`（直前 tick の移転・加害を台帳から、発信は各個体の `last_signal` から、ビューの位置に置いた `Int32Array`）、`ledger_json()`、`agent_json(id)`（`recent` と `last_signal` を含む `Agent`）、`agent_events_json(id, from, to)`（D8 の `agent_events`）、コンストラクタの `policy`（`forager / random / mixed`、`cz run --policy` と同じ割当規則）。`web/` はプロトコル v3（`Frame.social / ledger`、要求ごとの `watch`、`WorldInit.policy`）、地図マーカー（0.6 s で消える軌跡）、統計（台帳の累計と直近 1 s の tick あたり xfer / harm / sig）、インスペクタ（記憶を tick 付き、台帳の直近 100 tick）、ヘッダの世界選択。`tests/native.rs` +4、`tests/wasm.rs` +1。ブラウザ確認と計測は STATUS（ローカルと公開 URL の両方で確認済み） | 3-3（UI 骨格は並行可） | 公開 URL で、個体を選ぶと最近の相互作用が tick 付きで見える。移転・加害・発信が地図に出る |
-| 3-9b | UI: 交渉スレッド表示（2 個体間の Propose/Accept/Transfer の時系列） | 3-4, 3-9a | 台本方策の世界で提案 → 受諾 → 移転 → 返済のスレッドが読める |
+| 3-9b ✅ | UI: 交渉スレッド表示（2 個体間の Propose/Accept/Transfer の時系列）。**済 2026-10-17**: `crates/cz-web/src/thread.rs`（2 者を名指しする台帳イベントを台帳順に、各 `Accepted` を「取引」として提案 tick〜期限の窓の移転から判定: 両側が渡せば kept、期限を過ぎて不足なら broken（不足側を名指し）、それまでは open。拒否は同じ相手からの直前の提案に紐付け、移転はまだ不足のある最古の取引に帰属）、`WasmWorld::thread_json(a, b, from, to)` と、スレッドを見つけるための `deals_json(from, to)`。`web/` はプロトコル **v4**（`Watch.partner` → `Watched.thread`、`deals` 要求、`?seed=`）、インスペクタの「Thread · with #id」（相手の候補は記憶と台帳の相手、交渉相手を先に）と「Deals · ledger」カード。`tests/native.rs` +6（手組みの台帳で履行 / 不履行 / 拒否の紐付け / 重なる取引、Random 世界で `agent_events_json` との整合とビュー依存、seed 23 の取引と seed 42 に順序どおりの取引が無いことを固定）、`tests/wasm.rs` +1。カーネル不変。ブラウザ確認は STATUS（既定の seed 42 では 4 手順そろった取引が無いので `?seed=23`） | 3-4, 3-9a | 台本方策の世界で提案 → 受諾 → 移転 → 返済のスレッドが読める |
 | 3-9c | UI: 「Compare: fixed vs learning」（fork + SetPolicy）、人口・摂取量・移転数カーブ、方策選択（世界の初期化） | 3-5, 3-9a | PRODUCT.md Phase 3 デモ (d)。学習世界で ≥ 60 tick/s を画面に表示。Verify = MATCH |
 | 3-10 | 文書: ゴールデン表、STATUS、RISKS 追補（加害行動が生む退化均衡、報酬ハッキング、解釈可能性）、TUTORIAL 追補 | 全て | 新セッションが STATUS から Phase 3 の状態を再構築できる |
 
