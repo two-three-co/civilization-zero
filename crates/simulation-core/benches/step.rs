@@ -25,11 +25,16 @@ fn bench_step(c: &mut Criterion) {
     // Density held roughly constant (~0.06 agents / cell).
     for &(agents, side) in &[(1_000u32, 128u16), (10_000, 400), (100_000, 1_280)] {
         let base = warmed_world(agents, side);
-        g.throughput(Throughput::Elements(base.agents.len() as u64));
+        // One iteration = a whole regrowth period, so the measurement is not
+        // biased towards the food-rich tick right after regrowth. Reported
+        // time is per period; divide by TICKS for per-tick.
+        const TICKS: u64 = 10;
+        assert_eq!(base.config.regrow_interval, TICKS);
+        g.throughput(Throughput::Elements(base.agents.len() as u64 * TICKS));
         g.bench_with_input(BenchmarkId::new("serial", agents), &base, |b, base| {
             b.iter_batched_ref(
                 || base.clone(),
-                |w| w.step(),
+                |w| w.run(TICKS),
                 criterion::BatchSize::LargeInput,
             )
         });
@@ -40,7 +45,11 @@ fn bench_step(c: &mut Criterion) {
             |b, base| {
                 b.iter_batched_ref(
                     || base.clone(),
-                    |w| w.step_parallel(),
+                    |w| {
+                        for _ in 0..TICKS {
+                            w.step_parallel();
+                        }
+                    },
                     criterion::BatchSize::LargeInput,
                 )
             },

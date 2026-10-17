@@ -54,7 +54,7 @@ for (const c of cases) {
     alive = probe_step(chunk);
   }
   const ms = performance.now() - start;
-  const hash = probe_hash();
+  const hash = BigInt.asUintN(64, probe_hash());
   const tr = document.createElement("tr");
   tr.innerHTML = `<td>${c.name}</td><td>${n0} → ${alive}</td><td>${Number(probe_tick())}</td>` +
     `<td>${ms.toFixed(1)}</td><td>${(c.ticks / ms * 1000).toFixed(0)}</td>` +
