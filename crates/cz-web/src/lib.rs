@@ -122,7 +122,10 @@ fn involves(e: &Event, id: AgentId) -> bool {
         | Event::Proposed { from, to, .. }
         | Event::Accepted { from, to, .. }
         | Event::Rejected { from, to, .. } => *from == id || *to == id,
-        Event::Harmed { by, target, .. } => *by == id || *target == id,
+        Event::Harmed { by, target, .. } | Event::Sanctioned { by, target, .. } => {
+            *by == id || *target == id
+        }
+        Event::Violated { agent, against, .. } => *agent == id || *against == id,
         Event::Intervened { intervention, .. } => {
             matches!(intervention, Intervention::RemoveAgent { id: removed } if *removed == id)
         }

@@ -10,6 +10,7 @@
 //! `energy_intervened`) so conservation stays checkable.
 
 use crate::agent::AgentId;
+use crate::nomos::{Charter, Norm};
 use crate::policy::PolicyKind;
 use crate::space::Pos;
 use serde::{Deserialize, Serialize};
@@ -45,6 +46,18 @@ pub enum Intervention {
         kind: PolicyKind,
         params: ParamsMode,
     },
+    /// Put a norm in force by decree (ADR-0014 D8): a new rule with the
+    /// next id, from the next tick on. A rule of the same kind already in
+    /// force is repealed first (its open episodes close), so this is also
+    /// how a rule is amended. "With vs without rule" is a fork plus this.
+    /// `Invalid` while `config.nomos` is off. Decrees are not bound by the
+    /// charter's `amendable`.
+    Enact { norm: Norm },
+    /// Take the rule with this id out of force; its open episodes close.
+    /// `Invalid` if no such rule is in force or `config.nomos` is off.
+    Repeal { rule: u16 },
+    /// Replace the assembly's charter. `Invalid` while `config.nomos` is off.
+    Charter { charter: Charter },
 }
 
 impl Intervention {

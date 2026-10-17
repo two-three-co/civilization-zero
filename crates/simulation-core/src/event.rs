@@ -9,6 +9,7 @@ use crate::action::{Action, Outcome};
 use crate::agent::AgentId;
 use crate::intervention::Intervention;
 use crate::memory::Message;
+use crate::nomos::{Grounds, NormKind, Via};
 use crate::space::Pos;
 use serde::{Deserialize, Serialize};
 
@@ -120,6 +121,32 @@ pub enum Event {
         from: AgentId,
         to: AgentId,
     },
+    /// A harm or rejection (`via`) by `by` reached `target` while `target`
+    /// stood accused under `rule` (ADR-0014 D4): the kernel's reading of
+    /// an ordinary `Harmed` / `Rejected` of the same tick as a sanction.
+    /// Attributed to the oldest open episode whose rule allows `via`.
+    /// Always recorded (bounded by harms + rejections); the physical event
+    /// it reads is recorded too, just before it.
+    Sanctioned {
+        tick: u64,
+        by: AgentId,
+        target: AgentId,
+        rule: u16,
+        via: Via,
+    },
+    /// `agent` violated `rule` (a norm of kind `norm`) against `against`
+    /// on the evidence `grounds` (ADR-0014 D4). Recorded only with
+    /// `record_violations` (off by default: 4-1 measured ~21 per tick in
+    /// a crowded world); the ledger's `violations` counter and the open
+    /// episodes in `World.nomos.standing` are kept either way.
+    Violated {
+        tick: u64,
+        agent: AgentId,
+        rule: u16,
+        norm: NormKind,
+        against: AgentId,
+        grounds: Grounds,
+    },
 }
 
 impl Event {
@@ -134,7 +161,9 @@ impl Event {
             | Event::Signaled { tick, .. }
             | Event::Proposed { tick, .. }
             | Event::Accepted { tick, .. }
-            | Event::Rejected { tick, .. } => *tick,
+            | Event::Rejected { tick, .. }
+            | Event::Sanctioned { tick, .. }
+            | Event::Violated { tick, .. } => *tick,
         }
     }
 }

@@ -54,7 +54,7 @@ use crate::config::{ConfigError, WorldConfig};
 use crate::event::{DeathCause, Event};
 use crate::intervention::{Intervention, InterventionError, ParamsMode, Who};
 use crate::memory::{remember, Interaction, InteractionKind, Message, Signal, Terms};
-use crate::nomos::{self, Nomos, OpenDeal};
+use crate::nomos::{self, Closed, Grounds, Nomos, NormIndex, NormKind, OpenDeal, Via};
 use crate::policy::learner::{self, LearnerStep};
 use crate::policy::{decide, Intent, Observation, PolicyKind, PolicyParams, PolicyTable};
 use crate::resources::ResourceGrid;
@@ -108,6 +108,46 @@ pub struct Ledger {
     /// … of which at least one side fell short.
     #[serde(default)]
     pub promises_broken: u64,
+    /// Institutions (ADR-0014 D4, 4-2), by `NormKind::index`; only ever
+    /// non-zero with `config.nomos` and a rule in force. `violations`
+    /// counts every judged violation (whether or not `Event::Violated` is
+    /// recorded), `sanctions` every harm or rejection read as a sanction,
+    /// `episodes_closed` every episode of accusation that ended (deadline,
+    /// death, repeal) and `episodes_sanctioned` those that at least one
+    /// sanction answered. H1's conditional probabilities are
+    /// `episodes_sanctioned / episodes_closed` and `sanctions / violations`.
+    #[serde(default)]
+    pub violations: [u64; NormKind::COUNT],
+    #[serde(default)]
+    pub sanctions: [u64; NormKind::COUNT],
+    #[serde(default)]
+    pub episodes_closed: [u64; NormKind::COUNT],
+    #[serde(default)]
+    pub episodes_sanctioned: [u64; NormKind::COUNT],
+}
+
+impl Ledger {
+    /// Books closed episodes (ADR-0014 D4), in the ledger and, during a
+    /// tick, in the tick's report.
+    fn book_closed(&mut self, closed: &[Closed], report: Option<&mut TickReport>) {
+        let mut tick_closed = [0u32; NormKind::COUNT];
+        let mut tick_sanctioned = [0u32; NormKind::COUNT];
+        for c in closed {
+            let k = c.kind.index();
+            self.episodes_closed[k] += 1;
+            tick_closed[k] += 1;
+            if c.sanctioned {
+                self.episodes_sanctioned[k] += 1;
+                tick_sanctioned[k] += 1;
+            }
+        }
+        if let Some(r) = report {
+            for k in 0..NormKind::COUNT {
+                r.episodes_closed[k] += tick_closed[k];
+                r.episodes_sanctioned[k] += tick_sanctioned[k];
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,9 +185,18 @@ pub struct TickReport {
     /// counters, or empty when no learner decided (ADR-0014 D10: the row
     /// visits the sweep accumulates; not state, so not hashed).
     pub learner_rows: Vec<u32>,
-    /// Events in the order they happened: transfers, harms, delivered
-    /// negotiation messages and signals (if recorded) in actor order, `Acted`
-    /// (if recorded), then deaths in id order, then births in parent-id order.
+    /// Institutions this tick (ADR-0014 D4), by `NormKind::index`: the
+    /// ledger's four counters as deltas. Zero without a rule in force.
+    pub violations: [u32; NormKind::COUNT],
+    pub sanctions: [u32; NormKind::COUNT],
+    pub episodes_closed: [u32; NormKind::COUNT],
+    pub episodes_sanctioned: [u32; NormKind::COUNT],
+    /// Events in the order they happened (ADR-0014 D9): transfers, harms,
+    /// delivered negotiation messages and signals (if recorded) in actor
+    /// order; `Sanctioned` in actor order; `Violated` (if recorded:
+    /// encroachments in cell then gatherer order, harms in actor order,
+    /// broken promises in deal order); `Acted` (if recorded); then deaths
+    /// in id order, then births in parent-id order.
     pub events: Vec<Event>,
 }
 
@@ -236,6 +285,17 @@ impl World {
             energy_initial: config.initial_energy * agents.len() as i64,
             ..Ledger::default()
         };
+        // The assembly starts from the config's charter where institutions
+        // exist at all (ADR-0014 D5); off, the state stays at its default
+        // and adds no byte to the hash.
+        let nomos = if config.nomos {
+            Nomos {
+                charter: config.charter,
+                ..Nomos::default()
+            }
+        } else {
+            Nomos::default()
+        };
         Ok(Self {
             next_agent_id: agents.len() as u64,
             config,
@@ -243,7 +303,7 @@ impl World {
             resources,
             agents,
             ledger,
-            nomos: Nomos::default(),
+            nomos,
         })
     }
 
@@ -255,6 +315,18 @@ impl World {
     /// `agents`, rebuilt on demand, never stored.
     pub fn spatial_index(&self) -> SpatialIndex {
         SpatialIndex::build(self.bounds(), &self.agents)
+    }
+
+    /// Who stands accused at this tick's start (ADR-0014 D2): derived from
+    /// `nomos`, rebuilt per tick right after the spatial index, never
+    /// stored. Empty — and free to query — with `nomos` off or nothing in
+    /// force.
+    pub fn norm_index(&self) -> NormIndex {
+        if self.config.nomos {
+            NormIndex::build(&self.agents, &self.nomos)
+        } else {
+            NormIndex::empty()
+        }
     }
 
     /// The read-only view `agent` decides from, given this tick's index.
@@ -383,6 +455,19 @@ impl World {
         // What agents will remember of this tick, in order of occurrence
         // (ADR-0013 D4). Applied in phase 5b.
         let mut notes: Vec<(usize, Interaction)> = Vec::new();
+        // Institutions (ADR-0014 D2, D4): who stood accused at S(t) — the
+        // view a sanction is judged against — and the rules in force,
+        // which no phase of a tick changes. Empty and free without rules.
+        let norms = self.norm_index();
+        let rule_encroach = norms.rule(NormKind::Encroach).copied();
+        let rule_promise = norms.rule(NormKind::BrokenPromise).copied();
+        let rule_harm = norms.rule(NormKind::Harm).copied();
+        // This tick's judgements, in the order of ADR-0014 D9: sanctions in
+        // actor order; violations as encroachments (cell, then gatherer
+        // order), harms (actor order), broken promises (deal order). Both
+        // are appended to the events after phase 3c.
+        let mut sanctions: Vec<Event> = Vec::new();
+        let mut violations: Vec<Event> = Vec::new();
 
         // --- Phase 2: consume -------------------------------------------
         for (i, it) in intents.iter().enumerate() {
@@ -485,15 +570,33 @@ impl World {
                     {
                         self.ledger.encroachments += 1;
                         report.encroachments[self.agents[i].policy.index()] += 1;
+                        let (gatherer, occupant) = (self.agents[i].id, self.agents[first].id);
                         notes.push((
                             first,
                             Interaction {
                                 tick,
-                                other: self.agents[i].id,
+                                other: gatherer,
                                 kind: InteractionKind::EncroachedBy,
                                 value: q as i64,
                             },
                         ));
+                        // A violation only under an `Encroach` rule
+                        // (ADR-0014 D4): the gatherer stands accused from
+                        // the next tick; the occupant is the other party.
+                        if let Some(rule) = rule_encroach {
+                            self.nomos.accuse(gatherer, rule.id, tick, occupant);
+                            violations.push(Event::Violated {
+                                tick,
+                                agent: gatherer,
+                                rule: rule.id,
+                                norm: NormKind::Encroach,
+                                against: occupant,
+                                grounds: Grounds::Encroachment {
+                                    cell: self.agents[i].pos,
+                                    amount: q,
+                                },
+                            });
+                        }
                     }
                 }
                 start = end;
@@ -588,12 +691,44 @@ impl World {
                             self.ledger.harms += 1;
                             report.harms += 1;
                             let (by, at) = (self.agents[i].id, self.agents[j].pos);
+                            // A sanction (ADR-0014 D4) if the target stood
+                            // accused at S(t) under a rule that lets a harm
+                            // answer it: attributed to the oldest such
+                            // episode. The physics above is the same.
+                            let sanction = if norms.harmable(j) {
+                                self.nomos.sanction(target, tick, Via::Harm)
+                            } else {
+                                None
+                            };
+                            let (mine, theirs, seen) = match sanction {
+                                Some((rule, kind)) => {
+                                    self.ledger.sanctions[kind.index()] += 1;
+                                    report.sanctions[kind.index()] += 1;
+                                    sanctions.push(Event::Sanctioned {
+                                        tick,
+                                        by,
+                                        target,
+                                        rule,
+                                        via: Via::Harm,
+                                    });
+                                    (
+                                        InteractionKind::Sanctioned,
+                                        InteractionKind::SanctionedBy,
+                                        InteractionKind::SawSanction,
+                                    )
+                                }
+                                None => (
+                                    InteractionKind::Harmed,
+                                    InteractionKind::HarmedBy,
+                                    InteractionKind::SawHarm,
+                                ),
+                            };
                             notes.push((
                                 i,
                                 Interaction {
                                     tick,
                                     other: target,
-                                    kind: InteractionKind::Harmed,
+                                    kind: mine,
                                     value: cfg.harm_damage,
                                 },
                             ));
@@ -602,7 +737,7 @@ impl World {
                                 Interaction {
                                     tick,
                                     other: by,
-                                    kind: InteractionKind::HarmedBy,
+                                    kind: theirs,
                                     value: cfg.harm_damage,
                                 },
                             ));
@@ -615,7 +750,7 @@ impl World {
                                         Interaction {
                                             tick,
                                             other: by,
-                                            kind: InteractionKind::SawHarm,
+                                            kind: seen,
                                             value: target.0 as i64,
                                         },
                                     ));
@@ -623,10 +758,28 @@ impl World {
                             }
                             report.events.push(Event::Harmed {
                                 tick,
-                                by: self.agents[i].id,
+                                by,
                                 target,
                                 damage: cfg.harm_damage,
                             });
+                            // A violation under a `Harm` rule, unless the
+                            // harm is a sanction and the rule exempts
+                            // sanctions (ADR-0014 D4).
+                            if let Some(rule) = rule_harm {
+                                if !(sanction.is_some() && rule.norm.except_sanction) {
+                                    self.nomos.accuse(by, rule.id, tick, target);
+                                    violations.push(Event::Violated {
+                                        tick,
+                                        agent: by,
+                                        rule: rule.id,
+                                        norm: NormKind::Harm,
+                                        against: target,
+                                        grounds: Grounds::Harm {
+                                            damage: cfg.harm_damage,
+                                        },
+                                    });
+                                }
+                            }
                             Outcome::Ok
                         }
                     };
@@ -772,15 +925,55 @@ impl World {
                         Err(f) => Outcome::Failed(f),
                         Ok(j) => {
                             let from = self.agents[i].id;
-                            notes.push((
-                                j,
-                                Interaction {
-                                    tick,
-                                    other: from,
-                                    kind: InteractionKind::Rejected,
-                                    value: 0,
-                                },
-                            ));
+                            // A sanction (ADR-0014 D4) if the addressee
+                            // stood accused at S(t) under a rule that lets
+                            // a rejection answer it; then both parties
+                            // remember the sanction instead of the refusal.
+                            let sanction = if norms.rejectable(j) {
+                                self.nomos.sanction(to, tick, Via::Reject)
+                            } else {
+                                None
+                            };
+                            match sanction {
+                                Some((rule, kind)) => {
+                                    self.ledger.sanctions[kind.index()] += 1;
+                                    report.sanctions[kind.index()] += 1;
+                                    sanctions.push(Event::Sanctioned {
+                                        tick,
+                                        by: from,
+                                        target: to,
+                                        rule,
+                                        via: Via::Reject,
+                                    });
+                                    notes.push((
+                                        i,
+                                        Interaction {
+                                            tick,
+                                            other: to,
+                                            kind: InteractionKind::Sanctioned,
+                                            value: 0,
+                                        },
+                                    ));
+                                    notes.push((
+                                        j,
+                                        Interaction {
+                                            tick,
+                                            other: from,
+                                            kind: InteractionKind::SanctionedBy,
+                                            value: 0,
+                                        },
+                                    ));
+                                }
+                                None => notes.push((
+                                    j,
+                                    Interaction {
+                                        tick,
+                                        other: from,
+                                        kind: InteractionKind::Rejected,
+                                        value: 0,
+                                    },
+                                )),
+                            }
                             self.ledger.rejections += 1;
                             report.rejections += 1;
                             report.events.push(Event::Rejected { tick, from, to });
@@ -805,9 +998,66 @@ impl World {
                 self.ledger.promises_due += 1;
                 if !d.kept() {
                     self.ledger.promises_broken += 1;
+                    // A violation under a `BrokenPromise` rule (ADR-0014
+                    // D4), by each side that fell short — the proposer
+                    // first — against the other. Only the living can be
+                    // accused: a party that died before the deadline left
+                    // a broken promise in the ledger but no violator.
+                    if let Some(rule) = rule_promise {
+                        let short = [
+                            (
+                                d.proposer_short(),
+                                d.proposer,
+                                d.acceptor,
+                                d.give as u32 - d.given.min(d.give as u32),
+                            ),
+                            (
+                                d.acceptor_short(),
+                                d.acceptor,
+                                d.proposer,
+                                d.want as u32 - d.repaid.min(d.want as u32),
+                            ),
+                        ];
+                        for (is_short, who, other, owed) in short {
+                            if !is_short
+                                || self.agents.binary_search_by_key(&who, |a| a.id).is_err()
+                            {
+                                continue;
+                            }
+                            self.nomos.accuse(who, rule.id, tick, other);
+                            violations.push(Event::Violated {
+                                tick,
+                                agent: who,
+                                rule: rule.id,
+                                norm: NormKind::BrokenPromise,
+                                against: other,
+                                grounds: Grounds::BrokenPromise {
+                                    offer_tick: d.offer_tick,
+                                    short: owed,
+                                },
+                            });
+                        }
+                    }
                 }
                 report.promises_settled.push(d);
             }
+            // Episodes whose accusation does not reach the next tick close
+            // here (ADR-0014 D4): `last + standing_ticks <= tick`.
+            let closed = self.nomos.expire(tick);
+            self.ledger.book_closed(&closed, Some(&mut report));
+        }
+        // The tick's judgements, after every physical event of 3b and in
+        // the order of ADR-0014 D9. Violations are counted either way and
+        // recorded only on request.
+        report.events.append(&mut sanctions);
+        for v in &violations {
+            if let Event::Violated { norm, .. } = v {
+                self.ledger.violations[norm.index()] += 1;
+                report.violations[norm.index()] += 1;
+            }
+        }
+        if cfg.record_violations {
+            report.events.append(&mut violations);
         }
 
         // --- Phase 4: move ------------------------------------------------
@@ -947,6 +1197,12 @@ impl World {
         });
         report.deaths = (before - self.agents.len()) as u32;
         report.deaths_by_cause = deaths_by_cause;
+        // The dead stand accused of nothing: their episodes close
+        // (ADR-0014 D4), sanctioned or not.
+        if report.deaths > 0 && !self.nomos.standing.is_empty() {
+            let closed = self.nomos.drop_dead(&self.agents);
+            self.ledger.book_closed(&closed, Some(&mut report));
+        }
 
         // --- Phase 7: birth -----------------------------------------------
         if let Some(threshold) = cfg.birth_threshold {
@@ -1115,6 +1371,46 @@ impl World {
                 let cell = self.bounds().index(a.pos);
                 self.resources.food[cell] += a.inventory;
                 self.ledger.energy_intervened -= a.energy;
+                // Whoever leaves the world stands accused of nothing
+                // (ADR-0014 D4): its episodes close like a dead agent's.
+                let closed = self.nomos.drop_agent(id);
+                self.ledger.book_closed(&closed, None);
+            }
+            // Decrees (ADR-0014 D8): institutions exist only where the
+            // switch is on; nothing here is bound by the charter.
+            Intervention::Enact { norm } => {
+                if !self.config.nomos {
+                    return Err(Invalid("nomos is off: no rule can be in force"));
+                }
+                if !norm.is_valid() {
+                    return Err(Invalid("sanction must be a set of harm (1) and reject (2)"));
+                }
+                if self.nomos.next_rule_id == u16::MAX {
+                    return Err(Invalid("rule ids exhausted"));
+                }
+                let (_rule, replaced) = self.nomos.enact(norm, self.tick);
+                if let Some((_old, closed)) = replaced {
+                    self.ledger.book_closed(&closed, None);
+                }
+            }
+            Intervention::Repeal { rule } => {
+                if !self.config.nomos {
+                    return Err(Invalid("nomos is off: no rule can be in force"));
+                }
+                let (_old, closed) = self
+                    .nomos
+                    .repeal(rule)
+                    .ok_or(Invalid("no rule with that id is in force"))?;
+                self.ledger.book_closed(&closed, None);
+            }
+            Intervention::Charter { charter } => {
+                if !self.config.nomos {
+                    return Err(Invalid("nomos is off: there is no assembly"));
+                }
+                if !charter.is_valid() {
+                    return Err(Invalid("charter permilles must be <= 1000"));
+                }
+                self.nomos.charter = charter;
             }
             Intervention::SetPolicy { who, kind, params } => {
                 let chosen: Vec<usize> = match who {
@@ -1255,6 +1551,91 @@ impl World {
         if !cfg.nomos && !self.nomos.is_empty() {
             errs.push("nomos state present while nomos is off".into());
         }
+        // Institutions (ADR-0014 D2): rule ids unique, ascending, below the
+        // next one, one rule per kind, enacted in the past; episodes
+        // ascending by (agent, rule), agent alive, rule in force, opened
+        // in the past and still reaching this tick; the open motion's
+        // voters alive, ascending, and on one side only.
+        let nm = &self.nomos;
+        if !nm.charter.is_valid() {
+            errs.push("charter permilles out of range".into());
+        }
+        for (k, r) in nm.rules.iter().enumerate() {
+            if r.id >= nm.next_rule_id {
+                errs.push(format!(
+                    "rule {} not below next_rule_id {}",
+                    r.id, nm.next_rule_id
+                ));
+            }
+            if k > 0 && nm.rules[k - 1].id >= r.id {
+                errs.push(format!("rule ids not strictly ascending at {}", r.id));
+            }
+            if nm.rules[..k].iter().any(|o| o.norm.kind == r.norm.kind) {
+                errs.push(format!("two rules in force for {:?}", r.norm.kind));
+            }
+            if !r.norm.is_valid() {
+                errs.push(format!("rule {} has unknown sanction bits", r.id));
+            }
+            if r.enacted > self.tick {
+                errs.push(format!("rule {} enacted in the future", r.id));
+            }
+        }
+        for (k, s) in nm.standing.iter().enumerate() {
+            if k > 0 {
+                let p = &nm.standing[k - 1];
+                if (p.agent, p.rule) >= (s.agent, s.rule) {
+                    errs.push(format!("standing not ascending by (agent, rule) at {k}"));
+                }
+            }
+            if self
+                .agents
+                .binary_search_by_key(&s.agent, |a| a.id)
+                .is_err()
+            {
+                errs.push(format!("{:?} stands accused but is not alive", s.agent));
+            }
+            match nm.rule(s.rule) {
+                None => errs.push(format!(
+                    "{:?} stands accused under no rule {}",
+                    s.agent, s.rule
+                )),
+                Some(r) => {
+                    if s.until(r.norm.standing_ticks) < self.tick {
+                        errs.push(format!(
+                            "{:?}'s episode under rule {} has expired",
+                            s.agent, s.rule
+                        ));
+                    }
+                }
+            }
+            if s.since > s.last || s.last >= self.tick || s.violations == 0 {
+                errs.push(format!(
+                    "{:?}'s episode under rule {} is malformed: {s:?}",
+                    s.agent, s.rule
+                ));
+            }
+        }
+        if let Some(m) = &nm.motion {
+            if m.id >= nm.next_motion_id {
+                errs.push("motion id not below next_motion_id".into());
+            }
+            if m.opened > self.tick {
+                errs.push("motion opened in the future".into());
+            }
+            for (side, voters) in [("ayes", &m.ayes), ("nays", &m.nays)] {
+                for (k, v) in voters.iter().enumerate() {
+                    if k > 0 && voters[k - 1] >= *v {
+                        errs.push(format!("motion {side} not strictly ascending"));
+                    }
+                    if self.agents.binary_search_by_key(v, |a| a.id).is_err() {
+                        errs.push(format!("motion voter {:?} is not alive", v));
+                    }
+                }
+            }
+            if m.ayes.iter().any(|v| m.nays.binary_search(v).is_ok()) {
+                errs.push("an agent voted on both sides".into());
+            }
+        }
         for (k, d) in self.nomos.deals.iter().enumerate() {
             if d.offer_tick > d.accepted_tick || d.accepted_tick > self.tick {
                 errs.push(format!("deal {k} accepted outside the past: {d:?}"));
@@ -1365,6 +1746,17 @@ impl World {
         ] {
             h.u64(v);
         }
+        // Institution counters (ADR-0014 4-2): `state_hash` only.
+        for arr in [
+            &l.violations,
+            &l.sanctions,
+            &l.episodes_closed,
+            &l.episodes_sanctioned,
+        ] {
+            for &v in arr {
+                h.u64(v);
+            }
+        }
     }
 
     fn hash_dynamics(&self, h: &mut Fnv64) {
@@ -1440,11 +1832,60 @@ impl World {
                 }
             }
         }
-        // The social-fact state is part of the dynamics only in worlds
-        // that track it (ADR-0014 D9): with `nomos` off nothing is added.
+        // The social-fact and institutional state is part of the dynamics
+        // only in worlds that track it (ADR-0014 D9): with `nomos` off
+        // nothing is added.
         if self.config.nomos {
-            h.u64(self.nomos.deals.len() as u64);
-            for d in &self.nomos.deals {
+            let nm = &self.nomos;
+            h.u64(nm.charter.hash_code());
+            h.u64(nm.rules.len() as u64);
+            for r in &nm.rules {
+                h.u64(r.id as u64);
+                h.u64(r.norm.hash_code());
+                h.u64(r.enacted);
+            }
+            h.u64(nm.next_rule_id as u64);
+            match &nm.motion {
+                None => h.u64(0),
+                Some(m) => {
+                    h.u64(1);
+                    h.u64(m.id as u64);
+                    h.u64(m.by.0);
+                    h.u64(m.opened);
+                    match m.kind {
+                        nomos::MotionKind::Enact { norm } => {
+                            h.u64(1);
+                            h.u64(norm.hash_code());
+                        }
+                        nomos::MotionKind::Repeal { rule } => {
+                            h.u64(2);
+                            h.u64(rule as u64);
+                        }
+                        nomos::MotionKind::Charter { charter } => {
+                            h.u64(3);
+                            h.u64(charter.hash_code());
+                        }
+                    }
+                    for side in [&m.ayes, &m.nays] {
+                        h.u64(side.len() as u64);
+                        for v in side {
+                            h.u64(v.0);
+                        }
+                    }
+                }
+            }
+            h.u64(nm.next_motion_id as u64);
+            h.u64(nm.standing.len() as u64);
+            for s in &nm.standing {
+                h.u64(s.agent.0);
+                h.u64(s.rule as u64);
+                h.u64(s.since);
+                h.u64(s.last);
+                h.u64(s.against.0);
+                h.u64(((s.violations as u64) << 16) | s.sanctions as u64);
+            }
+            h.u64(nm.deals.len() as u64);
+            for d in &nm.deals {
                 h.u64(d.proposer.0);
                 h.u64(d.acceptor.0);
                 h.u64(d.offer_tick);
@@ -1539,7 +1980,12 @@ pub const SNAPSHOT_MAGIC: [u8; 4] = *b"CZS\0";
 /// 9: `Agent.arrived`, `World.nomos`, `InteractionKind::EncroachedBy`,
 /// ledger `gathers` / `encroachments` / `promises_due` / `promises_broken`,
 /// config `nomos` / `learner_health_weight` (ADR-0014 4-1).
-pub const SNAPSHOT_FORMAT: u32 = 9;
+/// 10: `Nomos` gains `charter` / `rules` / `next_rule_id` / `motion` /
+/// `next_motion_id` / `standing`; `InteractionKind::{Sanctioned,
+/// SanctionedBy, SawSanction}`; ledger `violations` / `sanctions` /
+/// `episodes_closed` / `episodes_sanctioned`; config `charter` /
+/// `record_violations` (ADR-0014 4-2).
+pub const SNAPSHOT_FORMAT: u32 = 10;
 
 /// Written form: borrows the world instead of cloning it.
 #[derive(Serialize)]

@@ -2,7 +2,10 @@
 //! Run: `cargo bench -p simulation-core` (add `--features parallel` for rayon).
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use simulation_core::{PolicyKind, World, WorldConfig};
+use simulation_core::{
+    AgentId, Intervention, Norm, NormIndex, NormKind, PolicyKind, Sanction, Standing, World,
+    WorldConfig,
+};
 
 fn warmed_world(agents: u32, side: u16) -> World {
     warmed_world_of(agents, side, PolicyKind::Forager, false)
@@ -37,6 +40,41 @@ fn warmed_world_with(
     let mut w = World::generate(cfg, |_| kind).unwrap();
     // Skip the founding transient (die-off, first birth wave) so the
     // population is in its steady band (docs/research/experiments/EXP-001).
+    w.run(1_000);
+    w
+}
+
+/// The first-occupancy norm of EXP-004 (ADR-0014 D11): 32 ticks of
+/// standing, harm as the sanction.
+fn first_occupant_rule() -> Intervention {
+    Intervention::Enact {
+        norm: Norm {
+            kind: NormKind::Encroach,
+            standing_ticks: 32,
+            sanction: Sanction::HARM,
+            except_sanction: false,
+        },
+    }
+}
+
+/// A forager world with `nomos` on and the first-occupancy rule in force
+/// from tick 0, warmed like the others (ADR-0014 4-2: the judging, the
+/// episodes and the per-tick `NormIndex` are the cost over `step/nomos`).
+/// Foragers never harm, so no sanction happens; every encroachment
+/// (~19 per tick, 4-1) is a violation and most of the population stands
+/// accused at any time.
+fn ruled_world(agents: u32, side: u16, kind: PolicyKind) -> World {
+    let cfg = WorldConfig {
+        seed: 42,
+        width: side,
+        height: side,
+        initial_agents: agents,
+        patch_count: (side as u32 * side as u32) / 700,
+        nomos: true,
+        ..WorldConfig::default()
+    };
+    let mut w = World::generate(cfg, |_| kind).unwrap();
+    w.intervene(first_occupant_rule()).unwrap();
     w.run(1_000);
     w
 }
@@ -117,6 +155,74 @@ fn bench_step(c: &mut Criterion) {
             )
         });
     }
+    // The same two worlds with the first-occupancy rule in force (ADR-0014
+    // 4-2, acceptance: the Nomos cost — index, judging, episodes — within
+    // the step budget of ≤ 20%, D9 completion condition 2).
+    for (name, kind) in [
+        ("nomos_rules", PolicyKind::Forager),
+        ("learner_nomos_rules", PolicyKind::Learner),
+    ] {
+        let w = ruled_world(1_000, 128, kind);
+        g.throughput(Throughput::Elements(w.agents.len() as u64 * 10));
+        g.bench_with_input(BenchmarkId::new(name, 1_000), &w, |b, base| {
+            b.iter_batched_ref(
+                || base.clone(),
+                |w| w.run(10),
+                criterion::BatchSize::LargeInput,
+            )
+        });
+    }
+    g.finish();
+}
+
+/// Building the per-tick `NormIndex` (ADR-0014 D2; 4-2 acceptance: ≤ 30 µs
+/// per tick at 1.3k agents with 2,000 open episodes). The episodes are
+/// hand-built — every agent under rule 0 and the first 2,000 − n under
+/// rule 1 — on the warmed forager world (~1,316 agents), so the count is
+/// exact whatever the population did. `norm_index_empty` is the same
+/// world with nothing in force: the cost every rule-free tick pays.
+fn bench_norm_index(c: &mut Criterion) {
+    let mut w = warmed_world_with(1_000, 128, PolicyKind::Forager, false, true);
+    let empty = w.clone();
+    w.intervene(first_occupant_rule()).unwrap();
+    w.intervene(Intervention::Enact {
+        norm: Norm {
+            kind: NormKind::Harm,
+            standing_ticks: 32,
+            sanction: Sanction::ALL,
+            except_sanction: true,
+        },
+    })
+    .unwrap();
+    const EPISODES: usize = 2_000;
+    let n = w.agents.len();
+    let under_rule_1 = EPISODES.saturating_sub(n).min(n);
+    let tick = w.tick;
+    let mut standing = Vec::with_capacity(EPISODES);
+    for (i, a) in w.agents.iter().enumerate() {
+        for rule in 0..=u16::from(i < under_rule_1) {
+            standing.push(Standing {
+                agent: a.id,
+                rule,
+                since: tick - 1,
+                last: tick - 1,
+                against: AgentId(0),
+                violations: 1,
+                sanctions: 0,
+            });
+        }
+    }
+    w.nomos.standing = standing;
+    w.check_invariants()
+        .expect("hand-built episodes are consistent");
+    let episodes = w.nomos.standing.len();
+    let mut g = c.benchmark_group("norm_index");
+    g.bench_function(format!("{n}_agents_{episodes}_episodes"), |b| {
+        b.iter(|| NormIndex::build(&w.agents, &w.nomos))
+    });
+    g.bench_function(format!("{n}_agents_empty"), |b| {
+        b.iter(|| NormIndex::build(&empty.agents, &empty.nomos))
+    });
     g.finish();
 }
 
@@ -168,5 +274,11 @@ fn bench_hash(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_step, bench_decide, bench_hash);
+criterion_group!(
+    benches,
+    bench_step,
+    bench_decide,
+    bench_hash,
+    bench_norm_index
+);
 criterion_main!(benches);

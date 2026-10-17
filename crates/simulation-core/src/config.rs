@@ -1,5 +1,6 @@
 //! World parameters. All quantities are integers (ADR-0003).
 
+use crate::nomos::Charter;
 use crate::policy::PolicyParams;
 use serde::{Deserialize, Serialize};
 
@@ -110,6 +111,17 @@ pub struct WorldConfig {
     /// transition is the Phase 3 one. `default` so older configs load.
     #[serde(default)]
     pub nomos: bool,
+    /// The assembly's charter at generation (ADR-0014 D5; `World.nomos.
+    /// charter` thereafter, which interventions and, from 4-5, motions
+    /// change). Only read with `nomos`. Not part of `dynamics_hash`.
+    #[serde(default)]
+    pub charter: Charter,
+    /// Record `Event::Violated` for every violation (ADR-0014 D9). Off by
+    /// default: 4-1 measured about 21 encroachments per tick in a crowded
+    /// world, above the 10/tick budget; the ledger's counters and the open
+    /// episodes are kept either way. Not part of `dynamics_hash`.
+    #[serde(default)]
+    pub record_violations: bool,
 
     /// What agents can perceive about each other (ADR-0013 D2). `default`
     /// so configs written before the field existed still load; it is always
@@ -206,6 +218,8 @@ impl Default for WorldConfig {
             learner_epsilon_permille: default_learner_epsilon(),
             learner_health_weight: 0,
             nomos: false,
+            charter: Charter::default(),
+            record_violations: false,
             perception: Perception::default(),
         }
     }
@@ -227,7 +241,7 @@ impl WorldConfig {
     pub const MAX_LEARNER_STATES: u16 = 1024;
 
     pub fn validate(&self) -> Result<(), ConfigError> {
-        let checks: [(bool, &'static str); 19] = [
+        let checks: [(bool, &'static str); 20] = [
             (
                 self.width > 0 && self.height > 0,
                 "width/height must be > 0",
@@ -294,6 +308,7 @@ impl WorldConfig {
                 self.learner_epsilon_permille <= PolicyParams::PERMILLE_MAX,
                 "learner_epsilon_permille must be <= 1000",
             ),
+            (self.charter.is_valid(), "charter permilles must be <= 1000"),
         ];
         for (ok, msg) in checks {
             if !ok {

@@ -2,8 +2,8 @@
 
 use multiverse::{replay, BranchId, Multiverse, MultiverseError, ReplayError};
 use simulation_core::{
-    Event, EventLog, Intervention, ParamsMode, PolicyKind, PolicyTable, Pos, Who, World,
-    WorldConfig,
+    Charter, Event, EventLog, Intervention, Norm, NormKind, ParamsMode, PolicyKind, PolicyTable,
+    Pos, Sanction, Who, World, WorldConfig,
 };
 
 fn root() -> World {
@@ -198,6 +198,164 @@ fn learner_worlds_replay_bit_exactly_from_snapshot_and_ledger() {
     let mut w = World::from_bytes(&mv.state_at(r, 100).unwrap().to_bytes()).unwrap();
     replay(&mut w, mv.branch(r).unwrap().log(), 600).unwrap();
     assert_eq!(w.state_hash(), head.state_hash());
+}
+
+/// ADR-0014 4-2 acceptance: an institution world replays bit-exactly.
+/// Rules, episodes and the charter are state; sanctions and (recorded)
+/// violations are ledger events the kernel must reproduce; decrees are
+/// replayed from the ledger at their ticks.
+#[test]
+fn institution_worlds_replay_bit_exactly_from_snapshot_and_ledger() {
+    let base = World::generate(
+        WorldConfig {
+            seed: 23,
+            width: 48,
+            height: 48,
+            initial_agents: 150,
+            patch_count: 6,
+            nomos: true,
+            record_violations: true,
+            ..WorldConfig::default()
+        },
+        |i| match i % 3 {
+            0 => PolicyKind::Forager,
+            1 => PolicyKind::Random,
+            _ => PolicyKind::Learner,
+        },
+    )
+    .unwrap();
+    let norm = |kind: NormKind, standing_ticks: u16, sanction: Sanction, except: bool| Norm {
+        kind,
+        standing_ticks,
+        sanction,
+        except_sanction: except,
+    };
+    // The promise rule first: only the random walkers make deals, and
+    // they are gone by tick 200.
+    let schedule = [
+        (
+            20u64,
+            Intervention::Enact {
+                norm: norm(NormKind::BrokenPromise, 24, Sanction::REJECT, false),
+            },
+        ),
+        (
+            50,
+            Intervention::Enact {
+                norm: norm(NormKind::Encroach, 32, Sanction::HARM, false),
+            },
+        ),
+        (
+            120,
+            Intervention::Enact {
+                norm: norm(NormKind::Harm, 16, Sanction::ALL, true),
+            },
+        ),
+        (300, Intervention::Repeal { rule: 1 }),
+        (
+            350,
+            Intervention::Enact {
+                norm: norm(NormKind::Encroach, 8, Sanction::REJECT, false),
+            },
+        ),
+        (
+            450,
+            Intervention::Charter {
+                charter: Charter {
+                    quorum_permille: 500,
+                    threshold_permille: 500,
+                    vote_ticks: 16,
+                    amendable: false,
+                },
+            },
+        ),
+    ];
+    let keep = [0u64, 20, 49, 50, 51, 120, 299, 300, 301, 350, 450, 600];
+    let mut mv = Multiverse::new(base.clone(), 100);
+    let r = BranchId(0);
+    let mut direct = base.clone();
+    let mut kept = Vec::new();
+    for tick in 0..600u64 {
+        if keep.contains(&tick) {
+            kept.push((tick, direct.clone()));
+        }
+        for (t, iv) in schedule {
+            if t == tick {
+                mv.intervene(r, iv).unwrap();
+                direct.intervene(iv).unwrap();
+            }
+        }
+        mv.step(r, 1).unwrap();
+        direct.step();
+    }
+    kept.push((600, direct.clone()));
+    let head = mv.branch(r).unwrap().head();
+    assert_eq!(head, &direct);
+    head.check_invariants().unwrap();
+    assert_eq!(
+        head.nomos.rules.iter().map(|r| r.id).collect::<Vec<_>>(),
+        vec![0, 2, 3],
+        "the promise rule, the harm rule, the re-enacted encroachment rule"
+    );
+    assert_eq!(head.nomos.charter.vote_ticks, 16);
+    assert!(!head.nomos.standing.is_empty());
+    assert!(
+        head.ledger.violations.iter().all(|&v| v > 0),
+        "{:?}",
+        head.ledger.violations
+    );
+    assert!(head.ledger.sanctions.iter().sum::<u64>() > 0);
+    assert!(head.ledger.episodes_closed.iter().sum::<u64>() > 0);
+    let log = mv.branch(r).unwrap().log();
+    assert!(log
+        .events()
+        .iter()
+        .any(|e| matches!(e, Event::Sanctioned { .. })));
+    assert!(log
+        .events()
+        .iter()
+        .any(|e| matches!(e, Event::Violated { .. })));
+    for (t, expected) in kept {
+        let restored = mv.state_at(r, t).unwrap();
+        assert_eq!(restored, expected, "tick {t}");
+    }
+    // From the tick-300 snapshot (taken before that tick's repeal) through
+    // the repeal, the re-enactment and the new charter to the head, every
+    // event verified — sanctions and violations included.
+    let mut w = mv.state_at(r, 300).unwrap();
+    let stats = replay(&mut w, log, 600).unwrap();
+    assert_eq!((stats.from, stats.to, stats.interventions), (300, 600, 3));
+    assert_eq!(&w, head);
+    assert_eq!(
+        stats.events_checked,
+        log.range(300..600)
+            .iter()
+            .filter(|e| !matches!(e, Event::Intervened { .. }))
+            .count()
+    );
+    // The same world built again from bytes replays the same.
+    let mut w = World::from_bytes(&mv.state_at(r, 100).unwrap().to_bytes()).unwrap();
+    replay(&mut w, log, 600).unwrap();
+    assert_eq!(w.state_hash(), head.state_hash());
+    // A sanction attributed to another rule is a different history.
+    let mut tampered = EventLog::new();
+    let mut victim_tick = None;
+    for e in log.events() {
+        let mut e = *e;
+        if victim_tick.is_none() && e.tick() > 300 {
+            if let Event::Sanctioned { rule, tick, .. } = &mut e {
+                *rule += 1;
+                victim_tick = Some(*tick);
+            }
+        }
+        tampered.push(e).unwrap();
+    }
+    let victim_tick = victim_tick.expect("a sanction after tick 300");
+    let mut w = mv.state_at(r, 300).unwrap();
+    match replay(&mut w, &tampered, 600) {
+        Err(ReplayError::Diverged { tick, .. }) => assert_eq!(tick, victim_tick),
+        other => panic!("expected divergence, got {other:?}"),
+    }
 }
 
 #[test]

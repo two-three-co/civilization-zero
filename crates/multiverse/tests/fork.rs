@@ -2,7 +2,8 @@
 
 use multiverse::{BranchId, Multiverse, MultiverseError};
 use simulation_core::{
-    Event, Intervention, ParamsMode, PolicyKind, PolicyTable, Who, World, WorldConfig,
+    Event, Intervention, InterventionError, Norm, NormKind, ParamsMode, PolicyKind, PolicyTable,
+    Sanction, Who, World, WorldConfig,
 };
 
 fn root() -> World {
@@ -161,6 +162,121 @@ fn switching_policies_at_a_fork_is_reproducible() {
     }
     // Both pairs are distinct branches of the same root.
     assert_eq!(mv.branches().len(), 5);
+}
+
+/// ADR-0014 4-2 acceptance: "with vs without rule" is a fork plus `Enact`
+/// (or `Repeal`), and doing it twice at the same tick gives the same
+/// branch — rules, episodes and sanctions replay from the ledger.
+#[test]
+fn enacting_a_rule_at_a_fork_is_reproducible() {
+    let root = World::generate(
+        WorldConfig {
+            seed: 31,
+            width: 48,
+            height: 48,
+            initial_agents: 150,
+            patch_count: 6,
+            nomos: true,
+            record_violations: true,
+            ..WorldConfig::default()
+        },
+        |i| match i % 3 {
+            0 => PolicyKind::Forager,
+            1 => PolicyKind::Random,
+            _ => PolicyKind::Learner,
+        },
+    )
+    .unwrap();
+    let enact = Intervention::Enact {
+        norm: Norm {
+            kind: NormKind::Encroach,
+            standing_ticks: 32,
+            sanction: Sanction::ALL,
+            except_sanction: false,
+        },
+    };
+    let mut mv = Multiverse::new(root, 100);
+    let r = BranchId(0);
+    mv.step(r, 450).unwrap();
+    let a = mv.fork(r, 150, &[enact]).unwrap();
+    let b = mv.fork(r, 150, &[enact]).unwrap();
+    mv.step(a, 300).unwrap();
+    mv.step(b, 300).unwrap();
+    let (ha, hb, hr) = (
+        mv.branch(a).unwrap().head().state_hash(),
+        mv.branch(b).unwrap().head().state_hash(),
+        mv.branch(r).unwrap().head().state_hash(),
+    );
+    assert_eq!(ha, hb, "same decree at the same tick, same history");
+    assert_ne!(hr, ha, "the rule and its episodes are state");
+    assert_eq!(
+        mv.state_at(a, 300).unwrap().state_hash(),
+        mv.state_at(b, 300).unwrap().state_hash()
+    );
+    let head = mv.branch(a).unwrap().head();
+    head.check_invariants().unwrap();
+    assert_eq!(head.nomos.rules.len(), 1);
+    assert!(head.ledger.violations[0] > 0, "the crowd encroaches");
+    assert!(
+        head.ledger.sanctions[0] > 0,
+        "random walkers and learners harm the accused now and then"
+    );
+    let log = mv.branch(a).unwrap().log();
+    assert_eq!(
+        log.at(150)[0],
+        Event::Intervened {
+            tick: 150,
+            intervention: enact
+        }
+    );
+    assert!(log
+        .range(150..450)
+        .iter()
+        .any(|e| matches!(e, Event::Sanctioned { .. })));
+    assert!(log
+        .range(150..450)
+        .iter()
+        .any(|e| matches!(e, Event::Violated { .. })));
+    assert!(!log
+        .range(0..150)
+        .iter()
+        .any(|e| matches!(e, Event::Violated { .. } | Event::Sanctioned { .. })));
+    // The root never had the rule: nothing to repeal there; the child has
+    // it as rule 0, so a fork of the child that repeals it is "without".
+    assert!(matches!(
+        mv.fork(r, 150, &[Intervention::Repeal { rule: 0 }]),
+        Err(MultiverseError::Intervention(InterventionError::Invalid(_)))
+    ));
+    let c = mv
+        .fork(a, 300, &[Intervention::Repeal { rule: 0 }])
+        .unwrap();
+    let d = mv
+        .fork(a, 300, &[Intervention::Repeal { rule: 0 }])
+        .unwrap();
+    mv.step(c, 100).unwrap();
+    mv.step(d, 100).unwrap();
+    assert_eq!(
+        mv.branch(c).unwrap().head().state_hash(),
+        mv.branch(d).unwrap().head().state_hash()
+    );
+    assert!(mv.branch(c).unwrap().head().nomos.rules.is_empty());
+    assert!(mv.branch(c).unwrap().head().nomos.standing.is_empty());
+    assert_ne!(
+        mv.branch(c).unwrap().head().state_hash(),
+        mv.state_at(a, 400).unwrap().state_hash()
+    );
+    // A world without the switch refuses the decree, and no branch is left.
+    let mut plain = Multiverse::new(root_plain(), 100);
+    plain.step(BranchId(0), 50).unwrap();
+    assert!(matches!(
+        plain.fork(BranchId(0), 50, &[enact]),
+        Err(MultiverseError::Intervention(InterventionError::Invalid(_)))
+    ));
+    assert_eq!(plain.branches().len(), 1);
+}
+
+fn root_plain() -> World {
+    root()
 }
 
 #[test]

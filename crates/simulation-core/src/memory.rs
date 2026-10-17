@@ -156,6 +156,18 @@ pub enum InteractionKind {
     /// worlds with `config.nomos` on. A fact, not a violation: whether a
     /// rule makes it one is Phase 4-2's business.
     EncroachedBy,
+    /// I sanctioned `other` (ADR-0014 D4): my harm or rejection reached it
+    /// while it stood accused under a rule that lets that answer count.
+    /// Written in place of `Harmed` (`value` = damage) or, for a rejection,
+    /// with `value` 0. Without a rule in force the harm trio is written as
+    /// before.
+    Sanctioned,
+    /// `other` sanctioned me: written in place of `HarmedBy` (`value` =
+    /// damage) or of `Rejected` (`value` 0).
+    SanctionedBy,
+    /// I saw `other` sanction the agent whose id is `value`: written in
+    /// place of `SawHarm` for the witnesses of a sanctioning harm.
+    SawSanction,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -31,7 +31,10 @@ pub use event::{DeathCause, Event};
 pub use event_log::{EventLog, LogError};
 pub use intervention::{Intervention, InterventionError, ParamsMode, Who};
 pub use memory::{Interaction, InteractionKind, Message, Signal, Terms};
-pub use nomos::{Nomos, OpenDeal};
+pub use nomos::{
+    Charter, Closed, Grounds, Motion, MotionKind, Nomos, Norm, NormIndex, NormKind, OpenDeal, Rule,
+    Sanction, Standing, Via,
+};
 pub use policy::{
     Intent, LearnerStep, Neighbor, Observation, PolicyKind, PolicyParams, PolicyTable,
     REFLEX_FEATURES,

@@ -3,7 +3,9 @@
 //!   cz run    [--seed N] [--agents N] [--side N] [--ticks N]
 //!             [--policy forager|random|mixed|reflex|learner|mixed-learning] [--check]
 //!             [--mutate | --no-mutate] [--learner-states N] [--learner-epsilon PERMILLE]
-//!             [--nomos] [--learner-health-weight W]
+//!             [--nomos] [--learner-health-weight W] [--record-violations]
+//!             [--enact KIND[:STANDING[:SANCTION[:EXCEPT]]] [--enact-at TICK]]
+//!             [--repeal ID [--repeal-at TICK]] [--charter Q,TH,TICKS,AMENDABLE]
 //!             [--trace PATH --every K] [--snapshot PATH]
 //!             [--drought-at TICK [--drought-amount N] [--drought-interval N]]
 //!             [--set-policy KIND [--set-policy-at TICK]]
@@ -13,7 +15,7 @@
 //!   cz replay --snapshot PATH --log PATH [--to TICK]
 //!   cz fork   [--seed N] [--agents N] [--side N] [--ticks N] [--at TICK] [--every K]
 //!             [--scale-food PERMILLE] [--drought-amount N --drought-interval N]
-//!             [--set-policy KIND]
+//!             [--set-policy KIND] [--enact SPEC] [--repeal ID]
 //!   cz sweep  [--seeds N] [--seed-start S] [--ticks N] [--policy ...]
 //!             [--window PCT] [--sample K] [--out PREFIX] [--check]
 //!
@@ -23,20 +25,35 @@
 //! table (3-7). `--set-policy KIND` applies `SetPolicy { who: All, params:
 //! Default }` at `--set-policy-at` (default 0) and logs it like a drought.
 //! `--nomos` switches the tracking of social facts on (ADR-0014 4-1: first
-//! occupancy, encroachments, the audit of accepted deals; no rules yet) and
+//! occupancy, encroachments, the audit of accepted deals) and
 //! `--learner-health-weight W` adds `W × Δhealth` to a learner's reward.
-//! All three commands that build worlds (`run`, `sweep`, `fork`) take them.
+//! Institutions (ADR-0014 4-2, need `--nomos`): `--enact
+//! KIND[:STANDING[:SANCTION[:EXCEPT]]]` puts a norm in force by decree at
+//! `--enact-at` (default 0) — KIND is `encroach`, `broken_promise` or
+//! `harm`, STANDING the ticks a violator stands accused (default 32),
+//! SANCTION `harm`, `reject`, `harm+reject` or `none` (default `harm`),
+//! EXCEPT `true` to exempt sanctions from a harm rule (default `false`);
+//! `--repeal ID` takes rule ID out of force at `--repeal-at` (default 0);
+//! `--charter Q,TH,TICKS,AMENDABLE` is the assembly's initial charter;
+//! `--record-violations` writes `Violated` events to the log (off by
+//! default: ~21 per tick in a crowded world, 4-1). `fork` applies `--enact`
+//! / `--repeal` at the fork tick, which is how "with vs without rule" is
+//! compared (ADR-0014 D8). All three commands that build worlds (`run`,
+//! `sweep`, `fork`) take all of these.
 //!
 //! `cz sweep --out PREFIX` writes `PREFIX_summary.csv` (one row per seed:
 //! population band of the last `--window` percent of ticks, then that
 //! window's consumption per agent-tick, transfers / harms / signals /
 //! negotiation messages per tick, death causes, action mix, the Q-table or
-//! weight statistics of EXP-002 and, since 4-1, the window's encroachment
-//! rate overall and per policy kind, promises due / broken, standing food
-//! and regrowth), `PREFIX_series.csv` (every `--sample` ticks: population,
-//! food and the interval's counts — the EXP-002 columns first, the 4-1
-//! counts after them) and, with learners, `PREFIX_qpolicy.csv` (per Q row,
-//! how many learners prefer each kind and how often the row was visited).
+//! weight statistics of EXP-002, since 4-1 the window's encroachment rate
+//! overall and per policy kind, promises due / broken, standing food and
+//! regrowth, and since 4-2 the rules in force, violations and sanctions per
+//! tick, episodes closed / sanctioned and H1's S = episodes sanctioned /
+//! closed and S' = sanctions / violations), `PREFIX_series.csv` (every
+//! `--sample` ticks: population, food and the interval's counts — the
+//! EXP-002 columns first, the 4-1 counts, then the 4-2 counts) and, with
+//! learners, `PREFIX_qpolicy.csv` (per Q row, how many learners prefer each
+//! kind and how often the row was visited).
 //!
 //! Snapshot paths ending in `.json` use the readable form; anything else is
 //! the compact binary form (ADR-0006). Timing printed by `run` covers
@@ -47,8 +64,8 @@ use serde::Serialize;
 use simulation_core::policy::learner::{state, Q_UNIT};
 use simulation_core::policy::{forager_weights, REFLEX_UNIT};
 use simulation_core::{
-    Action, DeathCause, Event, EventLog, Intervention, ParamsMode, PolicyKind, PolicyTable,
-    TickReport, Who, World, WorldConfig,
+    Action, Charter, DeathCause, Event, EventLog, Intervention, Norm, NormKind, ParamsMode,
+    PolicyKind, PolicyTable, Sanction, TickReport, Who, World, WorldConfig,
 };
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -77,7 +94,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  cz run [--seed N] [--agents N] [--side N] [--ticks N]\n         [--policy forager|random|mixed|reflex|learner|mixed-learning] [--mutate | --no-mutate]\n         [--learner-states N] [--learner-epsilon PERMILLE] [--nomos] [--learner-health-weight W]\n         [--check] [--trace PATH --every K] [--snapshot PATH]\n         [--drought-at TICK [--drought-amount N] [--drought-interval N]]\n         [--set-policy KIND [--set-policy-at TICK]] [--log PATH] [--record-actions]\n  cz log --path PATH [--from TICK] [--to TICK] [--limit N]\n  cz resume --snapshot PATH [--ticks N] [--check]\n  cz replay --snapshot PATH --log PATH [--to TICK]\n  cz fork [--seed N] [--agents N] [--side N] [--ticks N] [--at TICK] [--every K]\n          [--scale-food PERMILLE] [--drought-amount N --drought-interval N] [--set-policy KIND]\n  cz sweep [--seeds N] [--seed-start S] [--ticks N] [--policy ...] [--window PCT]\n           [--sample K] [--out PREFIX] [--check]\n  (run, fork and sweep also take --nomos and --learner-health-weight W)"
+        "usage:\n  cz run [--seed N] [--agents N] [--side N] [--ticks N]\n         [--policy forager|random|mixed|reflex|learner|mixed-learning] [--mutate | --no-mutate]\n         [--learner-states N] [--learner-epsilon PERMILLE] [--nomos] [--learner-health-weight W]\n         [--enact KIND[:STANDING[:SANCTION[:EXCEPT]]] [--enact-at TICK]] [--repeal ID [--repeal-at TICK]]\n         [--charter Q,TH,TICKS,AMENDABLE] [--record-violations]\n         [--check] [--trace PATH --every K] [--snapshot PATH]\n         [--drought-at TICK [--drought-amount N] [--drought-interval N]]\n         [--set-policy KIND [--set-policy-at TICK]] [--log PATH] [--record-actions]\n  cz log --path PATH [--from TICK] [--to TICK] [--limit N]\n  cz resume --snapshot PATH [--ticks N] [--check]\n  cz replay --snapshot PATH --log PATH [--to TICK]\n  cz fork [--seed N] [--agents N] [--side N] [--ticks N] [--at TICK] [--every K]\n          [--scale-food PERMILLE] [--drought-amount N --drought-interval N] [--set-policy KIND]\n          [--enact SPEC] [--repeal ID]\n  cz sweep [--seeds N] [--seed-start S] [--ticks N] [--policy ...] [--window PCT]\n           [--sample K] [--out PREFIX] [--check]\n  (run, fork and sweep also take --nomos, --learner-health-weight W, --charter, --record-violations;\n   --enact KIND is encroach | broken_promise | harm, SANCTION is harm | reject | harm+reject | none)"
     );
     std::process::exit(2)
 }
@@ -127,6 +144,11 @@ fn build_world(seed: u64, o: &Opts) -> Result<World, Box<dyn std::error::Error>>
         learner_epsilon_permille: get(o, "learner-epsilon", 50)?,
         learner_health_weight: get(o, "learner-health-weight", 0)?,
         nomos: o.contains_key("nomos"),
+        record_violations: o.contains_key("record-violations"),
+        charter: match o.get("charter") {
+            Some(spec) => parse_charter(spec)?,
+            None => Charter::default(),
+        },
         ..WorldConfig::default()
     };
     Ok(match policy {
@@ -147,6 +169,101 @@ fn build_world(seed: u64, o: &Opts) -> Result<World, Box<dyn std::error::Error>>
             World::generate(cfg, move |_| kind)?
         }
     })
+}
+
+/// `--enact KIND[:STANDING[:SANCTION[:EXCEPT]]]` as the norm it names
+/// (ADR-0014 D5, D8): e.g. `encroach`, `encroach:32:harm`,
+/// `harm:16:harm+reject:true`, `broken_promise:24:reject`.
+fn parse_norm(spec: &str) -> Result<Norm, String> {
+    let fields: Vec<&str> = spec.split(':').collect();
+    if fields.len() > 4 {
+        return Err(format!(
+            "bad --enact {spec:?}: at most KIND:STANDING:SANCTION:EXCEPT"
+        ));
+    }
+    let kind = NormKind::parse(fields[0]).ok_or_else(|| {
+        format!(
+            "bad --enact {spec:?}: KIND must be encroach, broken_promise or harm, not {:?}",
+            fields[0]
+        )
+    })?;
+    let standing_ticks = match fields.get(1) {
+        None | Some(&"") => 32,
+        Some(v) => v
+            .parse()
+            .map_err(|_| format!("bad --enact {spec:?}: STANDING {v:?} is not a tick count"))?,
+    };
+    let sanction = match fields.get(2) {
+        None => Sanction::HARM,
+        Some(v) => Sanction::parse(v).ok_or_else(|| {
+            format!(
+                "bad --enact {spec:?}: SANCTION {v:?} must be harm, reject, harm+reject or none"
+            )
+        })?,
+    };
+    let except_sanction = match fields.get(3) {
+        None => false,
+        Some(v) => parse_bool(v)
+            .ok_or_else(|| format!("bad --enact {spec:?}: EXCEPT {v:?} must be true or false"))?,
+    };
+    Ok(Norm {
+        kind,
+        standing_ticks,
+        sanction,
+        except_sanction,
+    })
+}
+
+/// `--charter Q,TH,TICKS,AMENDABLE` (permilles, ticks, true / false).
+fn parse_charter(spec: &str) -> Result<Charter, String> {
+    let fields: Vec<&str> = spec.split(',').collect();
+    if fields.len() != 4 {
+        return Err(format!(
+            "bad --charter {spec:?}: expected Q,TH,TICKS,AMENDABLE"
+        ));
+    }
+    let num = |i: usize, what: &str| -> Result<u16, String> {
+        fields[i].parse().map_err(|_| {
+            format!(
+                "bad --charter {spec:?}: {what} {:?} is not a number",
+                fields[i]
+            )
+        })
+    };
+    let charter = Charter {
+        quorum_permille: num(0, "Q")?,
+        threshold_permille: num(1, "TH")?,
+        vote_ticks: num(2, "TICKS")?,
+        amendable: parse_bool(fields[3])
+            .ok_or_else(|| format!("bad --charter {spec:?}: AMENDABLE must be true or false"))?,
+    };
+    if !charter.is_valid() {
+        return Err(format!("bad --charter {spec:?}: permilles must be <= 1000"));
+    }
+    Ok(charter)
+}
+
+fn parse_bool(v: &str) -> Option<bool> {
+    match v {
+        "true" | "1" | "yes" | "except" => Some(true),
+        "false" | "0" | "no" => Some(false),
+        _ => None,
+    }
+}
+
+/// `--enact SPEC` and `--repeal ID` as the decrees they stand for, with the
+/// ticks `--enact-at` / `--repeal-at` name (default 0).
+fn decrees(o: &Opts) -> Result<Vec<(u64, Intervention)>, Box<dyn std::error::Error>> {
+    let mut out = Vec::new();
+    if let Some(spec) = o.get("enact") {
+        let norm = parse_norm(spec)?;
+        out.push((get(o, "enact-at", 0)?, Intervention::Enact { norm }));
+    }
+    if let Some(id) = o.get("repeal") {
+        let rule: u16 = id.parse().map_err(|_| format!("bad --repeal {id:?}"))?;
+        out.push((get(o, "repeal-at", 0)?, Intervention::Repeal { rule }));
+    }
+    Ok(out)
 }
 
 /// `--set-policy KIND` as the intervention it stands for.
@@ -225,6 +342,8 @@ fn simulate(mut world: World, o: &Opts) -> R {
     // One scripted policy switch (ADR-0013 D7): every agent to KIND at a tick.
     let set_policy = set_policy_opt(o)?;
     let set_policy_at: u64 = get(o, "set-policy-at", 0)?;
+    // Decrees (ADR-0014 D8): a rule put in force or taken out at a tick.
+    let decrees = decrees(o)?;
     let mut log = o.get("log").map(|_| EventLog::new());
 
     println!(
@@ -281,6 +400,15 @@ fn simulate(mut world: World, o: &Opts) -> R {
             println!("intervention: {}", serde_json::to_string(&e)?);
             if let Some(l) = log.as_mut() {
                 l.push(e)?;
+            }
+        }
+        for (at, iv) in &decrees {
+            if *at == world.tick {
+                let e = world.intervene(*iv)?;
+                println!("intervention: {}", serde_json::to_string(&e)?);
+                if let Some(l) = log.as_mut() {
+                    l.push(e)?;
+                }
             }
         }
         agent_steps += world.agents.len() as u64;
@@ -368,6 +496,61 @@ fn simulate(mut world: World, o: &Opts) -> R {
             l.promises_broken,
             world.nomos.deals.len()
         );
+        // Institutions (ADR-0014 4-2): the rules in force and H1's
+        // readings S = episodes sanctioned / closed, S' = sanctions /
+        // violations, from the ledger alone.
+        let rules: Vec<String> = world
+            .nomos
+            .rules
+            .iter()
+            .map(|r| {
+                format!(
+                    "#{} {}:{}:{}{} since {}",
+                    r.id,
+                    r.norm.kind.name(),
+                    r.norm.standing_ticks,
+                    r.norm.sanction.name(),
+                    if r.norm.except_sanction {
+                        ":except"
+                    } else {
+                        ""
+                    },
+                    r.enacted
+                )
+            })
+            .collect();
+        let per_kind = |a: &[u64; NormKind::COUNT]| {
+            NormKind::ALL
+                .iter()
+                .map(|k| format!("{}={}", k.name(), a[k.index()]))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let (violations, sanctions) = (
+            l.violations.iter().sum::<u64>(),
+            l.sanctions.iter().sum::<u64>(),
+        );
+        let (closed, sanctioned) = (
+            l.episodes_closed.iter().sum::<u64>(),
+            l.episodes_sanctioned.iter().sum::<u64>(),
+        );
+        println!(
+            "rules: {}; accused now {}; violations {} ({}); sanctions {} ({}); episodes closed {} sanctioned {}; S {:.4} S' {:.4}",
+            if rules.is_empty() {
+                "none".to_string()
+            } else {
+                rules.join(", ")
+            },
+            world.nomos.standing.len(),
+            violations,
+            per_kind(&l.violations),
+            sanctions,
+            per_kind(&l.sanctions),
+            closed,
+            sanctioned,
+            rate(sanctioned, closed),
+            rate(sanctions, violations)
+        );
     }
     if let (Some(t), Some(path)) = (trace.as_mut(), o.get("trace")) {
         t.push(&world);
@@ -446,6 +629,11 @@ fn cmd_fork(o: &Opts) -> R {
         });
     }
     if let Some(iv) = set_policy_opt(o)? {
+        interventions.push(iv);
+    }
+    // Decrees are applied at the fork tick whatever `--enact-at` says:
+    // "with vs without rule" (ADR-0014 D8).
+    for (_, iv) in decrees(o)? {
         interventions.push(iv);
     }
     if interventions.is_empty() {
@@ -533,6 +721,8 @@ fn cmd_log(o: &Opts) -> R {
             Event::Proposed { .. } => "proposed",
             Event::Accepted { .. } => "accepted",
             Event::Rejected { .. } => "rejected",
+            Event::Sanctioned { .. } => "sanctioned",
+            Event::Violated { .. } => "violated",
         };
         *counts.entry(kind).or_default() += 1;
     }
@@ -584,12 +774,17 @@ struct Tally {
     food_standing: u64,
     /// Learner row visits (`TickReport.learner_rows`, summed).
     rows: Vec<u64>,
+    /// Institutions (ADR-0014 4-2), summed over the kinds.
+    violations: u64,
+    sanctions: u64,
+    episodes_closed: u64,
+    episodes_sanctioned: u64,
 }
 
 impl Tally {
     /// Column names of `counts_csv`: the EXP-002 columns first (unchanged
-    /// in name, order and meaning), then the 4-1 counts.
-    const COUNT_COLUMNS: &'static str = "gathered,consumed,births,transfers,harms,signals,proposals,acceptances,rejections,deaths_starvation,deaths_old_age,deaths_violence,gathers,encroachments,promises_due,promises_broken,regrown,gathers_forager,encroachments_forager,gathers_random,encroachments_random,gathers_reflex,encroachments_reflex,gathers_learner,encroachments_learner";
+    /// in name, order and meaning), then the 4-1 counts, then the 4-2 counts.
+    const COUNT_COLUMNS: &'static str = "gathered,consumed,births,transfers,harms,signals,proposals,acceptances,rejections,deaths_starvation,deaths_old_age,deaths_violence,gathers,encroachments,promises_due,promises_broken,regrown,gathers_forager,encroachments_forager,gathers_random,encroachments_random,gathers_reflex,encroachments_reflex,gathers_learner,encroachments_learner,violations,sanctions,episodes_closed,episodes_sanctioned";
 
     /// Adds one tick: `alive_before` agents decided, `regrown` food units
     /// grew, `standing` is the food on the ground afterwards.
@@ -619,6 +814,14 @@ impl Tally {
         self.promises_broken += r.promises_settled.iter().filter(|d| !d.kept()).count() as u64;
         self.regrown += regrown;
         self.food_standing += standing;
+        self.violations += r.violations.iter().map(|&v| u64::from(v)).sum::<u64>();
+        self.sanctions += r.sanctions.iter().map(|&v| u64::from(v)).sum::<u64>();
+        self.episodes_closed += r.episodes_closed.iter().map(|&v| u64::from(v)).sum::<u64>();
+        self.episodes_sanctioned += r
+            .episodes_sanctioned
+            .iter()
+            .map(|&v| u64::from(v))
+            .sum::<u64>();
         if !r.learner_rows.is_empty() {
             if self.rows.len() < r.learner_rows.len() {
                 self.rows.resize(r.learner_rows.len(), 0);
@@ -676,7 +879,24 @@ impl Tally {
         for k in 0..PolicyKind::COUNT {
             let _ = write!(s, ",{},{}", self.gathers[k], self.encroachments[k]);
         }
+        let _ = write!(
+            s,
+            ",{},{},{},{}",
+            self.violations, self.sanctions, self.episodes_closed, self.episodes_sanctioned
+        );
         s
+    }
+
+    /// H1's S: episodes sanctioned / episodes closed (`None` without a
+    /// closed episode).
+    fn s(&self) -> Option<f64> {
+        (self.episodes_closed > 0)
+            .then(|| self.episodes_sanctioned as f64 / self.episodes_closed as f64)
+    }
+
+    /// H1's S': sanctions / violations (`None` without a violation).
+    fn s_prime(&self) -> Option<f64> {
+        (self.violations > 0).then(|| self.sanctions as f64 / self.violations as f64)
     }
 }
 
@@ -798,8 +1018,9 @@ fn cmd_sweep(o: &Opts) -> R {
     let win_start = ticks - ticks * window_pct / 100;
 
     let mut summary = String::from(
-        "seed,policy,final_alive,extinct_at,win_mean,win_min,win_max,win_max_over_min,births,deaths_starvation,deaths_old_age,deaths_violence,mutation,learner_states,learner_epsilon,win_ticks,win_agent_ticks,win_consumed_per_agent_tick,win_gathered_per_agent_tick,win_births_per_tick,win_transfers_per_tick,win_harms_per_tick,win_signals_per_tick,win_proposals_per_tick,win_acceptances_per_tick,win_rejections_per_tick,win_deaths_starvation,win_deaths_old_age,win_deaths_violence,win_act_move,win_act_gather,win_act_consume,win_act_rest,win_act_transfer,win_act_store,win_act_harm,win_act_signal,hunger_permille_mean,q_abs_mean,q_delta_window,reflex_weight_drift,nomos,learner_health_weight,win_gathers_per_tick,win_encroachments_per_tick,win_encroach_rate,win_encroach_rate_forager,win_encroach_rate_random,win_encroach_rate_reflex,win_encroach_rate_learner,win_promises_due_per_tick,win_promises_broken_per_tick,win_food_standing_mean,win_regrown_per_tick,ticks_per_s\n",
+        "seed,policy,final_alive,extinct_at,win_mean,win_min,win_max,win_max_over_min,births,deaths_starvation,deaths_old_age,deaths_violence,mutation,learner_states,learner_epsilon,win_ticks,win_agent_ticks,win_consumed_per_agent_tick,win_gathered_per_agent_tick,win_births_per_tick,win_transfers_per_tick,win_harms_per_tick,win_signals_per_tick,win_proposals_per_tick,win_acceptances_per_tick,win_rejections_per_tick,win_deaths_starvation,win_deaths_old_age,win_deaths_violence,win_act_move,win_act_gather,win_act_consume,win_act_rest,win_act_transfer,win_act_store,win_act_harm,win_act_signal,hunger_permille_mean,q_abs_mean,q_delta_window,reflex_weight_drift,nomos,learner_health_weight,win_gathers_per_tick,win_encroachments_per_tick,win_encroach_rate,win_encroach_rate_forager,win_encroach_rate_random,win_encroach_rate_reflex,win_encroach_rate_learner,win_promises_due_per_tick,win_promises_broken_per_tick,win_food_standing_mean,win_regrown_per_tick,rules,win_violations_per_tick,win_sanctions_per_tick,win_episodes_closed,win_episodes_sanctioned,win_s,win_s_prime,ticks_per_s\n",
     );
+    let decrees = decrees(o)?;
     let mut series = format!("seed,tick,alive,food,{}\n", Tally::COUNT_COLUMNS);
     let mut qpolicy = String::from(
         "seed,row,hungry,has_food,food_here,food_in_sight,adjacent,upper,heard,learners,move,gather,consume,rest,transfer,store,harm,signal,tie,visits,visits_window\n",
@@ -859,6 +1080,11 @@ fn cmd_sweep(o: &Opts) -> R {
             }
             if world.tick == win_start {
                 q_at_window_start = mean_q_table(&world);
+            }
+            for (at, iv) in &decrees {
+                if *at == world.tick {
+                    world.intervene(*iv)?;
+                }
             }
             let alive_before = world.agents.len();
             let regrown_before = world.ledger.food_regrown;
@@ -984,13 +1210,26 @@ fn cmd_sweep(o: &Opts) -> R {
         for k in PolicyKind::ALL {
             let _ = write!(row, ",{}", opt_csv(window.encroach_rate(k), 5));
         }
-        let _ = writeln!(
+        let _ = write!(
             row,
-            ",{:.4},{:.4},{:.1},{:.4},{:.0}",
+            ",{:.4},{:.4},{:.1},{:.4}",
             window.per_tick(window.promises_due),
             window.per_tick(window.promises_broken),
             window.per_tick(window.food_standing),
             window.per_tick(window.regrown),
+        );
+        // 4-2: the rules in force at the end, the window's violations and
+        // sanctions, and H1's S / S'.
+        let _ = writeln!(
+            row,
+            ",{},{:.4},{:.4},{},{},{},{},{:.0}",
+            world.nomos.rules.len(),
+            window.per_tick(window.violations),
+            window.per_tick(window.sanctions),
+            window.episodes_closed,
+            window.episodes_sanctioned,
+            opt_csv(window.s(), 5),
+            opt_csv(window.s_prime(), 5),
             ticks as f64 / secs
         );
         summary.push_str(&row);
