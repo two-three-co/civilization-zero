@@ -22,14 +22,25 @@
 //! table (3-7). `--set-policy KIND` applies `SetPolicy { who: All, params:
 //! Default }` at `--set-policy-at` (default 0) and logs it like a drought.
 //!
+//! `cz sweep --out PREFIX` writes `PREFIX_summary.csv` (one row per seed:
+//! population band of the last `--window` percent of ticks, then that
+//! window's consumption per agent-tick, transfers / harms / signals /
+//! negotiation messages per tick, death causes, action mix and the Q-table or
+//! weight statistics of EXP-002), `PREFIX_series.csv` (every `--sample`
+//! ticks: population, food and the interval's counts) and, with learners,
+//! `PREFIX_qpolicy.csv` (per Q row, how many learners prefer each kind).
+//!
 //! Snapshot paths ending in `.json` use the readable form; anything else is
 //! the compact binary form (ADR-0006). Timing printed by `run` covers
 //! `World::step` only (trace I/O excluded).
 
 use multiverse::{BranchId, Multiverse};
 use serde::Serialize;
+use simulation_core::policy::learner::{state, Q_UNIT};
+use simulation_core::policy::{forager_weights, REFLEX_UNIT};
 use simulation_core::{
-    DeathCause, Event, EventLog, Intervention, ParamsMode, PolicyKind, Who, World, WorldConfig,
+    Action, DeathCause, Event, EventLog, Intervention, ParamsMode, PolicyKind, PolicyTable,
+    TickReport, Who, World, WorldConfig,
 };
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -502,9 +513,185 @@ fn cmd_log(o: &Opts) -> R {
     Ok(())
 }
 
-/// Runs several seeds and summarises population dynamics over the last
-/// `--window` percent of ticks. Writes `<out>_summary.csv` (one row per seed)
-/// and `<out>_series.csv` (population every `--sample` ticks).
+/// Counts over a stretch of ticks: one sampling interval of the series, or
+/// the analysis window of the summary (EXP-002, ADR-0013 3-8).
+#[derive(Clone, Copy, Default)]
+struct Tally {
+    ticks: u64,
+    /// Agents alive at the start of each tick, summed: the decisions made.
+    agent_ticks: u64,
+    gathered: u64,
+    consumed: u64,
+    births: u64,
+    transfers: u64,
+    harms: u64,
+    signals: u64,
+    proposals: u64,
+    acceptances: u64,
+    rejections: u64,
+    deaths: [u64; DeathCause::COUNT],
+    /// Decisions by action kind (`Action::kind_index`), successful or not.
+    actions: [u64; Action::KIND_COUNT],
+}
+
+impl Tally {
+    /// Column names of `counts_csv`.
+    const COUNT_COLUMNS: &'static str = "gathered,consumed,births,transfers,harms,signals,proposals,acceptances,rejections,deaths_starvation,deaths_old_age,deaths_violence";
+
+    fn add(&mut self, alive_before: usize, r: &TickReport) {
+        self.ticks += 1;
+        self.agent_ticks += alive_before as u64;
+        self.gathered += r.food_gathered;
+        self.consumed += r.food_consumed;
+        self.births += u64::from(r.births);
+        self.transfers += u64::from(r.transfers);
+        self.harms += u64::from(r.harms);
+        self.signals += u64::from(r.signals);
+        self.proposals += u64::from(r.proposals);
+        self.acceptances += u64::from(r.acceptances);
+        self.rejections += u64::from(r.rejections);
+        for (acc, d) in self.deaths.iter_mut().zip(r.deaths_by_cause) {
+            *acc += u64::from(d);
+        }
+        for (acc, a) in self.actions.iter_mut().zip(r.actions) {
+            *acc += u64::from(a);
+        }
+    }
+
+    fn per_tick(&self, n: u64) -> f64 {
+        n as f64 / self.ticks.max(1) as f64
+    }
+
+    fn per_agent_tick(&self, n: u64) -> f64 {
+        n as f64 / self.agent_ticks.max(1) as f64
+    }
+
+    fn counts_csv(&self) -> String {
+        format!(
+            "{},{},{},{},{},{},{},{},{},{},{},{}",
+            self.gathered,
+            self.consumed,
+            self.births,
+            self.transfers,
+            self.harms,
+            self.signals,
+            self.proposals,
+            self.acceptances,
+            self.rejections,
+            self.deaths[DeathCause::Starvation.index()],
+            self.deaths[DeathCause::OldAge.index()],
+            self.deaths[DeathCause::Violence.index()],
+        )
+    }
+}
+
+/// Population mean of the living learners' Q tables, cell by cell (fixed
+/// point). `None` without learners. All tables have `learner_states × 8`
+/// cells (`check_invariants`).
+fn mean_q_table(world: &World) -> Option<Vec<f64>> {
+    let mut sum: Vec<f64> = Vec::new();
+    let mut n = 0u32;
+    for a in &world.agents {
+        if let Some(PolicyTable::Learner { q }) = &a.params.table {
+            if sum.is_empty() {
+                sum = vec![0.0; q.len()];
+            }
+            for (s, &v) in sum.iter_mut().zip(q) {
+                *s += f64::from(v);
+            }
+            n += 1;
+        }
+    }
+    if n == 0 {
+        return None;
+    }
+    for s in &mut sum {
+        *s /= f64::from(n);
+    }
+    Some(sum)
+}
+
+/// Mean |Q| per cell over the living learners, in reward units (one unit =
+/// 100 milli-energy): how far from the blank table the population has moved.
+fn q_abs_mean(world: &World) -> Option<f64> {
+    let (mut sum, mut cells) = (0.0f64, 0u64);
+    for a in &world.agents {
+        if let Some(PolicyTable::Learner { q }) = &a.params.table {
+            sum += q.iter().map(|&v| f64::from(v).abs()).sum::<f64>();
+            cells += q.len() as u64;
+        }
+    }
+    (cells > 0).then(|| sum / cells as f64 / Q_UNIT as f64)
+}
+
+/// Mean |w − w₀| per weight over the living reflex agents, in units of 1.0
+/// (`REFLEX_UNIT`), with w₀ the forager-equivalent weights every reflex
+/// lineage started from: how far mutation has carried the population.
+fn reflex_weight_drift(world: &World) -> Option<f64> {
+    let w0 = forager_weights();
+    let (mut sum, mut cells) = (0.0f64, 0u64);
+    for a in &world.agents {
+        if let Some(PolicyTable::Reflex { weights }) = &a.params.table {
+            sum += weights
+                .iter()
+                .zip(&w0)
+                .map(|(&w, &b)| f64::from(w - b).abs())
+                .sum::<f64>();
+            cells += weights.len() as u64;
+        }
+    }
+    (cells > 0).then(|| sum / cells as f64 / f64::from(REFLEX_UNIT))
+}
+
+/// Mean `hunger_permille` of the living (the one scalar mutation moves).
+fn hunger_mean(world: &World) -> Option<f64> {
+    let n = world.agents.len();
+    (n > 0).then(|| {
+        world
+            .agents
+            .iter()
+            .map(|a| f64::from(a.params.hunger_permille))
+            .sum::<f64>()
+            / n as f64
+    })
+}
+
+/// Per Q row, how many living learners would pick each action kind greedily
+/// (the row's unique maximum); the last column counts rows tied at the top,
+/// which the kernel breaks by lot.
+fn greedy_counts(world: &World, rows: usize) -> Vec<[u32; Action::KIND_COUNT + 1]> {
+    let mut out = vec![[0u32; Action::KIND_COUNT + 1]; rows];
+    for a in &world.agents {
+        if let Some(PolicyTable::Learner { q }) = &a.params.table {
+            for (row, cells) in q.chunks_exact(Action::KIND_COUNT).enumerate().take(rows) {
+                let best = cells.iter().copied().max().unwrap_or(0);
+                let mut winners = cells.iter().enumerate().filter(|(_, &v)| v == best);
+                let first = winners.next().map_or(0, |(k, _)| k);
+                let col = if winners.next().is_some() {
+                    Action::KIND_COUNT
+                } else {
+                    first
+                };
+                out[row][col] += 1;
+            }
+        }
+    }
+    out
+}
+
+fn opt_csv(v: Option<f64>, digits: usize) -> String {
+    v.map_or(String::new(), |x| format!("{x:.digits$}"))
+}
+
+/// Runs several seeds and summarises each over the last `--window` percent of
+/// ticks. Writes `<out>_summary.csv` (one row per seed: the EXP-001 columns,
+/// then the window's counts per tick and per agent-tick, death causes, action
+/// mix and the table statistics of EXP-002), `<out>_series.csv` (every
+/// `--sample` ticks and at the end: population, food and the counts of the
+/// interval since the previous row) and, when learners are alive at the end
+/// of any seed, `<out>_qpolicy.csv` (per Q row, how many living learners
+/// prefer each action kind; the row's bits are those of
+/// `policy::learner::state`, folded above `log2(learner_states)`).
 fn cmd_sweep(o: &Opts) -> R {
     let seeds: u64 = get(o, "seeds", 10)?;
     let seed_start: u64 = get(o, "seed-start", 0)?;
@@ -516,11 +703,15 @@ fn cmd_sweep(o: &Opts) -> R {
     let win_start = ticks - ticks * window_pct / 100;
 
     let mut summary = String::from(
-        "seed,policy,final_alive,extinct_at,win_mean,win_min,win_max,win_max_over_min,births,deaths_starvation,deaths_old_age,ticks_per_s\n",
+        "seed,policy,final_alive,extinct_at,win_mean,win_min,win_max,win_max_over_min,births,deaths_starvation,deaths_old_age,deaths_violence,mutation,learner_states,learner_epsilon,win_ticks,win_agent_ticks,win_consumed_per_agent_tick,win_gathered_per_agent_tick,win_births_per_tick,win_transfers_per_tick,win_harms_per_tick,win_signals_per_tick,win_proposals_per_tick,win_acceptances_per_tick,win_rejections_per_tick,win_deaths_starvation,win_deaths_old_age,win_deaths_violence,win_act_move,win_act_gather,win_act_consume,win_act_rest,win_act_transfer,win_act_store,win_act_harm,win_act_signal,hunger_permille_mean,q_abs_mean,q_delta_window,reflex_weight_drift,ticks_per_s\n",
     );
-    let mut series = String::from("seed,tick,alive,food\n");
+    let mut series = format!("seed,tick,alive,food,{}\n", Tally::COUNT_COLUMNS);
+    let mut qpolicy = String::from(
+        "seed,row,hungry,has_food,food_here,food_in_sight,adjacent,upper,heard,learners,move,gather,consume,rest,transfer,store,harm,signal,tie\n",
+    );
+    let mut any_learners = false;
     println!(
-        "{:>5} {:>7} {:>8} {:>9} {:>7} {:>7} {:>7} {:>8} {:>8} {:>7} {:>8}",
+        "{:>5} {:>7} {:>8} {:>9} {:>7} {:>7} {:>7} {:>8} {:>8} {:>7} {:>7} {:>8} {:>7} {:>7} {:>7} {:>8}",
         "seed",
         "final",
         "extinct",
@@ -531,31 +722,53 @@ fn cmd_sweep(o: &Opts) -> R {
         "births",
         "d.starv",
         "d.age",
+        "d.viol",
+        "cons/at",
+        "xfer/t",
+        "harm/t",
+        "sig/t",
         "ticks/s"
     );
     let mut means = Vec::new();
+    let mut extinctions = 0u64;
     for s in 0..seeds {
         let seed = seed_start + s;
         let mut world = build_world(seed, o)?;
+        let (mutation, states, epsilon) = (
+            world.config.mutation_enabled,
+            world.config.learner_states,
+            world.config.learner_epsilon_permille,
+        );
         let (mut sum, mut min, mut max, mut count) = (0u64, u64::MAX, 0u64, 0u64);
         let mut extinct_at: Option<u64> = None;
+        let mut interval = Tally::default();
+        let mut window = Tally::default();
+        let mut q_at_window_start: Option<Vec<f64>> = None;
         let t0 = Instant::now();
         for _ in 0..ticks {
             if world.tick % sample == 0 {
                 let _ = writeln!(
                     series,
-                    "{seed},{},{},{}",
+                    "{seed},{},{},{},{}",
                     world.tick,
                     world.agents.len(),
-                    world.resources.total_food()
+                    world.resources.total_food(),
+                    interval.counts_csv()
                 );
+                interval = Tally::default();
             }
-            world.step();
+            if world.tick == win_start {
+                q_at_window_start = mean_q_table(&world);
+            }
+            let alive_before = world.agents.len();
+            let r = world.step();
             if do_check {
                 check(&world)?;
             }
+            interval.add(alive_before, &r);
             let alive = world.agents.len() as u64;
             if world.tick > win_start {
+                window.add(alive_before, &r);
                 sum += alive;
                 min = min.min(alive);
                 max = max.max(alive);
@@ -566,6 +779,14 @@ fn cmd_sweep(o: &Opts) -> R {
             }
         }
         let secs = t0.elapsed().as_secs_f64();
+        let _ = writeln!(
+            series,
+            "{seed},{},{},{},{}",
+            world.tick,
+            world.agents.len(),
+            world.resources.total_food(),
+            interval.counts_csv()
+        );
         let mean = sum as f64 / count.max(1) as f64;
         let ratio = if min > 0 {
             max as f64 / min as f64
@@ -574,9 +795,24 @@ fn cmd_sweep(o: &Opts) -> R {
         };
         let l = &world.ledger;
         let extinct = extinct_at.map_or("-".to_string(), |t| t.to_string());
+        extinctions += u64::from(extinct_at.is_some());
         means.push(mean);
+        let q_delta = match (q_at_window_start, mean_q_table(&world)) {
+            (Some(a), Some(b)) if !a.is_empty() && a.len() == b.len() => Some(
+                a.iter().zip(&b).map(|(x, y)| (x - y).abs()).sum::<f64>()
+                    / a.len() as f64
+                    / Q_UNIT as f64,
+            ),
+            _ => None,
+        };
+        let cons = window.per_agent_tick(window.consumed);
+        let (xfer, harm, sig) = (
+            window.per_tick(window.transfers),
+            window.per_tick(window.harms),
+            window.per_tick(window.signals),
+        );
         println!(
-            "{:>5} {:>7} {:>8} {:>9.1} {:>7} {:>7} {:>8.3} {:>8} {:>8} {:>7} {:>8.0}",
+            "{:>5} {:>7} {:>8} {:>9.1} {:>7} {:>7} {:>8.3} {:>8} {:>8} {:>7} {:>7} {:>8.4} {:>7.2} {:>7.2} {:>7.2} {:>8.0}",
             seed,
             world.agents.len(),
             extinct,
@@ -587,29 +823,87 @@ fn cmd_sweep(o: &Opts) -> R {
             l.births,
             l.deaths_by_cause[DeathCause::Starvation.index()],
             l.deaths_by_cause[DeathCause::OldAge.index()],
+            l.deaths_by_cause[DeathCause::Violence.index()],
+            cons,
+            xfer,
+            harm,
+            sig,
             ticks as f64 / secs
         );
-        let _ = writeln!(
-            summary,
-            "{seed},{policy},{},{extinct},{mean:.2},{min},{max},{ratio:.4},{},{},{},{:.0}",
+        let mut row = format!(
+            "{seed},{policy},{},{extinct},{mean:.2},{min},{max},{ratio:.4},{},{},{},{},{},{states},{epsilon},{},{},{cons:.5},{:.5},{:.4},{xfer:.4},{harm:.4},{sig:.4},{:.4},{:.4},{:.4},{},{},{}",
             world.agents.len(),
             l.births,
             l.deaths_by_cause[DeathCause::Starvation.index()],
             l.deaths_by_cause[DeathCause::OldAge.index()],
+            l.deaths_by_cause[DeathCause::Violence.index()],
+            u8::from(mutation),
+            window.ticks,
+            window.agent_ticks,
+            window.per_agent_tick(window.gathered),
+            window.per_tick(window.births),
+            window.per_tick(window.proposals),
+            window.per_tick(window.acceptances),
+            window.per_tick(window.rejections),
+            window.deaths[DeathCause::Starvation.index()],
+            window.deaths[DeathCause::OldAge.index()],
+            window.deaths[DeathCause::Violence.index()],
+        );
+        for n in window.actions {
+            let _ = write!(row, ",{:.5}", window.per_agent_tick(n));
+        }
+        let _ = writeln!(
+            row,
+            ",{},{},{},{},{:.0}",
+            opt_csv(hunger_mean(&world), 1),
+            opt_csv(q_abs_mean(&world), 3),
+            opt_csv(q_delta, 3),
+            opt_csv(reflex_weight_drift(&world), 4),
             ticks as f64 / secs
         );
+        summary.push_str(&row);
+        if world.agents.iter().any(|a| a.policy == PolicyKind::Learner) {
+            any_learners = true;
+            for (r, counts) in greedy_counts(&world, usize::from(states))
+                .iter()
+                .enumerate()
+            {
+                let bit = |b: u16| u8::from(r as u16 & b != 0);
+                let learners: u32 = counts.iter().sum();
+                let mut line = format!(
+                    "{seed},{r},{},{},{},{},{},{},{},{learners}",
+                    bit(state::HUNGRY),
+                    bit(state::HAS_FOOD),
+                    bit(state::FOOD_HERE),
+                    bit(state::FOOD_IN_SIGHT),
+                    bit(state::ADJACENT),
+                    bit(state::UPPER),
+                    bit(state::HEARD)
+                );
+                for c in counts {
+                    let _ = write!(line, ",{c}");
+                }
+                qpolicy.push_str(&line);
+                qpolicy.push('\n');
+            }
+        }
     }
     let n = means.len() as f64;
     let grand = means.iter().sum::<f64>() / n;
     let sd = (means.iter().map(|m| (m - grand).powi(2)).sum::<f64>() / n).sqrt();
     println!(
-        "window = last {window_pct}% of {ticks} ticks; across {seeds} seeds: mean of window means {grand:.1}, sd {sd:.1}, cv {:.3}",
+        "window = last {window_pct}% of {ticks} ticks; across {seeds} seeds: mean of window means {grand:.1}, sd {sd:.1}, cv {:.3}, extinct {extinctions}/{seeds}",
         if grand > 0.0 { sd / grand } else { f64::NAN }
     );
     if let Some(prefix) = o.get("out") {
         std::fs::write(format!("{prefix}_summary.csv"), summary)?;
         std::fs::write(format!("{prefix}_series.csv"), series)?;
-        println!("wrote {prefix}_summary.csv and {prefix}_series.csv");
+        let mut wrote = format!("wrote {prefix}_summary.csv and {prefix}_series.csv");
+        if any_learners {
+            std::fs::write(format!("{prefix}_qpolicy.csv"), qpolicy)?;
+            let _ = write!(wrote, " and {prefix}_qpolicy.csv");
+        }
+        println!("{wrote}");
     }
     Ok(())
 }
