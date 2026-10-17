@@ -155,4 +155,4 @@ ADR-0011 で走査を行スライス化（ハッシュ不変、-16%）→ 2 パ�
 
 ## 次のタスク
 
-docs/TODO.md と ADR-0010（Phase 2 = Toy 1 のタスク表）を参照。最初に着手するのは 2a-1（`Intervention`）と 2b-2（UI 骨格）で、並行可能。
+**Phase 3（Agent Cognition）**: 設計は [ADR-0013](adr/0013-phase3-agent-cognition.md)、タスクは docs/TODO.md。最初に着手するのは 3-1（空間インデックスと他者観測）。3-9a（UI の社会マーカー）は 3-2 以降に並行できる。

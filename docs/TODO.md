@@ -20,8 +20,19 @@ Phase 2 の計画は ADR-0010（Toy 1）に従う。
 - [ ] wasm サイズ（205 KB）: serde_json を境界から外す（介入とイベントを構造体で渡す）か、`--profile wasm` 相当の設定を wasm-pack に通せば縮む見込み。計測してから。
 - [ ] ブラウザでの性能計測（1,000〜2,000 体で ≥ 60 tick/s）。
 
-## Phase 3 以降
+## Phase 3: Agent Cognition（ADR-0013 のタスク表に従う）
 
-- [ ] 他者観測（空間インデックス）、Signal 行動、簡易交渉プロトコル。
-- [ ] 学習方策（表形式 RL または小型 NN）と Forager/Random の比較。
-- [ ] 突然変異 ON の事前登録実験（Phase 6）。
+- [ ] 3-1 空間インデックス + `Observation::neighbors()` + `Perception` 設定（ゴールデン不変、step +20% 以内を計測）
+- [ ] 3-2 `Transfer` / `Store` / `Harm`、`DeathCause::Violence`、`Transferred` / `Harmed` イベント、`Acted` 記録（旧 2a-3 を含む）
+- [ ] 3-3 `Signal(Say)`、記憶リング `recent[K]` のカーネル更新
+- [ ] 3-4 交渉メッセージ `Propose / Accept / Reject`（配達と台帳のみ、履行は強制しない）
+- [ ] 3-5 `PolicyKind::{Reflex, Learner}` の枠、`Intervention::SetPolicy`、CLI の方策拡張
+- [ ] 3-6 Reflex 方策（固定小数点、Forager 等価の初期重み、突然変異 ON）
+- [ ] 3-7 Learner 方策（表形式 Q、整数、継承）
+- [ ] 3-8 EXP-002 事前登録 → 実行 → 記録
+- [ ] 3-9a/b/c UI: 社会マーカー・インスペクタの記憶/相互作用、交渉スレッド、fixed vs learning 比較
+- [ ] 3-10 文書（ゴールデン表、STATUS、RISKS 追補、TUTORIAL 追補）
+
+## Phase 6 以降
+
+- [ ] 突然変異 ON の事前登録実験、固定小数点 NN の検討（ADR-0013 で先送り）。

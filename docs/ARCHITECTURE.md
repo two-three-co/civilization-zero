@@ -27,7 +27,7 @@ crates/simulation-core     ← Deterministic World Kernel。外部依存は serd
 | `multiverse` | 再生（再実行 + 台帳照合）、`Multiverse` / `Branch`（head + 台帳 + 周期スナップショット）、fork と系譜 | 実装済み（ADR-0012） |
 | `web/`（npm, 非 Cargo） | Toy 1 UI: Vite + React + TS、UI ↔ Worker プロトコル、カーネル Worker（wasm）とモック Worker | 骨格 実装済み（2b-2）、カーネル接続済み（2b-1） |
 | `cz-web` | wasm-bindgen パッケージ: `WasmWorld` = `Multiverse` + cursor（巻き戻し用の復元ビュー） | 実装済み（2b-1） |
-| `cognition` | 学習する方策・記憶・通信 | Phase 3 |
+| （`simulation-core/src/policy/`） | 方策は遷移関数の一部なので別クレートにしない（ADR-0013 D1）。Phase 3 で `forager / random / reflex / learner` に分割し、他者観測・相互作用・記憶・通信もカーネル内 | Phase 3（ADR-0013） |
 | `nomos` | Institution DSL / 解釈器 | Phase 4 |
 
 ## カーネルのデータモデル
