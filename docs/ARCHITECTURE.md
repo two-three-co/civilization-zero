@@ -47,8 +47,9 @@ ECS ライブラリは使わない（ADR-0001）。
 ## 1 tick の実行順序（ADR-0002, ADR-0008）
 
 ```
-S(t) ──Decide(純関数, 並列化可)──▶ Intent[]  ──Apply──▶ S(t+1)
-         ↑ RngStream(seed,tick,agent,Decide)
+S(t) ──Index──▶ SpatialIndex（派生状態、保存しない）
+     ──Decide(純関数, 並列化可)──▶ Intent[]  ──Apply──▶ S(t+1)
+         ↑ RngStream(seed,tick,agent,Decide)、Observation::neighbors() は Index を読むだけ
 Apply:
   2 Consume   在庫→エネルギー（私的、競合なし）
   3 Gather    S(t) の位置で解決。同一セルの請求者を抽選キー順に逐次配分
@@ -72,7 +73,8 @@ Apply:
 保証範囲: 同一クレートバージョン + 同一 `WorldConfig`（seed 含む）→ 同一状態列。
 根拠: 浮動小数点なし、HashMap 走査なし、乱数は座標関数、並列 decide は順序保存 collect。
 検証: `tests/determinism.rs`（同一シード比較、ゴールデンハッシュ、debug/release 両方で同値、serial=parallel）。
-wasm32 と native の一致は ADR-0009 で計測。
+ゴールデンは `World::dynamics_hash`（`state_hash` から config を除いたもの）に対して取る。config のフィールド追加は符号化の変更であって遷移の変更ではないため。
+wasm32 と native の一致は ADR-0009 で計測し、CI（`wasm-pack test --node`）で照合し続けている。
 
 ## シリアライズ（ADR-0006）
 

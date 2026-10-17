@@ -85,6 +85,7 @@ fn bench_decide(c: &mut Criterion) {
 fn bench_hash(c: &mut Criterion) {
     let w = warmed_world(1_000, 128);
     c.bench_function("state_hash/1000", |b| b.iter(|| w.state_hash()));
+    c.bench_function("spatial_index/1000", |b| b.iter(|| w.spatial_index()));
     c.bench_function("snapshot_roundtrip/1000", |b| {
         b.iter(|| World::from_snapshot(&w.to_snapshot()).unwrap())
     });

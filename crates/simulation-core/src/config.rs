@@ -56,6 +56,43 @@ pub struct WorldConfig {
     pub mutation_enabled: bool,
     /// Largest change per parameter per birth, in permille.
     pub mutation_step_permille: u16,
+
+    /// What agents can perceive about each other (ADR-0013 D2). `default`
+    /// so configs written before the field existed still load; it is always
+    /// written (postcard cannot skip fields).
+    #[serde(default)]
+    pub perception: Perception,
+}
+
+/// Information limits on observing other agents. Position and distance are
+/// always visible within `social_radius`; the rest is opt-in so that memory
+/// and communication capacity can be experimental parameters (H2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Perception {
+    /// Manhattan radius within which other agents are observable.
+    pub social_radius: u16,
+    pub see_policy: bool,
+    pub see_inventory: bool,
+    pub see_energy: bool,
+}
+
+impl Default for Perception {
+    fn default() -> Self {
+        Self {
+            social_radius: 2,
+            see_policy: false,
+            see_inventory: true,
+            see_energy: false,
+        }
+    }
+}
+
+impl Perception {
+    pub const MAX_RADIUS: u16 = 32;
+
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 impl Default for WorldConfig {
@@ -88,6 +125,7 @@ impl Default for WorldConfig {
             initial_params: PolicyParams::default(),
             mutation_enabled: false,
             mutation_step_permille: 50,
+            perception: Perception::default(),
         }
     }
 }
@@ -105,7 +143,7 @@ impl std::error::Error for ConfigError {}
 
 impl WorldConfig {
     pub fn validate(&self) -> Result<(), ConfigError> {
-        let checks: [(bool, &'static str); 15] = [
+        let checks: [(bool, &'static str); 16] = [
             (
                 self.width > 0 && self.height > 0,
                 "width/height must be > 0",
@@ -153,6 +191,10 @@ impl WorldConfig {
             (
                 self.mutation_step_permille <= PolicyParams::PERMILLE_MAX,
                 "mutation_step_permille must be <= 1000",
+            ),
+            (
+                self.perception.social_radius <= Perception::MAX_RADIUS,
+                "perception.social_radius must be <= 32",
             ),
         ];
         for (ok, msg) in checks {

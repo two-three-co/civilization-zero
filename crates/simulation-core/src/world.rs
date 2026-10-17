@@ -33,6 +33,7 @@ use crate::policy::{decide, Intent, Observation, PolicyKind};
 use crate::resources::ResourceGrid;
 use crate::rng::{RngStream, Stream};
 use crate::space::{Bounds, Pos};
+use crate::spatial::SpatialIndex;
 use serde::{Deserialize, Serialize};
 
 /// Running totals that make conservation laws checkable at any tick.
@@ -159,27 +160,49 @@ impl World {
         self.resources.bounds
     }
 
-    fn decide_one(&self, a: &Agent) -> Intent {
-        let obs = Observation {
-            agent: a,
+    /// The spatial index of the current tick (ADR-0013 D2): derived from
+    /// `agents`, rebuilt on demand, never stored.
+    pub fn spatial_index(&self) -> SpatialIndex {
+        SpatialIndex::build(self.bounds(), &self.agents)
+    }
+
+    /// The read-only view `agent` decides from, given this tick's index.
+    pub fn observation<'a>(&'a self, agent: &'a Agent, index: &'a SpatialIndex) -> Observation<'a> {
+        Observation {
+            agent,
             resources: &self.resources,
             bounds: self.bounds(),
             config: &self.config,
-        };
+            agents: &self.agents,
+            index,
+        }
+    }
+
+    fn decide_one(&self, a: &Agent, index: &SpatialIndex) -> Intent {
+        let obs = self.observation(a, index);
         let mut rng = RngStream::new(self.config.seed, self.tick, a.id.0, Stream::Decide);
         decide(&obs, &mut rng)
     }
 
     /// Phase 1 of a tick: compute every agent's intent without mutating state.
     pub fn decide_all(&self) -> Vec<Intent> {
-        self.agents.iter().map(|a| self.decide_one(a)).collect()
+        let index = self.spatial_index();
+        self.agents
+            .iter()
+            .map(|a| self.decide_one(a, &index))
+            .collect()
     }
 
     #[cfg(feature = "parallel")]
     pub fn decide_all_parallel(&self) -> Vec<Intent> {
         use rayon::prelude::*;
-        // `collect` on an indexed parallel iterator preserves input order.
-        self.agents.par_iter().map(|a| self.decide_one(a)).collect()
+        let index = self.spatial_index();
+        // `collect` on an indexed parallel iterator preserves input order;
+        // the index is built once and only read.
+        self.agents
+            .par_iter()
+            .map(|a| self.decide_one(a, &index))
+            .collect()
     }
 
     /// Advance one tick with the serial decision phase.
@@ -569,8 +592,22 @@ impl World {
     /// Stable 64-bit fingerprint of the full state (FNV-1a over a canonical
     /// encoding). Independent of platform pointer width and of `std::hash`.
     pub fn state_hash(&self) -> u64 {
+        self.hash_with(true)
+    }
+
+    /// `state_hash` without the config: a fingerprint of the dynamics only.
+    /// Golden tests pin this one, so adding a config field (an encoding
+    /// change) cannot be mistaken for a change of the transition function,
+    /// while any change in what agents did or where food is shows up.
+    pub fn dynamics_hash(&self) -> u64 {
+        self.hash_with(false)
+    }
+
+    fn hash_with(&self, include_config: bool) -> u64 {
         let mut h = Fnv64::new();
-        h.bytes(&serde_json::to_vec(&self.config).expect("config serialises"));
+        if include_config {
+            h.bytes(&serde_json::to_vec(&self.config).expect("config serialises"));
+        }
         h.u64(self.tick);
         h.u64(self.next_agent_id);
         let l = &self.ledger;

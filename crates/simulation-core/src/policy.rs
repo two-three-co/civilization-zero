@@ -6,11 +6,12 @@
 //! baseline (needed as a null model for later experiments).
 
 use crate::action::Action;
-use crate::agent::{Agent, Memory};
+use crate::agent::{Agent, AgentId, Memory};
 use crate::config::WorldConfig;
 use crate::resources::ResourceGrid;
 use crate::rng::RngStream;
 use crate::space::{Bounds, Dir, Pos};
+use crate::spatial::SpatialIndex;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -61,11 +62,47 @@ pub struct Observation<'a> {
     pub resources: &'a ResourceGrid,
     pub bounds: Bounds,
     pub config: &'a WorldConfig,
+    /// All agents of the tick (id order) and the index built over them.
+    pub agents: &'a [Agent],
+    pub index: &'a SpatialIndex,
+}
+
+/// Another agent as seen through `Perception`: position and distance are
+/// always known, the rest only when the config allows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Neighbor {
+    pub id: AgentId,
+    pub pos: Pos,
+    /// Manhattan distance from the observer.
+    pub distance: u32,
+    pub policy: Option<PolicyKind>,
+    pub inventory: Option<u32>,
+    pub energy: Option<i64>,
 }
 
 impl Observation<'_> {
     pub fn food_here(&self) -> u32 {
         self.resources.food_at(self.agent.pos)
+    }
+
+    /// Other agents within `perception.social_radius`, nearest first and by
+    /// id within a distance (ADR-0013 D2). Never includes the observer.
+    pub fn neighbors(&self) -> Vec<Neighbor> {
+        let p = &self.config.perception;
+        self.index
+            .within(self.agent.pos, p.social_radius)
+            .into_iter()
+            .map(|(distance, i)| (distance, &self.agents[i]))
+            .filter(|(_, a)| a.id != self.agent.id)
+            .map(|(distance, a)| Neighbor {
+                id: a.id,
+                pos: a.pos,
+                distance,
+                policy: p.see_policy.then_some(a.policy),
+                inventory: p.see_inventory.then_some(a.inventory),
+                energy: p.see_energy.then_some(a.energy),
+            })
+            .collect()
     }
 }
 

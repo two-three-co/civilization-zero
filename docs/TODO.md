@@ -22,7 +22,7 @@ Phase 2 の計画は ADR-0010（Toy 1）に従う。
 
 ## Phase 3: Agent Cognition（ADR-0013 のタスク表に従う）
 
-- [ ] 3-1 空間インデックス + `Observation::neighbors()` + `Perception` 設定（ゴールデン不変、step +20% 以内を計測）
+- [x] 3-1 空間インデックス + `Observation::neighbors()` + `Perception` 設定（済 2026-10-17: ゴールデン不変、step +11〜16%）
 - [ ] 3-2 `Transfer` / `Store` / `Harm`、`DeathCause::Violence`、`Transferred` / `Harmed` イベント、`Acted` 記録（旧 2a-3 を含む）
 - [ ] 3-3 `Signal(Say)`、記憶リング `recent[K]` のカーネル更新
 - [ ] 3-4 交渉メッセージ `Propose / Accept / Reject`（配達と台帳のみ、履行は強制しない）

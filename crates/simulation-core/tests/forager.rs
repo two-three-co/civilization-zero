@@ -5,20 +5,13 @@ mod common;
 
 use common::*;
 use simulation_core::rng::{RngStream, Stream};
-use simulation_core::{policy, Action, Dir, Intent, Observation, Pos, World, WorldConfig};
-
-fn observe(w: &World, agent_index: usize) -> Observation<'_> {
-    Observation {
-        agent: &w.agents[agent_index],
-        resources: &w.resources,
-        bounds: w.bounds(),
-        config: &w.config,
-    }
-}
+use simulation_core::{policy, Action, Dir, Intent, Pos, World, WorldConfig};
 
 fn decide_at(w: &World, tick: u64) -> Intent {
+    let index = w.spatial_index();
+    let obs = w.observation(&w.agents[0], &index);
     let mut rng = RngStream::new(w.config.seed, tick, w.agents[0].id.0, Stream::Decide);
-    policy::decide(&observe(w, 0), &mut rng)
+    policy::decide(&obs, &mut rng)
 }
 
 #[test]

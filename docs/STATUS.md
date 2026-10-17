@@ -1,6 +1,6 @@
 # 実装進捗（新しいセッションはまずここを読む）
 
-最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · **Phase 2 = Toy 1 完了（2a-1, 2a-2, 2a-4〜2a-6, 2b-1〜2b-7 済、配信中: https://two-three-co.github.io/civilization-zero/ ）。2a-3 は Phase 3 へ**（ADR-0010）· カーネル版 `simulation-core 0.1.0`
+最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · **Phase 2 = Toy 1 完了（配信中: https://two-three-co.github.io/civilization-zero/ ）。Phase 3（Agent Cognition, ADR-0013）進行中: 3-1 済**（ADR-0010）· カーネル版 `simulation-core 0.1.0`
 リポジトリ: https://github.com/two-three-co/civilization-zero（private）· CI: GitHub Actions（fmt / clippy / test debug+release / wasm ビルド）
 
 ## 状態の区別
@@ -67,6 +67,13 @@
 | ユーザーがブラウザで確認するデモ = Toy 1、配信 URL を記録 | 上記 URL |
 
 **Phase 2 = Toy 1 完了（2026-10-17）。** 残件 2a-3（Store/Transfer + `Acted`）は Phase 3 の通信・交換と一緒に扱う。
+
+## Phase 3（Agent Cognition）進捗 — ADR-0013 のタスク表に対応
+
+| # | タスク | 状態 | 根拠 |
+|---|---|---|---|
+| 3-1 | 空間インデックス（`src/spatial.rs`、tick 開始時に `agents` から計数ソートで構築、派生状態で保存しない）、`Observation::neighbors()`（`social_radius` 内を (距離, id) 順、自分を除く）、`Perception { social_radius, see_policy, see_inventory, see_energy }`（既定 2 / off / on / off、`serde(default)` で旧 config も読める） | 済 (2026-10-17) | `tests/neighbors.rs`（4 テスト + proptest 64 ケースで総当たりと一致）、`spatial.rs` 単体 2 本。**既定世界の遷移は不変**（旧符号化で state_hash を再計算し `0xf16cb4be6e7ed69b` に一致）。計測: 構築 **10 µs**（1,310 体, 128²）、step 132 → **147〜154 µs/tick（+11〜16%、2 回計測、基準 +20% 以内）**、decide 0.97 → 1.10〜1.18 ms/10 tick |
+| 3-2 〜 3-10 | 相互作用行動、記憶、通信・交渉、方策の枠と SetPolicy、Reflex、Learner、EXP-002、UI、文書 | 未 | — |
 
 ## 計測値（Apple M1, rustc 1.99.1, release, 2026-10-17）
 
@@ -144,7 +151,7 @@ ADR-0011 で走査を行スライス化（ハッシュ不変、-16%）→ 2 パ�
 
 ## ゴールデンハッシュ
 
-`World::new(seed 42, default).run(200).state_hash()`。遷移関数を意図的に変えたときはこの値を更新し、ここに日付と理由を残す。
+`World::new(seed 42, default).run(200).dynamics_hash()`（2026-10-17 の 3-1 以降。それ以前は `state_hash` = config を含む値）。遷移関数を意図的に変えたときはこの値を更新し、ここに日付と理由を残す。config のフィールド追加では変わらない。
 
 | 日付 | 値 | 理由 |
 |---|---|---|
@@ -152,6 +159,7 @@ ADR-0011 で走査を行スライス化（ハッシュ不変、-16%）→ 2 パ�
 | 2026-10-17 | 0xd1890b311b92678e | ADR-0008: 出生・寿命・死因・params・初期年齢乱数化・抽選キー遅延化、スナップショット形式 2 |
 | 2026-10-17 | 0x6e767bd160525c8e | ADR-0010 2a-1: `state_hash` の符号化に台帳の `food_intervened` / `energy_intervened` / `interventions` を追加、スナップショット形式 3。**遷移関数は不変**（旧符号化で再計算すると前行の値に一致することを確認済み） |
 | 2026-10-17 | 0xf16cb4be6e7ed69b | ADR-0011: Forager の視界走査を 2 パス化。勝者の分布は不変（`tests/forager.rs` の一様性テスト）、乱数の消費列だけが変わる。行スライス化（commit ee515f4）はハッシュ不変だった |
+| 2026-10-17 | 0xb7b914705736f95f | ADR-0013 3-1: ゴールデンを **config を含まない `dynamics_hash`** に再定義（config に `perception` を追加したため `state_hash` は変わる）。**遷移は不変**: 旧符号化（perception なしの config JSON）で `state_hash` を再計算すると前行の値に一致 |
 
 ## 次のタスク
 

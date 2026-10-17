@@ -133,6 +133,12 @@ impl WasmWorld {
         format!("{:016x}", self.view().state_hash())
     }
 
+    /// `dynamics_hash` of the view (state hash without the config), which the
+    /// golden tests pin.
+    pub fn dynamics_hash_hex(&self) -> String {
+        format!("{:016x}", self.view().dynamics_hash())
+    }
+
     /// Advances the view by `ticks`. Behind the head this re-executes the
     /// branch's history (checked against the ledger); at the head it
     /// extends the branch, recording events and snapshots.

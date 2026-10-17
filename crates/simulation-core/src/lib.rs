@@ -19,14 +19,16 @@ pub mod policy;
 pub mod resources;
 pub mod rng;
 pub mod space;
+pub mod spatial;
 pub mod world;
 
 pub use action::{Action, Failure, Outcome};
 pub use agent::{Agent, AgentId, Memory};
-pub use config::WorldConfig;
+pub use config::{Perception, WorldConfig};
 pub use event::{DeathCause, Event};
 pub use event_log::{EventLog, LogError};
 pub use intervention::{Intervention, InterventionError};
-pub use policy::{Intent, Observation, PolicyKind, PolicyParams};
+pub use policy::{Intent, Neighbor, Observation, PolicyKind, PolicyParams};
 pub use space::{Dir, Pos};
+pub use spatial::SpatialIndex;
 pub use world::{Ledger, SnapshotError, TickReport, World};
