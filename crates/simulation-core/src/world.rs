@@ -28,6 +28,7 @@ use crate::action::{Action, Failure, Outcome};
 use crate::agent::{Agent, AgentId, Memory};
 use crate::config::{ConfigError, WorldConfig};
 use crate::event::{DeathCause, Event};
+use crate::intervention::{Intervention, InterventionError};
 use crate::policy::{decide, Intent, Observation, PolicyKind};
 use crate::resources::ResourceGrid;
 use crate::rng::{RngStream, Stream};
@@ -47,6 +48,11 @@ pub struct Ledger {
     pub births: u64,
     pub deaths: u64,
     pub deaths_by_cause: [u64; DeathCause::COUNT],
+    /// Net food added (+) or removed (-) by interventions.
+    pub food_intervened: i64,
+    /// Net energy added (+) or removed (-) by interventions.
+    pub energy_intervened: i64,
+    pub interventions: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -403,6 +409,80 @@ impl World {
         report
     }
 
+    /// Applies an external change between ticks (ADR-0010 2a-1) and returns
+    /// its ledger record. Never runs inside `apply`, uses no randomness, and
+    /// on error leaves the state untouched.
+    pub fn intervene(&mut self, iv: Intervention) -> Result<Event, InterventionError> {
+        use InterventionError::Invalid;
+        match iv {
+            Intervention::Drought {
+                regrow_amount,
+                regrow_interval,
+            } => {
+                if regrow_interval == 0 {
+                    return Err(Invalid("regrow_interval must be > 0"));
+                }
+                self.config.regrow_amount = regrow_amount;
+                self.config.regrow_interval = regrow_interval;
+            }
+            Intervention::ScaleFood { permille } => {
+                if permille > Intervention::MAX_PERMILLE {
+                    return Err(Invalid("permille must be <= 10000"));
+                }
+                let mut delta: i128 = 0;
+                for f in &mut self.resources.food {
+                    let scaled = (*f as u64 * permille as u64 / 1000).min(u32::MAX as u64) as u32;
+                    delta += scaled as i128 - *f as i128;
+                    *f = scaled;
+                }
+                self.ledger.food_intervened += delta as i64;
+            }
+            Intervention::SpawnAgents { n, pos, policy } => {
+                if n == 0 {
+                    return Err(Invalid("n must be > 0"));
+                }
+                if !self.bounds().contains(pos) {
+                    return Err(Invalid("pos out of bounds"));
+                }
+                let (energy, health, params) = (
+                    self.config.initial_energy,
+                    self.config.max_health,
+                    self.config.initial_params,
+                );
+                for _ in 0..n {
+                    self.agents.push(Agent {
+                        id: AgentId(self.next_agent_id),
+                        pos,
+                        energy,
+                        health,
+                        inventory: 0,
+                        age: 0,
+                        policy,
+                        params,
+                        memory: Memory::default(),
+                    });
+                    self.next_agent_id += 1;
+                }
+                self.ledger.energy_intervened += n as i64 * energy;
+            }
+            Intervention::RemoveAgent { id } => {
+                let i = self
+                    .agents
+                    .binary_search_by_key(&id, |a| a.id)
+                    .map_err(|_| InterventionError::NoSuchAgent(id))?;
+                let a = self.agents.remove(i);
+                let cell = self.bounds().index(a.pos);
+                self.resources.food[cell] += a.inventory;
+                self.ledger.energy_intervened -= a.energy;
+            }
+        }
+        self.ledger.interventions += 1;
+        Ok(Event::Intervened {
+            tick: self.tick,
+            intervention: iv,
+        })
+    }
+
     pub fn total_energy(&self) -> i64 {
         self.agents.iter().map(|a| a.energy).sum()
     }
@@ -452,8 +532,10 @@ impl World {
             }
         }
         let l = &self.ledger;
-        let food_now = self.resources.total_food() + self.total_inventory();
-        let food_expected = l.food_initial + l.food_regrown - l.food_consumed;
+        let food_now = (self.resources.total_food() + self.total_inventory()) as i128;
+        let food_expected = l.food_initial as i128 + l.food_regrown as i128
+            - l.food_consumed as i128
+            + l.food_intervened as i128;
         if food_now != food_expected {
             errs.push(format!(
                 "food not conserved: have {food_now}, ledger says {food_expected}"
@@ -461,7 +543,8 @@ impl World {
         }
         let energy_now = self.total_energy();
         let energy_expected =
-            l.energy_initial + l.energy_gained - l.energy_spent - l.energy_written_off;
+            l.energy_initial + l.energy_gained - l.energy_spent - l.energy_written_off
+                + l.energy_intervened;
         if energy_now != energy_expected {
             errs.push(format!(
                 "energy not conserved: have {energy_now}, ledger says {energy_expected}"
@@ -508,6 +591,9 @@ impl World {
             l.energy_gained,
             l.energy_spent,
             l.energy_written_off,
+            l.food_intervened,
+            l.energy_intervened,
+            l.interventions as i64,
         ] {
             h.u64(v as u64);
         }
@@ -562,8 +648,8 @@ impl World {
 }
 
 /// Bumped whenever `World`'s serialised shape changes. 2: life cycle fields
-/// (ADR-0008).
-pub const SNAPSHOT_FORMAT: u32 = 2;
+/// (ADR-0008). 3: intervention ledger fields (ADR-0010 2a-1).
+pub const SNAPSHOT_FORMAT: u32 = 3;
 
 #[derive(Serialize, Deserialize)]
 struct Snapshot {

@@ -35,7 +35,8 @@ crates/simulation-core     ← Deterministic World Kernel。外部依存は serd
 - **Agent**: `id, pos, energy(milli), health, inventory, age, policy, params, memory{target}`。
   `params`（`PolicyParams { hunger_permille }`）は親から継承、突然変異は既定 OFF（ADR-0008）。
 - **Ledger**: 食料・エネルギーの流入/流出、出生数、死因別死亡数を累計し、保存則を任意の tick で検証可能にする。
-- **Event**: `Born` / `Died` の自己完結レコード（tick 入り、serde 内部タグ）。`TickReport.events` で返す。Phase 2 の台帳形式そのもの。
+- **Event**: `Born` / `Died` / `Intervened` の自己完結レコード（tick 入り、serde 内部タグ）。前 2 つは `TickReport.events` で、`Intervened` は `World::intervene()` の戻り値で返す。Phase 2 の台帳形式そのもの。
+- **Intervention**（ADR-0010 2a-1）: `Drought` / `ScaleFood` / `SpawnAgents` / `RemoveAgent`。tick の合間に `World::intervene()` で適用。乱数を使わず、無効なら状態を変えずに `Err`。差分は台帳の `food_intervened` / `energy_intervened` に計上され、保存則の検査式に入る。
 
 ECS ライブラリは使わない（ADR-0001）。
 
@@ -71,7 +72,7 @@ wasm32 と native の一致は ADR-0009 で計測。
 
 ## シリアライズ（ADR-0006）
 
-- スナップショット: `{format: 2, state_hash, world}` の JSON。読み込み時に config 検証 → 不変条件 → ハッシュ照合。
+- スナップショット: `{format: 3, state_hash, world}` の JSON。読み込み時に config 検証 → 不変条件 → ハッシュ照合。
 - `state_hash`: 正準エンコーディング上の FNV-1a 64bit。`std::hash` には依存しない。
 - trace（ビューア用, format 2）: `cz run --trace` が出す軽量形式。カーネルの公開形式ではない。
 

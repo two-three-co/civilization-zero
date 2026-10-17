@@ -6,6 +6,7 @@
 //! outcome }` next to these; nothing here should need to change for that.
 
 use crate::agent::AgentId;
+use crate::intervention::Intervention;
 use crate::space::Pos;
 use serde::{Deserialize, Serialize};
 
@@ -48,12 +49,19 @@ pub enum Event {
         /// Carried food returned to the cell the agent died on.
         food_dropped: u32,
     },
+    /// An external change applied by `World::intervene` before `tick` ran.
+    Intervened {
+        tick: u64,
+        intervention: Intervention,
+    },
 }
 
 impl Event {
     pub fn tick(&self) -> u64 {
         match self {
-            Event::Born { tick, .. } | Event::Died { tick, .. } => *tick,
+            Event::Born { tick, .. }
+            | Event::Died { tick, .. }
+            | Event::Intervened { tick, .. } => *tick,
         }
     }
 }

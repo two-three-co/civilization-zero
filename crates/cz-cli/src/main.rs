@@ -3,6 +3,7 @@
 //!   cz run    [--seed N] [--agents N] [--side N] [--ticks N]
 //!             [--policy forager|random|mixed] [--check]
 //!             [--trace PATH --every K] [--snapshot PATH]
+//!             [--drought-at TICK [--drought-amount N] [--drought-interval N]]
 //!   cz resume --snapshot PATH [--ticks N] [--check]
 //!   cz sweep  [--seeds N] [--seed-start S] [--ticks N] [--policy ...]
 //!             [--window PCT] [--sample K] [--out PREFIX] [--check]
@@ -10,7 +11,7 @@
 //! Timing printed by `run` covers `World::step` only (trace I/O excluded).
 
 use serde::Serialize;
-use simulation_core::{DeathCause, PolicyKind, World, WorldConfig};
+use simulation_core::{DeathCause, Intervention, PolicyKind, World, WorldConfig};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
@@ -35,7 +36,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  cz run [--seed N] [--agents N] [--side N] [--ticks N] [--policy forager|random|mixed]\n         [--check] [--trace PATH --every K] [--snapshot PATH]\n  cz resume --snapshot PATH [--ticks N] [--check]\n  cz sweep [--seeds N] [--seed-start S] [--ticks N] [--policy ...] [--window PCT]\n           [--sample K] [--out PREFIX] [--check]"
+        "usage:\n  cz run [--seed N] [--agents N] [--side N] [--ticks N] [--policy forager|random|mixed]\n         [--check] [--trace PATH --every K] [--snapshot PATH]\n         [--drought-at TICK [--drought-amount N] [--drought-interval N]]\n  cz resume --snapshot PATH [--ticks N] [--check]\n  cz sweep [--seeds N] [--seed-start S] [--ticks N] [--policy ...] [--window PCT]\n           [--sample K] [--out PREFIX] [--check]"
     );
     std::process::exit(2)
 }
@@ -123,6 +124,16 @@ fn simulate(mut world: World, o: &Opts) -> R {
     let do_check = o.contains_key("check");
     let every: u64 = get(o, "every", 5)?.max(1);
     let mut trace = o.get("trace").map(|_| Trace::new(&world));
+    // A single scripted intervention, enough to eyeball a drought in the viewer.
+    let drought_at: Option<u64> = o
+        .get("drought-at")
+        .map(|v| v.parse())
+        .transpose()
+        .map_err(|_| "bad value for --drought-at")?;
+    let drought = Intervention::Drought {
+        regrow_amount: get(o, "drought-amount", 0)?,
+        regrow_interval: get(o, "drought-interval", world.config.regrow_interval)?,
+    };
 
     println!(
         "seed={} grid={}x{} agents={} ticks={} check={}",
@@ -146,6 +157,10 @@ fn simulate(mut world: World, o: &Opts) -> R {
             if world.tick % every == 0 {
                 t.push(&world);
             }
+        }
+        if drought_at == Some(world.tick) {
+            let e = world.intervene(drought)?;
+            println!("intervention: {}", serde_json::to_string(&e)?);
         }
         agent_steps += world.agents.len() as u64;
         let t0 = Instant::now();

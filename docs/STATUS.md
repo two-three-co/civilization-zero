@@ -1,12 +1,12 @@
 # 実装進捗（新しいセッションはまずここを読む）
 
-最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · 次は Phase 2 = Toy 1（ADR-0010）· カーネル版 `simulation-core 0.1.0`
+最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · **Phase 2 = Toy 1 進行中（2a-1 済）**（ADR-0010）· カーネル版 `simulation-core 0.1.0`
 リポジトリ: https://github.com/two-three-co/civilization-zero（private）· CI: GitHub Actions（fmt / clippy / test debug+release / wasm ビルド）
 
 ## 状態の区別
 
 - **実装済み・テスト通過・計測済み**: 下表の Phase 1 項目、ADR-0008 のライフサイクル、ADR-0009 の wasm 計測。
-- **設計のみ**: Phase 2（ADR-0010 のタスク表）、Phase 3 以降。
+- **設計のみ**: Phase 2 の 2a-2 以降（ADR-0010 のタスク表）、Phase 3 以降。
 - **未着手**: Multiverse / Nomos / Genesis の全コード、`crates/cz-web`。
 
 ## Phase 1 チェックリスト
@@ -22,7 +22,7 @@
 | 7 | 初期行動方針 | 済（Forager + Random 帰無モデル、`PolicyParams` 継承） | `policy.rs`, ADR-0005/0008 |
 | 8 | シード付き乱数 | 済 | `rng.rs`, ADR-0004 |
 | 9 | 決定論的 step | 済 | `tests/determinism.rs`、native = wasm32（ADR-0009） |
-| 10 | シリアライズ | 済（形式 2） | スナップショット + ハッシュ照合 |
+| 10 | シリアライズ | 済（形式 3） | スナップショット + ハッシュ照合 |
 | 11 | 自動テスト | 済 | 37 テスト（proptest 48 ケース含む）、debug/release 両方通過、CI 緑 |
 | 12 | ベンチマーク | 済 | criterion、下記 |
 | 13 | 2D ビューア | 済 | `viewer/index.html`（trace 形式 2、年齢表示）、ブラウザで確認済み |
@@ -31,6 +31,13 @@
 | 16 | 個体数の収束計測（10 シード） | 済 | `cz sweep`、EXP-001: 全シード収束、CV 0.033 |
 | – | Store / Transfer / Communicate | **未** | Phase 2 で台帳と同時に（ADR-0010 2a-3） |
 | – | GitHub private リポジトリ + CI 実行確認 | 済 | run 38984941736 success（2m09s） |
+
+## Phase 2（Toy 1）進捗 — ADR-0010 のタスク表に対応
+
+| # | タスク | 状態 | 根拠 |
+|---|---|---|---|
+| 2a-1 | `Intervention` enum（Drought / ScaleFood / SpawnAgents / RemoveAgent）、`World::intervene()`、`Event::Intervened`、台帳 `food_intervened` / `energy_intervened` / `interventions` | 済 (2026-10-17) | `src/intervention.rs`、`tests/intervention.rs`（8 テスト + proptest 32 ケース: 不変条件・無効時の無変更・同一列の再現・スナップショット往復）、`cz run --drought-at` |
+| 2a-2 〜 2a-6, 2b-1 〜 2b-7 | 台帳ファイル、Store/Transfer、再生、fork、バイナリスナップショット、wasm パッケージ、UI | 未 | — |
 
 ## 計測値（Apple M1, rustc 1.99.1, release, 2026-10-17）
 
@@ -98,6 +105,7 @@ Phase 1 初版で報告した 12.8 ns/体·tick は、出生前の 610 体がパ
 |---|---|---|
 | 2026-10-17 | 0xaac57b73180a3d65 | 初版 |
 | 2026-10-17 | 0xd1890b311b92678e | ADR-0008: 出生・寿命・死因・params・初期年齢乱数化・抽選キー遅延化、スナップショット形式 2 |
+| 2026-10-17 | 0x6e767bd160525c8e | ADR-0010 2a-1: `state_hash` の符号化に台帳の `food_intervened` / `energy_intervened` / `interventions` を追加、スナップショット形式 3。**遷移関数は不変**（旧符号化で再計算すると前行の値に一致することを確認済み） |
 
 ## 次のタスク
 

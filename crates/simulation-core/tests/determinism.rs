@@ -62,7 +62,7 @@ fn golden_hash_is_stable() {
     println!("golden hash after 200 ticks: {h:#018x}");
     assert_eq!(h, GOLDEN_200);
 }
-const GOLDEN_200: u64 = 0xd189_0b31_1b92_678e;
+const GOLDEN_200: u64 = 0x6e76_7bd1_6052_5c8e;
 
 #[test]
 fn snapshot_roundtrip_then_continue_is_identical() {

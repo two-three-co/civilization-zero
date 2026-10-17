@@ -21,7 +21,7 @@ Phase 2 を **2a（カーネル側、CLI で検証可能）** と **2b（ブラ�
 
 | # | タスク | 依存 | 受け入れ基準 |
 |---|---|---|---|
-| 2a-1 | `Intervention` enum と `World::intervene()`。初期セット: `Drought { regrow_amount, regrow_interval }`、`ScaleFood { permille }`、`SpawnAgents { n, pos }`、`RemoveAgents { ids }`。各介入は `Event::Intervened` として記録し、食料・エネルギーの差分を台帳に計上する | – | 介入後も `check_invariants` が通る（保存則は介入分を台帳で説明）。各介入の単体テスト |
+| 2a-1 ✅ | `Intervention` enum と `World::intervene()`。初期セット: `Drought { regrow_amount, regrow_interval }`、`ScaleFood { permille }`、`SpawnAgents { n, pos, policy }`、`RemoveAgent { id }`（1 体ずつ。`Event` を `Copy` に保つため）。各介入は `Event::Intervened` として記録し、食料・エネルギーの差分を台帳に計上する。**済 2026-10-17**（`src/intervention.rs`, `tests/intervention.rs`） | – | 介入後も `check_invariants` が通る（保存則は介入分を台帳で説明）。各介入の単体テスト |
 | 2a-2 | イベント台帳 `EventLog`: tick ごとの `Vec<Event>` の追記、JSON Lines の書き出し/読み込み、tick 範囲の取り出し | 2a-1 | 20,000 tick の台帳を書いて読み戻せる。サイズを計測して記録 |
 | 2a-3 | Store / Transfer 行動と `Event::Acted { agent, intent, outcome }`（全行動記録は設定で ON/OFF） | 2a-2 | 二重移転なし・保存則のテスト。記録 ON 時の台帳サイズを計測 |
 | 2a-4 | 再生: `replay(snapshot_at_k, log[k..t])` が直接実行と同一ハッシュに到達する | 2a-2 | 任意 tick の復元 = 直接実行（テスト）。復元時間を計測 |

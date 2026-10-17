@@ -14,7 +14,6 @@ Phase 2 の計画は ADR-0010（Toy 1）に従う。
 
 - [ ] Store / Transfer 行動（イベント台帳と同時に実装）。
 - [ ] イベント台帳: `Event::Acted { agent, intent, outcome }` と `Event::Intervened { … }` を追加し、tick ごとの JSON Lines に追記。
-- [ ] 介入 API: `Intervention` enum（再生量変更＝干ばつ、資源量スケール、個体の追加/除去）を台帳に記録して適用。
 - [ ] 分岐: スナップショットから `fork(intervention)`、同一介入の 2 回適用でハッシュ一致を検証するテスト。
 - [ ] バイナリスナップショット（postcard 等を比較検討、ADR-0006 の再評価）。
 - [ ] WASM パッケージ（wasm-bindgen、Web Worker 1 世界 1 ワーカー）。
