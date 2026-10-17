@@ -6,14 +6,14 @@
 
 ```
 viewer/ (static HTML)      ← trace JSON / wasm を読むだけ。カーネルに依存しない
-crates/cz-cli  (bin: cz)   ← 実験ランナー。simulation-core に依存
+crates/cz-cli  (bin: cz)   ← 実験ランナー。simulation-core と multiverse に依存
+crates/multiverse          ← Multiverse Runtime: 再生・分岐・系譜（ADR-0012）。simulation-core にのみ依存
 crates/cz-wasm-probe       ← wasm32 可否の計測用 C-ABI（ADR-0009）。製品 API ではない
-crates/simulation-core     ← Deterministic World Kernel。外部依存は serde / serde_json のみ
+crates/simulation-core     ← Deterministic World Kernel。外部依存は serde / serde_json / postcard のみ
                               (rayon は feature "parallel" のときだけ)
 ```
 
-下位層は上位層を知らない。Multiverse Runtime / Nomos Engine / Genesis は**未実装**で、
-それぞれ独立クレート（`multiverse`, `nomos`, …）として simulation-core の上に載せる予定。
+下位層は上位層を知らない。Nomos Engine / Genesis は**未実装**で、独立クレートとして simulation-core の上に載せる予定。
 
 ## Rust ワークスペース
 
@@ -22,7 +22,7 @@ crates/simulation-core     ← Deterministic World Kernel。外部依存は serd
 | `simulation-core` | 空間・資源・身体・行動解決・ライフサイクル・乱数・スナップショット | 実装済み |
 | `cz-cli` | `cz run` / `cz resume` / `cz sweep`、計測、trace 出力 | 実装済み |
 | `cz-wasm-probe` | カーネルを wasm32 で動かす最小 C-ABI（`probe_init/step/hash`） | 実装済み（計測用） |
-| `multiverse` | イベント台帳・介入・fork | Phase 2 |
+| `multiverse` | 再生（再実行 + 台帳照合）、`Multiverse` / `Branch`（head + 台帳 + 周期スナップショット）、fork と系譜 | 実装済み（ADR-0012） |
 | `web/`（npm, 非 Cargo） | Toy 1 UI: Vite + React + TS、UI ↔ Worker プロトコル、モック Worker | 骨格 実装済み（2b-2） |
 | `cz-web` | wasm-bindgen パッケージ（モック Worker を置き換える） | Phase 2（2b-1） |
 | `cognition` | 学習する方策・記憶・通信 | Phase 3 |
@@ -74,7 +74,8 @@ wasm32 と native の一致は ADR-0009 で計測。
 
 ## シリアライズ（ADR-0006）
 
-- スナップショット: `{format: 3, state_hash, world}` の JSON。読み込み時に config 検証 → 不変条件 → ハッシュ照合。
+- スナップショット: `{format: 3, state_hash, world}` を JSON（可読）またはバイナリ（マジック `CZS\0` + postcard、実行時の既定）で。読み込み時に形式版 → config 検証 → 不変条件 → ハッシュ照合（両形式共通）。
+- 再生と分岐（`multiverse`）: `state_at(T)` は「tick T の開始状態」で、最寄りのスナップショットから台帳の介入を適用しつつ再実行し、出生・死亡を台帳と照合する。分岐は親の開始状態 + 子の介入、台帳は過去をコピー。
 - `state_hash`: 正準エンコーディング上の FNV-1a 64bit。`std::hash` には依存しない。
 - trace（ビューア用, format 2）: `cz run --trace` が出す軽量形式。カーネルの公開形式ではない。
 

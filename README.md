@@ -56,10 +56,20 @@ Toy 1 の UI 骨格（現状はモック Worker。`web/README.md` 参照）:
 cd web && npm install && npm run dev
 ```
 
-スナップショットの保存と再開:
+スナップショットの保存と再開（`.json` は可読形式、それ以外はバイナリ）:
 
 ```bash
-cargo run --release -p cz-cli -- run --ticks 500 --snapshot out/t500.json && cargo run --release -p cz-cli -- resume --snapshot out/t500.json --ticks 500
+cargo run --release -p cz-cli -- run --ticks 500 --snapshot out/t500.bin && cargo run --release -p cz-cli -- resume --snapshot out/t500.bin --ticks 500
+```
+
+巻き戻しと分岐（ADR-0012）: 2 回同じ fork をしてハッシュが一致することを確認し、スナップショット + 台帳から再生する:
+
+```bash
+cargo run --release -p cz-cli -- fork --ticks 2000 --at 1000 --scale-food 500
+```
+
+```bash
+cargo run --release -p cz-cli -- run --ticks 1000 --snapshot out/t1000.bin && cargo run --release -p cz-cli -- run --ticks 2000 --log out/t2000.jsonl && cargo run --release -p cz-cli -- replay --snapshot out/t1000.bin --log out/t2000.jsonl --to 2000
 ```
 
 ベンチマーク:

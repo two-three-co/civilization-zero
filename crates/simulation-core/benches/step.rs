@@ -88,6 +88,9 @@ fn bench_hash(c: &mut Criterion) {
     c.bench_function("snapshot_roundtrip/1000", |b| {
         b.iter(|| World::from_snapshot(&w.to_snapshot()).unwrap())
     });
+    c.bench_function("snapshot_bin_roundtrip/1000", |b| {
+        b.iter(|| World::from_bytes(&w.to_bytes()).unwrap())
+    });
 }
 
 criterion_group!(benches, bench_step, bench_decide, bench_hash);

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/simulation-core", "crates/cz-cli", "crates/cz-wasm-probe"]
+members = ["crates/simulation-core", "crates/multiverse", "crates/cz-cli", "crates/cz-wasm-probe"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,6 +11,8 @@ rust-version = "1.82"
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Compact, serde-based, wire-stable binary format for snapshots (ADR-0006).
+postcard = { version = "1", default-features = false, features = ["alloc"] }
 rayon = "1"
 proptest = "1"
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }

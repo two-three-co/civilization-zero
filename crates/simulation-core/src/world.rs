@@ -619,18 +619,46 @@ impl World {
         h.finish()
     }
 
+    /// JSON snapshot: readable, for debugging and tests. `to_bytes` is the
+    /// compact form used at runtime (ADR-0006).
     pub fn to_snapshot(&self) -> Vec<u8> {
-        let snap = Snapshot {
-            format: SNAPSHOT_FORMAT,
-            state_hash: self.state_hash(),
-            world: self.clone(),
-        };
-        serde_json::to_vec(&snap).expect("world serialises")
+        serde_json::to_vec(&self.snapshot_ref()).expect("world serialises")
     }
 
     pub fn from_snapshot(bytes: &[u8]) -> Result<Self, SnapshotError> {
         let snap: Snapshot =
             serde_json::from_slice(bytes).map_err(|e| SnapshotError::Decode(e.to_string()))?;
+        Self::validate_snapshot(snap)
+    }
+
+    /// Compact binary snapshot (postcard): `SNAPSHOT_MAGIC` followed by the
+    /// same `{format, state_hash, world}` record as the JSON form.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = SNAPSHOT_MAGIC.to_vec();
+        out.extend(postcard::to_allocvec(&self.snapshot_ref()).expect("world serialises"));
+        out
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, SnapshotError> {
+        let body = bytes
+            .strip_prefix(&SNAPSHOT_MAGIC)
+            .ok_or_else(|| SnapshotError::Decode("not a binary snapshot (bad magic)".into()))?;
+        let snap: Snapshot =
+            postcard::from_bytes(body).map_err(|e| SnapshotError::Decode(e.to_string()))?;
+        Self::validate_snapshot(snap)
+    }
+
+    fn snapshot_ref(&self) -> SnapshotRef<'_> {
+        SnapshotRef {
+            format: SNAPSHOT_FORMAT,
+            state_hash: self.state_hash(),
+            world: self,
+        }
+    }
+
+    /// Format, config, invariants and hash must all agree before bytes
+    /// become a `World`, whichever encoding they came from.
+    fn validate_snapshot(snap: Snapshot) -> Result<Self, SnapshotError> {
         if snap.format != SNAPSHOT_FORMAT {
             return Err(SnapshotError::Format(snap.format));
         }
@@ -647,11 +675,23 @@ impl World {
     }
 }
 
+/// First four bytes of every binary snapshot, so JSON or a ledger handed to
+/// `from_bytes` fails fast with a clear reason.
+pub const SNAPSHOT_MAGIC: [u8; 4] = *b"CZS\0";
+
 /// Bumped whenever `World`'s serialised shape changes. 2: life cycle fields
 /// (ADR-0008). 3: intervention ledger fields (ADR-0010 2a-1).
 pub const SNAPSHOT_FORMAT: u32 = 3;
 
-#[derive(Serialize, Deserialize)]
+/// Written form: borrows the world instead of cloning it.
+#[derive(Serialize)]
+struct SnapshotRef<'a> {
+    format: u32,
+    state_hash: u64,
+    world: &'a World,
+}
+
+#[derive(Deserialize)]
 struct Snapshot {
     format: u32,
     state_hash: u64,

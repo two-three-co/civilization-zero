@@ -7,11 +7,17 @@
 //!             [--log PATH]
 //!   cz resume --snapshot PATH [--ticks N] [--check]
 //!   cz log    --path PATH [--from TICK] [--to TICK] [--limit N]
+//!   cz replay --snapshot PATH --log PATH [--to TICK]
+//!   cz fork   [--seed N] [--agents N] [--side N] [--ticks N] [--at TICK] [--every K]
+//!             [--scale-food PERMILLE] [--drought-amount N --drought-interval N]
 //!   cz sweep  [--seeds N] [--seed-start S] [--ticks N] [--policy ...]
 //!             [--window PCT] [--sample K] [--out PREFIX] [--check]
 //!
-//! Timing printed by `run` covers `World::step` only (trace I/O excluded).
+//! Snapshot paths ending in `.json` use the readable form; anything else is
+//! the compact binary form (ADR-0006). Timing printed by `run` covers
+//! `World::step` only (trace I/O excluded).
 
+use multiverse::{BranchId, Multiverse};
 use serde::Serialize;
 use simulation_core::{DeathCause, Event, EventLog, Intervention, PolicyKind, World, WorldConfig};
 use std::collections::BTreeMap;
@@ -29,6 +35,8 @@ fn main() {
         "resume" => cmd_resume(&opts),
         "sweep" => cmd_sweep(&opts),
         "log" => cmd_log(&opts),
+        "replay" => cmd_replay(&opts),
+        "fork" => cmd_fork(&opts),
         _ => usage(),
     };
     if let Err(e) = result {
@@ -39,7 +47,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  cz run [--seed N] [--agents N] [--side N] [--ticks N] [--policy forager|random|mixed]\n         [--check] [--trace PATH --every K] [--snapshot PATH]\n         [--drought-at TICK [--drought-amount N] [--drought-interval N]] [--log PATH]\n  cz log --path PATH [--from TICK] [--to TICK] [--limit N]\n  cz resume --snapshot PATH [--ticks N] [--check]\n  cz sweep [--seeds N] [--seed-start S] [--ticks N] [--policy ...] [--window PCT]\n           [--sample K] [--out PREFIX] [--check]"
+        "usage:\n  cz run [--seed N] [--agents N] [--side N] [--ticks N] [--policy forager|random|mixed]\n         [--check] [--trace PATH --every K] [--snapshot PATH]\n         [--drought-at TICK [--drought-amount N] [--drought-interval N]] [--log PATH]\n  cz log --path PATH [--from TICK] [--to TICK] [--limit N]\n  cz resume --snapshot PATH [--ticks N] [--check]\n  cz replay --snapshot PATH --log PATH [--to TICK]\n  cz fork [--seed N] [--agents N] [--side N] [--ticks N] [--at TICK] [--every K]\n          [--scale-food PERMILLE] [--drought-amount N --drought-interval N]\n  cz sweep [--seeds N] [--seed-start S] [--ticks N] [--policy ...] [--window PCT]\n           [--sample K] [--out PREFIX] [--check]"
     );
     std::process::exit(2)
 }
@@ -103,9 +111,29 @@ fn cmd_run(o: &Opts) -> R {
     simulate(world, o)
 }
 
+fn load_snapshot(path: &str) -> Result<World, Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(path)?;
+    Ok(if path.ends_with(".json") {
+        World::from_snapshot(&bytes)?
+    } else {
+        World::from_bytes(&bytes)?
+    })
+}
+
+fn save_snapshot(path: &str, world: &World) -> R {
+    let (bytes, kind) = if path.ends_with(".json") {
+        (world.to_snapshot(), "json")
+    } else {
+        (world.to_bytes(), "binary")
+    };
+    std::fs::write(path, &bytes)?;
+    println!("snapshot -> {path} ({} bytes, {kind})", bytes.len());
+    Ok(())
+}
+
 fn cmd_resume(o: &Opts) -> R {
     let path = o.get("snapshot").ok_or("--snapshot required")?;
-    let world = World::from_snapshot(&std::fs::read(path)?)?;
+    let world = load_snapshot(path)?;
     println!(
         "restored tick {} hash {:#018x}",
         world.tick,
@@ -219,8 +247,7 @@ fn simulate(mut world: World, o: &Opts) -> R {
         println!("trace: {} frames -> {path}", t.frames.len());
     }
     if let Some(path) = o.get("snapshot") {
-        std::fs::write(path, world.to_snapshot())?;
-        println!("snapshot -> {path}");
+        save_snapshot(path, &world)?;
     }
     if let (Some(l), Some(path)) = (log.as_ref(), o.get("log")) {
         let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
@@ -231,6 +258,125 @@ fn simulate(mut world: World, o: &Opts) -> R {
             l.len(),
             std::fs::metadata(path)?.len()
         );
+    }
+    Ok(())
+}
+
+/// Restores a snapshot and re-executes it against a ledger (ADR-0012):
+/// prints the restore time and the hash reached.
+fn cmd_replay(o: &Opts) -> R {
+    let snap = o.get("snapshot").ok_or("--snapshot required")?;
+    let log_path = o.get("log").ok_or("--log required")?;
+    let mut world = load_snapshot(snap)?;
+    let log = EventLog::read_jsonl(std::io::BufReader::new(std::fs::File::open(log_path)?))?;
+    let default_to = log
+        .last_tick()
+        .map_or(world.tick, |t| t + 1)
+        .max(world.tick);
+    let to: u64 = get(o, "to", default_to)?;
+    let from = world.tick;
+    println!(
+        "snapshot at tick {from} (hash {:#018x}), ledger {} events up to tick {}",
+        world.state_hash(),
+        log.len(),
+        log.last_tick().map_or("-".to_string(), |t| t.to_string())
+    );
+    let t0 = Instant::now();
+    let stats = multiverse::replay(&mut world, &log, to)?;
+    let dt = t0.elapsed().as_secs_f64();
+    println!(
+        "replayed {from} -> {to}: {} interventions applied, {} events verified, {:.1} ms ({:.0} ticks/s)",
+        stats.interventions,
+        stats.events_checked,
+        dt * 1e3,
+        (to - from) as f64 / dt.max(1e-9)
+    );
+    println!(
+        "final tick {} hash {:#018x}",
+        world.tick,
+        world.state_hash()
+    );
+    Ok(())
+}
+
+/// Runs a root world, forks it twice at `--at` with the same interventions
+/// and shows that both branches reach the same hash (ADR-0010 2a-5).
+fn cmd_fork(o: &Opts) -> R {
+    let ticks: u64 = get(o, "ticks", 2_000)?;
+    let at: u64 = get(o, "at", ticks / 2)?;
+    let every: u64 = get(o, "every", 500)?;
+    let mut interventions = Vec::new();
+    if let Some(p) = o.get("scale-food") {
+        interventions.push(Intervention::ScaleFood {
+            permille: p.parse().map_err(|_| "bad --scale-food")?,
+        });
+    }
+    if o.contains_key("drought-amount") || o.contains_key("drought-interval") {
+        interventions.push(Intervention::Drought {
+            regrow_amount: get(o, "drought-amount", 0)?,
+            regrow_interval: get(o, "drought-interval", 10)?,
+        });
+    }
+    if interventions.is_empty() {
+        interventions.push(Intervention::ScaleFood { permille: 500 });
+    }
+    let root = build_world(get(o, "seed", 42)?, o)?;
+    let mut mv = Multiverse::new(root, every);
+    let r = BranchId(0);
+
+    let t0 = Instant::now();
+    mv.step(r, ticks)?;
+    println!(
+        "root: {ticks} ticks in {:.1} ms, {} snapshots every {every}, ledger {} events",
+        t0.elapsed().as_secs_f64() * 1e3,
+        mv.branch(r)?.snapshot_ticks().count(),
+        mv.branch(r)?.log().len()
+    );
+    for t in [at.saturating_sub(every / 2), at, ticks] {
+        let t0 = Instant::now();
+        let w = mv.state_at(r, t)?;
+        println!(
+            "state_at({t:>6}): {:>7.2} ms  alive {:>5}  hash {:#018x}",
+            t0.elapsed().as_secs_f64() * 1e3,
+            w.agents.len(),
+            w.state_hash()
+        );
+    }
+
+    println!("fork at {at} with {interventions:?}");
+    let t0 = Instant::now();
+    let a = mv.fork(r, at, &interventions)?;
+    let fork_ms = t0.elapsed().as_secs_f64() * 1e3;
+    let b = mv.fork(r, at, &interventions)?;
+    mv.step(a, ticks - at)?;
+    mv.step(b, ticks - at)?;
+    println!(
+        "{:>6} {:>6} {:>9} {:>6} {:>6} {:>18}",
+        "branch", "parent", "forked_at", "tick", "alive", "hash"
+    );
+    for br in mv.branches() {
+        println!(
+            "{:>6} {:>6} {:>9} {:>6} {:>6} {:#018x}",
+            br.id().0,
+            br.parent().map_or("-".to_string(), |p| p.0.to_string()),
+            br.forked_at().map_or("-".to_string(), |t| t.to_string()),
+            br.head().tick,
+            br.head().agents.len(),
+            br.head().state_hash()
+        );
+    }
+    let (ha, hb, hr) = (
+        mv.branch(a)?.head().state_hash(),
+        mv.branch(b)?.head().state_hash(),
+        mv.branch(r)?.head().state_hash(),
+    );
+    println!(
+        "fork took {fork_ms:.2} ms; branches 1 and 2 {}; root differs from forks: {}",
+        if ha == hb { "MATCH" } else { "MISMATCH" },
+        hr != ha
+    );
+    if ha != hb {
+        return Err("fork is not reproducible".into());
     }
     Ok(())
 }

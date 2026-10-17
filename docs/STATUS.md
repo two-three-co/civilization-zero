@@ -1,13 +1,13 @@
 # 実装進捗（新しいセッションはまずここを読む）
 
-最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · **Phase 2 = Toy 1 進行中（2a-1, 2a-2, 2b-2 済）**（ADR-0010）· カーネル版 `simulation-core 0.1.0`
+最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · **Phase 2 = Toy 1 進行中（2a-1, 2a-2, 2a-4, 2a-5, 2a-6, 2b-2 済）**（ADR-0010）· カーネル版 `simulation-core 0.1.0`
 リポジトリ: https://github.com/two-three-co/civilization-zero（private）· CI: GitHub Actions（fmt / clippy / test debug+release / wasm ビルド）
 
 ## 状態の区別
 
 - **実装済み・テスト通過・計測済み**: 下表の Phase 1 項目、ADR-0008 のライフサイクル、ADR-0009 の wasm 計測。
-- **設計のみ**: Phase 2 の 2a-3 以降と 2b-1 / 2b-3 以降（ADR-0010 のタスク表）、Phase 3 以降。
-- **未着手**: Multiverse（再生・fork）/ Nomos / Genesis の全コード、`crates/cz-web`（wasm-bindgen）。`web/` はモック Worker で動く骨格のみ。
+- **設計のみ**: Phase 2 の 2a-3、2b-1、2b-3 以降（ADR-0010 のタスク表）、Phase 3 以降。
+- **未着手**: Nomos / Genesis の全コード、`crates/cz-web`（wasm-bindgen）。`web/` はモック Worker で動く骨格のみ。
 
 ## Phase 1 チェックリスト
 
@@ -22,7 +22,7 @@
 | 7 | 初期行動方針 | 済（Forager + Random 帰無モデル、`PolicyParams` 継承） | `policy.rs`, ADR-0005/0008 |
 | 8 | シード付き乱数 | 済 | `rng.rs`, ADR-0004 |
 | 9 | 決定論的 step | 済 | `tests/determinism.rs`、native = wasm32（ADR-0009） |
-| 10 | シリアライズ | 済（形式 3） | スナップショット + ハッシュ照合 |
+| 10 | シリアライズ | 済（形式 3、JSON + バイナリ） | スナップショット + ハッシュ照合、ADR-0006 |
 | 11 | 自動テスト | 済 | 37 テスト（proptest 48 ケース含む）、debug/release 両方通過、CI 緑 |
 | 12 | ベンチマーク | 済 | criterion、下記 |
 | 13 | 2D ビューア | 済 | `viewer/index.html`（trace 形式 2、年齢表示）、ブラウザで確認済み |
@@ -40,7 +40,10 @@
 | 2a-1 | `Intervention` enum（Drought / ScaleFood / SpawnAgents / RemoveAgent）、`World::intervene()`、`Event::Intervened`、台帳 `food_intervened` / `energy_intervened` / `interventions` | 済 (2026-10-17) | `src/intervention.rs`、`tests/intervention.rs`（8 テスト + proptest 32 ケース: 不変条件・無効時の無変更・同一列の再現・スナップショット往復）、`cz run --drought-at` |
 | 2a-2 | `EventLog`（追記専用、tick 非減少を検証、`range(from..to)` は二分探索、JSON Lines のヘッダ付き書き出し/読み戻し）、`cz run --log` / `cz log` | 済 (2026-10-17) | `src/event_log.rs`、`tests/event_log.rs`（6 テスト: 台帳と World.ledger の一致、範囲取得、往復、順序違反・壊れたファイルの拒否）。**20,000 tick × 1,000 体の台帳 = 54,649 イベント、6.27 MB（約 115 B/イベント、313 B/tick）**、書き出し込みで 3 秒未満 |
 | 2b-2 | `web/`: Vite + React + TypeScript、UI ↔ Worker プロトコル（`Frame` を Transferable な `Uint8Array` / `Int32Array` で転送）、モック Worker（スナップショットで seek）、Canvas2D 描画、タイムライン、個体インスペクタ、介入・分岐のプレースホルダ | 済 (2026-10-17) | `web/src/*`、`npm run build` 通過（JS 150 KB / gzip 48.7 KB）、CI に `web` ジョブ追加。ブラウザで再生・スクラブ・個体選択を確認 |
-| 2a-3 〜 2a-6, 2b-1, 2b-3 〜 2b-7 | Store/Transfer + `Acted`、再生、fork、バイナリスナップショット、wasm パッケージ、実測表示、巻き戻し、介入 UI、分岐比較、配信 | 未 | — |
+| 2a-4 | 再生 = 再実行（`multiverse::replay`）。台帳の介入を同じ tick に適用し、出生・死亡を台帳と照合、不一致は `Diverged { tick }` | 済 (2026-10-17) | `crates/multiverse/tests/replay.rs`（12 の tick で `state_at` = 直接実行、改竄・他シードの台帳を検出）。`cz replay`: バイナリスナップショット（tick 1,000）+ 台帳 → 2,000 まで **84 ms**、2,684 イベント照合、直接実行とハッシュ一致 |
+| 2a-5 | `Multiverse` / `Branch`（head + tick 0 からの台帳 + 周期スナップショット）、`fork(from, at, interventions)` と系譜（`parent`, `forked_at`）、`cz fork` | 済 (2026-10-17) | `tests/fork.rs`（同一介入 2 回 fork でハッシュ一致、fork の fork の系譜、無効 fork の拒否）。`cz fork`: **fork 0.07 ms**、`state_at` は間隔 500 で最大 33 ms、間隔 100 で 6.7 ms。ADR-0012 |
+| 2a-6 | バイナリスナップショット（postcard、マジック + 形式版 + ハッシュ照合）、`cz` は拡張子で切替 | 済 (2026-10-17) | `tests/snapshot_bin.rs`: 1,357 体で **56.8 KB**（JSON 304 KB）、往復 **0.69 ms**（JSON 1.63 ms）、改竄・切り詰め・JSON 誤投入を拒否。ADR-0006 改訂 |
+| 2a-3, 2b-1, 2b-3 〜 2b-7 | Store/Transfer + `Acted`、wasm パッケージ、実測表示、巻き戻し UI、介入 UI、分岐比較、配信 | 未 | — |
 
 ## 計測値（Apple M1, rustc 1.99.1, release, 2026-10-17）
 
@@ -87,7 +90,8 @@ native と同条件で `state_hash` 一致（`0x1c677f12c51ae3b1`）。
 
 ### その他
 
-- `state_hash`（≈1,310 体, 128²）: 261 µs。JSON スナップショット往復: 1.63 ms（約 0.3 MB）。
+- `state_hash`（≈1,310 体, 128²）: 261 µs。スナップショット往復: JSON 1.63 ms（304 KB）、**バイナリ 0.69 ms（56.8 KB）**。
+- Multiverse（ADR-0012）: fork 0.07 ms、`state_at` は最大でスナップショット間隔分の再実行（間隔 500 → 33 ms、100 → 6.7 ms）、再生 11,900 tick/s（照合込み）。
 - 並列 decide（rayon, M1 8 コア）は手順 B で 1.14×（1.3k 体）〜 2.25×（137k 体）（ADR-0011 後。直列が速くなった分、相対効果は 1.35×〜3.0× から下がった）。1〜2k 体の Toy 1 では使わない（ADR-0009）。手順 A で「1k 体では逆効果」に見えたのは、走査の少ない tick ではスレッド起動コストが支配的になるため。
 
 ### 性能に関する注意（正直な記録）

@@ -16,5 +16,6 @@ parallel = ["simulation-core/parallel"]
 
 [dependencies]
 simulation-core = { path = "../simulation-core" }
+multiverse = { path = "../multiverse" }
 serde.workspace = true
 serde_json.workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "multiverse"
+description = "Civilization Zero multiverse runtime: replay, timelines, branches and forks (ADR-0012)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+simulation-core = { path = "../simulation-core" }
+serde.workspace = true
