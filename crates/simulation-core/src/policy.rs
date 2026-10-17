@@ -53,6 +53,14 @@ impl PolicyKind {
         PolicyKind::Learner,
     ];
 
+    /// Number of kinds; the length of the per-kind arrays of `TickReport`.
+    pub const COUNT: usize = Self::ALL.len();
+
+    /// The kind's position in `ALL` (its discriminant).
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
     /// Lower-case name as the CLI spells it.
     pub fn name(self) -> &'static str {
         match self {

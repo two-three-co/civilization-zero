@@ -140,6 +140,7 @@ mod tests {
             last_signal: None,
             recent: Vec::new(),
             last_step: None,
+            arrived: None,
         }
     }
 

@@ -93,6 +93,23 @@ pub struct WorldConfig {
     /// of a fresh (all-zero) table. `default` so older configs still load.
     #[serde(default = "default_learner_epsilon")]
     pub learner_epsilon_permille: u16,
+    /// Health term of a `Learner`'s reward (ADR-0014 D3): reward =
+    /// Δenergy / 100 + `learner_health_weight` × Δhealth, both measured
+    /// from the tick's start to the end of Upkeep (harm taken, starvation
+    /// damage and Rest healing included). 0 by default, which is exactly
+    /// the Phase 3 reward, so the learner golden hash is unchanged. Not
+    /// part of `dynamics_hash`.
+    #[serde(default)]
+    pub learner_health_weight: u16,
+
+    /// Track social facts (ADR-0014 D2, D3): first occupancy
+    /// (`Agent.arrived`), encroachments (gathering where someone arrived
+    /// earlier), and the audit of accepted deals (`World.nomos.deals`).
+    /// Off by default: then `arrived` stays `None` for everyone, `nomos`
+    /// stays empty, neither adds a byte to `dynamics_hash`, and the
+    /// transition is the Phase 3 one. `default` so older configs load.
+    #[serde(default)]
+    pub nomos: bool,
 
     /// What agents can perceive about each other (ADR-0013 D2). `default`
     /// so configs written before the field existed still load; it is always
@@ -187,6 +204,8 @@ impl Default for WorldConfig {
             learner_states: default_learner_states(),
             learner_inherit_q: true,
             learner_epsilon_permille: default_learner_epsilon(),
+            learner_health_weight: 0,
+            nomos: false,
             perception: Perception::default(),
         }
     }

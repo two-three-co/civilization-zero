@@ -3,6 +3,7 @@
 //!   cz run    [--seed N] [--agents N] [--side N] [--ticks N]
 //!             [--policy forager|random|mixed|reflex|learner|mixed-learning] [--check]
 //!             [--mutate | --no-mutate] [--learner-states N] [--learner-epsilon PERMILLE]
+//!             [--nomos] [--learner-health-weight W]
 //!             [--trace PATH --every K] [--snapshot PATH]
 //!             [--drought-at TICK [--drought-amount N] [--drought-interval N]]
 //!             [--set-policy KIND [--set-policy-at TICK]]
@@ -21,14 +22,21 @@
 //! `--learner-states` / `--learner-epsilon` size and explore a learner's Q
 //! table (3-7). `--set-policy KIND` applies `SetPolicy { who: All, params:
 //! Default }` at `--set-policy-at` (default 0) and logs it like a drought.
+//! `--nomos` switches the tracking of social facts on (ADR-0014 4-1: first
+//! occupancy, encroachments, the audit of accepted deals; no rules yet) and
+//! `--learner-health-weight W` adds `W × Δhealth` to a learner's reward.
+//! All three commands that build worlds (`run`, `sweep`, `fork`) take them.
 //!
 //! `cz sweep --out PREFIX` writes `PREFIX_summary.csv` (one row per seed:
 //! population band of the last `--window` percent of ticks, then that
 //! window's consumption per agent-tick, transfers / harms / signals /
-//! negotiation messages per tick, death causes, action mix and the Q-table or
-//! weight statistics of EXP-002), `PREFIX_series.csv` (every `--sample`
-//! ticks: population, food and the interval's counts) and, with learners,
-//! `PREFIX_qpolicy.csv` (per Q row, how many learners prefer each kind).
+//! negotiation messages per tick, death causes, action mix, the Q-table or
+//! weight statistics of EXP-002 and, since 4-1, the window's encroachment
+//! rate overall and per policy kind, promises due / broken, standing food
+//! and regrowth), `PREFIX_series.csv` (every `--sample` ticks: population,
+//! food and the interval's counts — the EXP-002 columns first, the 4-1
+//! counts after them) and, with learners, `PREFIX_qpolicy.csv` (per Q row,
+//! how many learners prefer each kind and how often the row was visited).
 //!
 //! Snapshot paths ending in `.json` use the readable form; anything else is
 //! the compact binary form (ADR-0006). Timing printed by `run` covers
@@ -69,7 +77,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  cz run [--seed N] [--agents N] [--side N] [--ticks N]\n         [--policy forager|random|mixed|reflex|learner|mixed-learning] [--mutate | --no-mutate]\n         [--learner-states N] [--learner-epsilon PERMILLE] [--check] [--trace PATH --every K] [--snapshot PATH]\n         [--drought-at TICK [--drought-amount N] [--drought-interval N]]\n         [--set-policy KIND [--set-policy-at TICK]] [--log PATH] [--record-actions]\n  cz log --path PATH [--from TICK] [--to TICK] [--limit N]\n  cz resume --snapshot PATH [--ticks N] [--check]\n  cz replay --snapshot PATH --log PATH [--to TICK]\n  cz fork [--seed N] [--agents N] [--side N] [--ticks N] [--at TICK] [--every K]\n          [--scale-food PERMILLE] [--drought-amount N --drought-interval N] [--set-policy KIND]\n  cz sweep [--seeds N] [--seed-start S] [--ticks N] [--policy ...] [--window PCT]\n           [--sample K] [--out PREFIX] [--check]"
+        "usage:\n  cz run [--seed N] [--agents N] [--side N] [--ticks N]\n         [--policy forager|random|mixed|reflex|learner|mixed-learning] [--mutate | --no-mutate]\n         [--learner-states N] [--learner-epsilon PERMILLE] [--nomos] [--learner-health-weight W]\n         [--check] [--trace PATH --every K] [--snapshot PATH]\n         [--drought-at TICK [--drought-amount N] [--drought-interval N]]\n         [--set-policy KIND [--set-policy-at TICK]] [--log PATH] [--record-actions]\n  cz log --path PATH [--from TICK] [--to TICK] [--limit N]\n  cz resume --snapshot PATH [--ticks N] [--check]\n  cz replay --snapshot PATH --log PATH [--to TICK]\n  cz fork [--seed N] [--agents N] [--side N] [--ticks N] [--at TICK] [--every K]\n          [--scale-food PERMILLE] [--drought-amount N --drought-interval N] [--set-policy KIND]\n  cz sweep [--seeds N] [--seed-start S] [--ticks N] [--policy ...] [--window PCT]\n           [--sample K] [--out PREFIX] [--check]\n  (run, fork and sweep also take --nomos and --learner-health-weight W)"
     );
     std::process::exit(2)
 }
@@ -117,6 +125,8 @@ fn build_world(seed: u64, o: &Opts) -> Result<World, Box<dyn std::error::Error>>
         record_actions: o.contains_key("record-actions"),
         learner_states: get(o, "learner-states", 32)?,
         learner_epsilon_permille: get(o, "learner-epsilon", 50)?,
+        learner_health_weight: get(o, "learner-health-weight", 0)?,
+        nomos: o.contains_key("nomos"),
         ..WorldConfig::default()
     };
     Ok(match policy {
@@ -250,6 +260,9 @@ fn simulate(mut world: World, o: &Opts) -> R {
     let (mut xfers, mut harms, mut sigs) = (0u64, 0u64, 0u64);
     let (mut props, mut accs, mut rejs) = (0u64, 0u64, 0u64);
     let mut deaths = [0u64; DeathCause::COUNT];
+    // Social facts over the whole run (ADR-0014 4-1), by the gatherer's kind.
+    let mut gathers = [0u64; PolicyKind::COUNT];
+    let mut encroachments = [0u64; PolicyKind::COUNT];
     for _ in 0..ticks {
         if let Some(t) = trace.as_mut() {
             if world.tick % every == 0 {
@@ -288,6 +301,10 @@ fn simulate(mut world: World, o: &Opts) -> R {
         rejs += r.rejections as u64;
         for (acc, d) in deaths.iter_mut().zip(r.deaths_by_cause) {
             *acc += d as u64;
+        }
+        for k in 0..PolicyKind::COUNT {
+            gathers[k] += u64::from(r.gathers[k]);
+            encroachments[k] += u64::from(r.encroachments[k]);
         }
         if do_check {
             check(&world)?;
@@ -328,6 +345,30 @@ fn simulate(mut world: World, o: &Opts) -> R {
         secs * 1e9 / agent_steps.max(1) as f64,
         agent_steps
     );
+    if world.config.nomos {
+        // The run's social facts (ADR-0014 4-1): what a rule would have
+        // called violations, had there been one.
+        let l = &world.ledger;
+        let rate = |e: u64, g: u64| if g > 0 { e as f64 / g as f64 } else { 0.0 };
+        let mut by_kind = String::new();
+        for k in PolicyKind::ALL {
+            let (g, e) = (gathers[k.index()], encroachments[k.index()]);
+            if g > 0 {
+                let _ = write!(by_kind, " {}={e}/{g}={:.4}", k.name(), rate(e, g));
+            }
+        }
+        println!(
+            "nomos: gathers {} encroachments {} ({:.4}/gather, {:.2}/tick){}; promises due {} broken {} open {}",
+            l.gathers,
+            l.encroachments,
+            rate(l.encroachments, l.gathers),
+            l.encroachments as f64 / ticks.max(1) as f64,
+            by_kind,
+            l.promises_due,
+            l.promises_broken,
+            world.nomos.deals.len()
+        );
+    }
     if let (Some(t), Some(path)) = (trace.as_mut(), o.get("trace")) {
         t.push(&world);
         std::fs::write(path, serde_json::to_vec(t)?)?;
@@ -515,7 +556,7 @@ fn cmd_log(o: &Opts) -> R {
 
 /// Counts over a stretch of ticks: one sampling interval of the series, or
 /// the analysis window of the summary (EXP-002, ADR-0013 3-8).
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct Tally {
     ticks: u64,
     /// Agents alive at the start of each tick, summed: the decisions made.
@@ -532,13 +573,27 @@ struct Tally {
     deaths: [u64; DeathCause::COUNT],
     /// Decisions by action kind (`Action::kind_index`), successful or not.
     actions: [u64; Action::KIND_COUNT],
+    /// Social facts (ADR-0014 4-1), by the gatherer's `PolicyKind`.
+    gathers: [u64; PolicyKind::COUNT],
+    encroachments: [u64; PolicyKind::COUNT],
+    promises_due: u64,
+    promises_broken: u64,
+    /// Food regrown (`Ledger.food_regrown` deltas).
+    regrown: u64,
+    /// Standing food after each tick, summed (mean = `/ ticks`).
+    food_standing: u64,
+    /// Learner row visits (`TickReport.learner_rows`, summed).
+    rows: Vec<u64>,
 }
 
 impl Tally {
-    /// Column names of `counts_csv`.
-    const COUNT_COLUMNS: &'static str = "gathered,consumed,births,transfers,harms,signals,proposals,acceptances,rejections,deaths_starvation,deaths_old_age,deaths_violence";
+    /// Column names of `counts_csv`: the EXP-002 columns first (unchanged
+    /// in name, order and meaning), then the 4-1 counts.
+    const COUNT_COLUMNS: &'static str = "gathered,consumed,births,transfers,harms,signals,proposals,acceptances,rejections,deaths_starvation,deaths_old_age,deaths_violence,gathers,encroachments,promises_due,promises_broken,regrown,gathers_forager,encroachments_forager,gathers_random,encroachments_random,gathers_reflex,encroachments_reflex,gathers_learner,encroachments_learner";
 
-    fn add(&mut self, alive_before: usize, r: &TickReport) {
+    /// Adds one tick: `alive_before` agents decided, `regrown` food units
+    /// grew, `standing` is the food on the ground afterwards.
+    fn add(&mut self, alive_before: usize, r: &TickReport, regrown: u64, standing: u64) {
         self.ticks += 1;
         self.agent_ticks += alive_before as u64;
         self.gathered += r.food_gathered;
@@ -556,6 +611,22 @@ impl Tally {
         for (acc, a) in self.actions.iter_mut().zip(r.actions) {
             *acc += u64::from(a);
         }
+        for k in 0..PolicyKind::COUNT {
+            self.gathers[k] += u64::from(r.gathers[k]);
+            self.encroachments[k] += u64::from(r.encroachments[k]);
+        }
+        self.promises_due += r.promises_settled.len() as u64;
+        self.promises_broken += r.promises_settled.iter().filter(|d| !d.kept()).count() as u64;
+        self.regrown += regrown;
+        self.food_standing += standing;
+        if !r.learner_rows.is_empty() {
+            if self.rows.len() < r.learner_rows.len() {
+                self.rows.resize(r.learner_rows.len(), 0);
+            }
+            for (acc, v) in self.rows.iter_mut().zip(&r.learner_rows) {
+                *acc += u64::from(*v);
+            }
+        }
     }
 
     fn per_tick(&self, n: u64) -> f64 {
@@ -566,9 +637,24 @@ impl Tally {
         n as f64 / self.agent_ticks.max(1) as f64
     }
 
+    fn gathers_total(&self) -> u64 {
+        self.gathers.iter().sum()
+    }
+
+    fn encroachments_total(&self) -> u64 {
+        self.encroachments.iter().sum()
+    }
+
+    /// `encroachments / gathers` of one kind, `None` when that kind gathered
+    /// nothing (written as an empty CSV cell).
+    fn encroach_rate(&self, kind: PolicyKind) -> Option<f64> {
+        let (g, e) = (self.gathers[kind.index()], self.encroachments[kind.index()]);
+        (g > 0).then(|| e as f64 / g as f64)
+    }
+
     fn counts_csv(&self) -> String {
-        format!(
-            "{},{},{},{},{},{},{},{},{},{},{},{}",
+        let mut s = format!(
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             self.gathered,
             self.consumed,
             self.births,
@@ -581,7 +667,16 @@ impl Tally {
             self.deaths[DeathCause::Starvation.index()],
             self.deaths[DeathCause::OldAge.index()],
             self.deaths[DeathCause::Violence.index()],
-        )
+            self.gathers_total(),
+            self.encroachments_total(),
+            self.promises_due,
+            self.promises_broken,
+            self.regrown,
+        );
+        for k in 0..PolicyKind::COUNT {
+            let _ = write!(s, ",{},{}", self.gathers[k], self.encroachments[k]);
+        }
+        s
     }
 }
 
@@ -703,15 +798,15 @@ fn cmd_sweep(o: &Opts) -> R {
     let win_start = ticks - ticks * window_pct / 100;
 
     let mut summary = String::from(
-        "seed,policy,final_alive,extinct_at,win_mean,win_min,win_max,win_max_over_min,births,deaths_starvation,deaths_old_age,deaths_violence,mutation,learner_states,learner_epsilon,win_ticks,win_agent_ticks,win_consumed_per_agent_tick,win_gathered_per_agent_tick,win_births_per_tick,win_transfers_per_tick,win_harms_per_tick,win_signals_per_tick,win_proposals_per_tick,win_acceptances_per_tick,win_rejections_per_tick,win_deaths_starvation,win_deaths_old_age,win_deaths_violence,win_act_move,win_act_gather,win_act_consume,win_act_rest,win_act_transfer,win_act_store,win_act_harm,win_act_signal,hunger_permille_mean,q_abs_mean,q_delta_window,reflex_weight_drift,ticks_per_s\n",
+        "seed,policy,final_alive,extinct_at,win_mean,win_min,win_max,win_max_over_min,births,deaths_starvation,deaths_old_age,deaths_violence,mutation,learner_states,learner_epsilon,win_ticks,win_agent_ticks,win_consumed_per_agent_tick,win_gathered_per_agent_tick,win_births_per_tick,win_transfers_per_tick,win_harms_per_tick,win_signals_per_tick,win_proposals_per_tick,win_acceptances_per_tick,win_rejections_per_tick,win_deaths_starvation,win_deaths_old_age,win_deaths_violence,win_act_move,win_act_gather,win_act_consume,win_act_rest,win_act_transfer,win_act_store,win_act_harm,win_act_signal,hunger_permille_mean,q_abs_mean,q_delta_window,reflex_weight_drift,nomos,learner_health_weight,win_gathers_per_tick,win_encroachments_per_tick,win_encroach_rate,win_encroach_rate_forager,win_encroach_rate_random,win_encroach_rate_reflex,win_encroach_rate_learner,win_promises_due_per_tick,win_promises_broken_per_tick,win_food_standing_mean,win_regrown_per_tick,ticks_per_s\n",
     );
     let mut series = format!("seed,tick,alive,food,{}\n", Tally::COUNT_COLUMNS);
     let mut qpolicy = String::from(
-        "seed,row,hungry,has_food,food_here,food_in_sight,adjacent,upper,heard,learners,move,gather,consume,rest,transfer,store,harm,signal,tie\n",
+        "seed,row,hungry,has_food,food_here,food_in_sight,adjacent,upper,heard,learners,move,gather,consume,rest,transfer,store,harm,signal,tie,visits,visits_window\n",
     );
     let mut any_learners = false;
     println!(
-        "{:>5} {:>7} {:>8} {:>9} {:>7} {:>7} {:>7} {:>8} {:>8} {:>7} {:>7} {:>8} {:>7} {:>7} {:>7} {:>8}",
+        "{:>5} {:>7} {:>8} {:>9} {:>7} {:>7} {:>7} {:>8} {:>8} {:>7} {:>7} {:>8} {:>7} {:>7} {:>7} {:>7} {:>8}",
         "seed",
         "final",
         "extinct",
@@ -727,6 +822,7 @@ fn cmd_sweep(o: &Opts) -> R {
         "xfer/t",
         "harm/t",
         "sig/t",
+        "encr/g",
         "ticks/s"
     );
     let mut means = Vec::new();
@@ -734,15 +830,19 @@ fn cmd_sweep(o: &Opts) -> R {
     for s in 0..seeds {
         let seed = seed_start + s;
         let mut world = build_world(seed, o)?;
-        let (mutation, states, epsilon) = (
+        let (mutation, states, epsilon, nomos, health_weight) = (
             world.config.mutation_enabled,
             world.config.learner_states,
             world.config.learner_epsilon_permille,
+            world.config.nomos,
+            world.config.learner_health_weight,
         );
         let (mut sum, mut min, mut max, mut count) = (0u64, u64::MAX, 0u64, 0u64);
         let mut extinct_at: Option<u64> = None;
         let mut interval = Tally::default();
         let mut window = Tally::default();
+        // Row visits over the whole run (the window's are in `window`).
+        let mut run = Tally::default();
         let mut q_at_window_start: Option<Vec<f64>> = None;
         let t0 = Instant::now();
         for _ in 0..ticks {
@@ -761,14 +861,18 @@ fn cmd_sweep(o: &Opts) -> R {
                 q_at_window_start = mean_q_table(&world);
             }
             let alive_before = world.agents.len();
+            let regrown_before = world.ledger.food_regrown;
             let r = world.step();
             if do_check {
                 check(&world)?;
             }
-            interval.add(alive_before, &r);
+            let regrown = world.ledger.food_regrown - regrown_before;
+            let standing = world.resources.total_food();
+            interval.add(alive_before, &r, regrown, standing);
+            run.add(alive_before, &r, regrown, standing);
             let alive = world.agents.len() as u64;
             if world.tick > win_start {
-                window.add(alive_before, &r);
+                window.add(alive_before, &r, regrown, standing);
                 sum += alive;
                 min = min.min(alive);
                 max = max.max(alive);
@@ -811,8 +915,16 @@ fn cmd_sweep(o: &Opts) -> R {
             window.per_tick(window.harms),
             window.per_tick(window.signals),
         );
+        let encroach_rate = {
+            let g = window.gathers_total();
+            if g > 0 {
+                window.encroachments_total() as f64 / g as f64
+            } else {
+                0.0
+            }
+        };
         println!(
-            "{:>5} {:>7} {:>8} {:>9.1} {:>7} {:>7} {:>8.3} {:>8} {:>8} {:>7} {:>7} {:>8.4} {:>7.2} {:>7.2} {:>7.2} {:>8.0}",
+            "{:>5} {:>7} {:>8} {:>9.1} {:>7} {:>7} {:>8.3} {:>8} {:>8} {:>7} {:>7} {:>8.4} {:>7.2} {:>7.2} {:>7.2} {:>7.4} {:>8.0}",
             seed,
             world.agents.len(),
             extinct,
@@ -828,6 +940,7 @@ fn cmd_sweep(o: &Opts) -> R {
             xfer,
             harm,
             sig,
+            encroach_rate,
             ticks as f64 / secs
         );
         let mut row = format!(
@@ -852,13 +965,32 @@ fn cmd_sweep(o: &Opts) -> R {
         for n in window.actions {
             let _ = write!(row, ",{:.5}", window.per_agent_tick(n));
         }
-        let _ = writeln!(
+        let _ = write!(
             row,
-            ",{},{},{},{},{:.0}",
+            ",{},{},{},{}",
             opt_csv(hunger_mean(&world), 1),
             opt_csv(q_abs_mean(&world), 3),
             opt_csv(q_delta, 3),
             opt_csv(reflex_weight_drift(&world), 4),
+        );
+        // 4-1: the window's social facts, standing food and regrowth.
+        let _ = write!(
+            row,
+            ",{},{health_weight},{:.4},{:.4},{encroach_rate:.5}",
+            u8::from(nomos),
+            window.per_tick(window.gathers_total()),
+            window.per_tick(window.encroachments_total()),
+        );
+        for k in PolicyKind::ALL {
+            let _ = write!(row, ",{}", opt_csv(window.encroach_rate(k), 5));
+        }
+        let _ = writeln!(
+            row,
+            ",{:.4},{:.4},{:.1},{:.4},{:.0}",
+            window.per_tick(window.promises_due),
+            window.per_tick(window.promises_broken),
+            window.per_tick(window.food_standing),
+            window.per_tick(window.regrown),
             ticks as f64 / secs
         );
         summary.push_str(&row);
@@ -883,6 +1015,14 @@ fn cmd_sweep(o: &Opts) -> R {
                 for c in counts {
                     let _ = write!(line, ",{c}");
                 }
+                // Visits (ADR-0014 D10): decisions made in this row over the
+                // whole run and over the window.
+                let _ = write!(
+                    line,
+                    ",{},{}",
+                    run.rows.get(r).copied().unwrap_or(0),
+                    window.rows.get(r).copied().unwrap_or(0)
+                );
                 qpolicy.push_str(&line);
                 qpolicy.push('\n');
             }

@@ -1,6 +1,6 @@
 # ADR-0014: Phase 4 — Institutions（Nomos Engine / Institution DSL）の設計
 
-- 状態: 提案 (2026-10-17)。コードは未着手。各タスクの着手・完了は STATUS.md の表に記録し、設計からの差分は ADR-0013 と同じく各 D の「実装と設計からの差分」として追記する
+- 状態: 提案 → 採用 (2026-10-17)。**4-1（社会的事実の追跡）実装済み（2026-10-17）**、4-2 以降は未着手。各タスクの着手・完了は STATUS.md の表に記録し、設計からの差分は ADR-0013 と同じく各 D の「実装と設計からの差分」として追記する
 - 前提: docs/PRODUCT.md（Phase 4 のデモ = 制度エクスプローラ）、docs/research/RISKS.md（R1, R4, R5, R8〜R11）、docs/research/HYPOTHESES.md（H1〜H3）、docs/research/experiments/EXP-002（前提条件）、ADR-0003（整数のみ）、ADR-0004（座標関数の乱数）、ADR-0005（方策は純関数）、ADR-0008（イベント形式）、ADR-0010 / 0012（台帳・再生・fork）、ADR-0013（社会的プリミティブと学習方策）
 - 用語: **Nomos Engine** = この ADR が置く 3 つの部品の総称。(1) 世界の中の社会的事実（先占・約束・違反・係争・制裁）と制度（規則・憲章・動議）の**状態**、(2) それらを台帳と状態から計算するカーネルの**純関数**（判定・集計・施行）、(3) 台帳と状態を読む**読み手**（`cz sweep` の指標、cz-web の JSON、制度エクスプローラ）。**Institution DSL** = (1) のうち規範と憲章のデータ型（D5）。LLM はどこにも登場しない
 
@@ -54,6 +54,20 @@ H1 の指標には「先占者」が要る。Phase 3 の状態にも台帳にも
 - 「投資」（R1 の「最初に資源へ到達 / 投資した個体」）は Phase 4 では到着のみ。`Store` による先占や「直近に採集していること」を要件にする変種は Phase 5 の H2 の格子に送る（却下した案）。
 - **約束の期限の監査**。`Accepted` が届いた tick に `nomos.deals` へ `OpenDeal { proposer, acceptor, offer_tick, deadline, give, want, given, repaid }` を積み、以後の `Transferred` で `given / repaid` を加算、`deadline`（= `offer_tick + by`）の tick の Apply Phase 3c で決着する: `given ≥ give ∧ repaid ≥ want` なら履行、不足側が**不履行**（3-9b の `thread.rs` と同じ定義。窓が重なる取引は同じ移転を両方で数える = ADR-0013 D5 追補のとおり）。`Ledger.promises_due / promises_broken` は規則がなくても数える。不履行が**違反**になるのは `BrokenPromise` の規則が施行されているときだけ。
 - **報酬の体力項**（前提条件 2 への手当て。追跡と同じ 4-1 で入れる）: `WorldConfig.learner_health_weight: u16`（既定 0）。Learner の報酬 = Δエネルギー/100 + `weight` × Δ体力（S(t) から Upkeep 終了まで。加害・飢餓ダメージ・Rest の回復を含む）。既定 0 で Learner のゴールデン不変。値は EXP-003 で決める（D10）。
+
+**実装（4-1、2026-10-17）と設計からの差分**:
+
+- 置き場所は `simulation-core/src/nomos.rs`（`policy.rs` と同じく 1 ファイル。4-2 で `nomos/` に分割してよい）。入ったもの: `World.nomos: Nomos { deals }`、`Agent.arrived`、`InteractionKind::EncroachedBy`（末尾、`kind as u64` = 10）、台帳 `gathers / encroachments / promises_due / promises_broken`、`TickReport.gathers / encroachments`（方策別 `[u32; PolicyKind::COUNT]`）/ `promises_settled: Vec<OpenDeal>` / `learner_rows`、config `nomos` / `learner_health_weight`、CLI `--nomos` / `--learner-health-weight`（`run` / `sweep` / `fork`）。
+- **先占と侵害の判定は設計どおり**（Apply Phase 3 の直後、採集があったセルだけ、`None < Some`、同 tick の到着どうしは侵害でない、同点は id の小さい方）。走査はセル index 順（`claims` の順）、セル内の採集者は id 順にそろえてから判定するので、4-2 の `Violated` の順序「セル順・採集者 id 順」はそのまま出る。`EncroachedBy` は 3b の記憶より前に `recent` へ積む（起きた順。採集は 3b より先）。
+- **`Ledger.gathers` は `nomos` に関係なく常に数える**（成功した採集件数は物理の計数で、`state_hash` にだけ入る。`TickReport.gathers` の方策別も常時）。`encroachments / promises_*` はオフでは常に 0。
+- **約束の監査の窓は受諾 tick から**: `OpenDeal` に `accepted_tick` を持ち、受諾 tick の移転は行為者順に関係なく数え（3b の後の Phase 3c で tick 全体を集計してから決着）、期限 tick（受諾が期限より後ならその受諾 tick）に決着する。3-9b の `thread.rs` は提案 tick から数えるので、**提案から受諾までの間の移転は `thread.rs` だけが見る**（カーネルは移転の履歴を持たず、取引は存在した時点から数える）。この差は `crates/cz-web/tests/nomos_audit.rs` が固定している: 台本 9 件のうち 8 件で kept / broken と不足側が一致し、「提案 tick に `give` を先渡しした 1 件」だけ `thread.rs` は履行・カーネルは提案者の不履行と読む。Random 混在世界 300 tick では期限の来た 156 件のうち 151 件が一致、5 件（提案〜受諾の間に当事者間の移転あり）を除外。先渡しで履行する方策が現れたら（Enforcer の (2) は `Promised` の後なので該当しない）、4-7 で `thread.rs` をカーネルの定義（`nomos.deals` と `promises_settled`）に寄せる。
+- `promises_broken` は取引単位（不足側が 1 でも 2 でも 1 件）。不足側は `TickReport.promises_settled` の `OpenDeal::proposer_short / acceptor_short` で読む（4-2 の `Violated` の材料）。
+- **記憶の競合**: `EncroachedBy` は `memory_slots`（既定 8）を他の記憶と分け合う。したがって `nomos` オンでは、`recent` を決定に使う方策（Reflex の記憶特徴と `HEARD`、Random の「最新の提案」、Learner 64 行以上の `HEARD`）の決定が変わりうる。Forager と Learner 32 行は記憶を決定に使わない（Learner が発する `Say` の記号だけが変わりうる）ので、EXP-002 の forager / learner32 の series は `nomos` オンでも全行一致（受け入れ基準どおり。`tests/nomos_facts.rs::tracking_changes_no_decision_in_forager_and_learner_worlds` は 300 tick の行動・失敗・イベント・身体・資源・`last_step` の一致）。EXP-003 / 004 の世界は全条件 `nomos` オンで走るので、この効果は条件間で共通。
+- **体力項**は Upkeep 直後の `health − S(t) の health`（3b の加害、5 の飢餓ダメージと Rest の回復を含む）に `learner_health_weight` を掛けて `Δenergy/100` に足し、i16 に飽和する（`learner::reward_with_health`）。重み 0 なら 3-7 と同一の算術で、Learner のゴールデンは不変。
+- `TickReport.learner_rows` は学習者が決定した tick だけ `learner_states` 個の計数を持つ（表の外の行 = 手組みの Intent は数えない）。`cz sweep` の `_qpolicy.csv` に `visits`（全区間）と `visits_window`（窓）。
+- `check_invariants`: オフなら `arrived` は全員 `None` で `nomos` は空、オンなら `arrived ≤ tick`、開いている取引は過去に受諾・受諾順・期限未到来（期限 tick に決着するので）。
+- スナップショット形式は **4-1 で 9**（`Agent` と `World` の形が変わった。8 を拒否）。4-2 で `Nomos` に規則・係争・動議が入れば 10 になる。
+- `thread.rs` と `web/` は不変（`agent_json` に `arrived` が増えるだけ。UI は 4-7 / 4-8）。`Event` / `Failure` / `Intervention` に新変種はない（4-2 以降）。
 
 ### D4. 違反・係争・制裁の判定（カーネルの純関数、Apply の固定位置）
 
@@ -114,6 +128,11 @@ H1 の指標には「先占者」が要る。Phase 3 の状態にも台帳にも
 - **スナップショット形式 9**（`Agent.arrived`、`World.nomos`、記憶の新種、Reflex の表 168、Learner のビット順、config の新フィールド）。形式 8 は `Format(8)` で拒否。`EventLog` の JSON Lines 形式は 1 のまま（変種の追加）。
 - **記録の方針**: 常時 = `Motioned / MotionClosed / Enacted / Repealed / Chartered / Sanctioned`（いずれも件数が加害・拒否・議場で有界）。設定 = `Voted`（`record_votes`）、`Violated`（`record_violations`）。**`Violated` の既定は 4-1 のスモーク計測で決める**: forager / learner / institution の 3 世界（`nomos` オン、tick 100 で `Encroach` を布告、2,000 tick）で `Violated` が 3 世界平均 **≤ 10 件/tick**（学習世界の常時記録 ≈ 17 件/tick = 移転 2.5 + 加害 9.5 + 出生・死亡 ≈ 5 の 6 割以内。20,000 tick で +23 MB の JSON Lines）なら既定 ON、超えれば既定 OFF にしてエクスプローラは係争の窓（`standing_ticks`）と台帳のカウンタだけを見せる。侵害は同セル採集に限るが、Forager の集団が密集する既定世界では多いと予想する（リスク）。
 
+**実装（4-1、2026-10-17）と設計からの差分**:
+
+- ハッシュの規約はそのまま実装した: `Agent.arrived` は `Some` のときだけ（タグ 4 + tick）、`World.nomos` は `config.nomos` が真のときだけ（取引数 + 各取引）`dynamics_hash` に入り、台帳の 4 カウンタは `state_hash` にだけ入る。Forager `0x658ee873d1866501` と Learner 32 行 `0xcb8bc0a9772c09a4` は不変（native・wasm）。
+- **スモーク計測（M1、2026-10-17、`cz sweep --nomos --seeds 3 --ticks 2000 --window 95`、窓 = tick 100〜2,000。規則はまだないので「`Encroach` の規則があれば `Violated` になる件数」= 侵害数、「`Harm` の規則」= 加害数）**: forager 侵害 **19.4 件/tick**（採集 159 件/tick の 12.2%）、learner 32 行 **23.2 件/tick**（161 件の 14.5%、加害 12.2 件/tick）、learner 128 行（制度世界の代用。Enforcer は 4-5）**21.2 件/tick**（110 件の 19.4%、加害 15.0 件/tick）。3 世界平均 **21.3 件/tick > 10** なので **`record_violations` の既定は OFF**（4-2 で導入時）。エクスプローラは係争の窓と台帳のカウンタを見せる（D12 の `violations_json` の第 2 経路）。`Harm` 規則の違反は 3 世界平均 9.1 件/tick（境界）、両方の規則が立てば約 30 件/tick。JSON Lines 1 件 ≈ 100 B とすると 20,000 tick で ≈ 40 MB/世界。約束は Learner / Forager の世界では発生しない（Propose を選ぶのは Random だけ）ので不履行は 0 件/tick。EXP-002 の窓（10 シード × 20,000 tick、`nomos` オン）では侵害率 forager 0.122（19.3 件/tick）、learner 32 行 0.102（21.1 件/tick）、立っている食料 6,163 / 2,758、再生 230 / 276 単位/tick — EXP-003 の E₀ の下見（予測「Forager の E₀ は Learner より高い」と整合）。
+
 ### D10. 前提条件の扱いと EXP-003（制度のない世界の格子、事前登録）
 
 EXP-002 が示した前提条件は、制度実験のベースライン世界を**選ぶ**問題として扱う。`WorldConfig::default()` は変えない（ゴールデンと EXP-002 の再現性）。代わりに **`WorldConfig::nomos_preset()`**（`--preset nomos`、UI の `institution` ミックス）を置き、その値を EXP-003 の事前登録した決定規則で決める。
@@ -126,8 +145,8 @@ EXP-002 が示した前提条件は、制度実験のベースライン世界を
 | ε と `harm_cost` の格子 | **採用（主格子）** | 加害死 43% が探索由来なら ε で下がるはず。制裁の指標はこの水準からの差でしか読めないので、ベースラインの暴力水準を先に決める |
 | 体力項（新規、D3） | **採用（主格子）** | 前提条件 2: 加害は報酬に現れない。制裁が学習に効くには体力が報酬に要る |
 | `--mutate` だけの Forager | **先送り（Phase 6）** | `hunger_permille` の低下の機構は進化の問いで、制度の前提ではない。`cz sweep --policy forager --mutate` は既に動くので Phase 6 の進化実験で腕にする |
-| 立っている食料・総再生量の指標 | **採用** | `cz sweep` に `win_food_standing_mean / win_regrown_per_tick` を足す（事後計算をやめる）。制度世界の個体数差を読むのに要る |
-| Q 表の行ごとの訪問回数 | **採用（計測のみ）** | `TickReport.learner_rows`（学習者がいる tick だけ、決定した行のヒストグラム）を `cz sweep` が積算し `_qpolicy.csv` に `visits` 列。状態には入れない（ゴールデン不変） |
+| 立っている食料・総再生量の指標 | **採用** | `cz sweep` に `win_food_standing_mean / win_regrown_per_tick` を足す（事後計算をやめる）。制度世界の個体数差を読むのに要る。**4-1 で実装**（series にも `regrown`） |
+| Q 表の行ごとの訪問回数 | **採用（計測のみ）** | `TickReport.learner_rows`（学習者がいる tick だけ、決定した行のヒストグラム）を `cz sweep` が積算し `_qpolicy.csv` に `visits` 列。状態には入れない（ゴールデン不変）。**4-1 で実装**（`visits` = 全区間、`visits_window` = 窓） |
 
 **EXP-003 の形**（仕様は `docs/research/experiments/EXP-003-baseline-grid.md` に実行前にコミット）:
 - 腕: Learner 32 行、`nomos` オン（追跡のみ、規則なし）、ε ∈ {0, 10, 50}‰ × `harm_cost` ∈ {2,000, 8,000} × `learner_health_weight` ∈ {0, 2} の 12 セル。副次腕: Forager（`nomos` オン。固定方策の侵害率 E₀）、Learner 128 行・新ビット順（既定セルのみ。`OCCUPIED` で行が割れても L32 並みに学ぶかを見る）。14 腕 × seed 0〜9 × 20,000 tick ≈ 18 分（M1、EXP-002 の実測から）。
@@ -170,8 +189,8 @@ EXP-002 が示した前提条件は、制度実験のベースライン世界を
 
 | # | タスク | 依存 | 受け入れ基準 |
 |---|---|---|---|
-| 4-1 | 社会的事実の追跡（D3）: `WorldConfig.nomos`、`Agent.arrived`（移動・継承・介入・出生）、侵害の判定と `EncroachedBy`、約束の監査（`nomos.deals`）、台帳 `gathers / encroachments / promises_due / promises_broken`、`TickReport` の方策別の採集・侵害と `learner_rows`、`learner_health_weight`、`cz sweep` の新指標（侵害率・立っている食料・再生量・訪問回数）、記録量のスモーク計測 | – | `nomos` オフで Forager / Learner のゴールデン不変。`tests/nomos_facts.rs`: 手組みで先占（同 tick 到着は侵害でない、子は親と共同、死亡と移動で失効、創設個体は最古）、監査が `thread.rs` の kept / broken と一致、体力項の報酬値（加害 −20 × w、Rest +1 × w）、proptest で serial = parallel。`nomos` オンでも EXP-002 の forager / learner32 の series が全行一致（追跡は決定を変えない）。スモーク計測（3 世界 × 2,000 tick）で侵害/tick と `Violated` 相当の件数を記録し D9 の既定を決める。step の増分 ≤ 10%（`nomos` オン、規則なし） |
-| 4-2 | `nomos` モジュール（D2, D4, D5, D8）: `Norm / Rule / Charter / Standing / Nomos`、`NormIndex`、3 述語の判定・係争・制裁の識別・エピソードのカウンタ、イベント `Violated / Sanctioned`、記憶 `Sanctioned / SanctionedBy / SawSanction`、介入 `Enact / Repeal / Charter` と CLI、スナップショット形式 9、`check_invariants`、再生照合 | 4-1 | `tests/nomos_rules.rs`: 3 述語が台本どおり判定され物理は不変（同じ intents を `nomos` オフ世界に与えて身体・資源・台帳の物理列が一致）、`except_sanction` の免責、制裁の帰属（最古のエピソード）、係争の期限と死亡での閉鎖、S と S' のカウンタ、置換 = `Repealed` + `Enacted`、同一 tick の `Enact` 2 回 fork でハッシュ一致、`multiverse/tests/replay.rs` で bit 一致、形式 8 の拒否、不整合の拒否。NormIndex 構築 ≤ 30 µs/tick（1.3k 体、係争 2,000 件を手組み、計測）。proptest で serial = parallel |
+| 4-1 ✅ | 社会的事実の追跡（D3）: `WorldConfig.nomos`、`Agent.arrived`（移動・継承・介入・出生）、侵害の判定と `EncroachedBy`、約束の監査（`nomos.deals`）、台帳 `gathers / encroachments / promises_due / promises_broken`、`TickReport` の方策別の採集・侵害と `learner_rows`、`learner_health_weight`、`cz sweep` の新指標（侵害率・立っている食料・再生量・訪問回数）、記録量のスモーク計測。**済 2026-10-17**: `src/nomos.rs`、`tests/nomos_facts.rs` 9 本 + proptest 12 ケース、`crates/cz-web/tests/nomos_audit.rs` 2 本、スナップショット形式 9、CLI `--nomos` / `--learner-health-weight`。設計からの差分は D3 / D9 の追記（監査の窓は受諾 tick から、`gathers` は常時、記憶の競合、形式 9 は 4-1 で使用） | – | `nomos` オフで Forager / Learner のゴールデン不変。`tests/nomos_facts.rs`: 手組みで先占（同 tick 到着は侵害でない、子は親と共同、死亡と移動で失効、創設個体は最古）、監査が `thread.rs` の kept / broken と一致、体力項の報酬値（加害 −20 × w、Rest +1 × w）、proptest で serial = parallel。`nomos` オンでも EXP-002 の forager / learner32 の series が全行一致（追跡は決定を変えない）。スモーク計測（3 世界 × 2,000 tick）で侵害/tick と `Violated` 相当の件数を記録し D9 の既定を決める。step の増分 ≤ 10%（`nomos` オン、規則なし）。**達成**: ゴールデン 2 本不変（native・wasm）、EXP-002 の forager / learner32 の `_series.csv` 16 列と `_summary.csv` 41 列がオフ・オンとも `cmp` で完全一致、監査は台本 8/9 件一致（残る 1 件は D3 の追記どおりの定義差）+ Random 世界 151/156 件一致（5 件は定義差で除外）、スモーク計測は D9 の追記（平均 21.3 件/tick → `record_violations` 既定 OFF）、step の増分は STATUS の計測値 |
+| 4-2 | `nomos` モジュール（D2, D4, D5, D8）: `Norm / Rule / Charter / Standing / Nomos`、`NormIndex`、3 述語の判定・係争・制裁の識別・エピソードのカウンタ、イベント `Violated / Sanctioned`、記憶 `Sanctioned / SanctionedBy / SawSanction`、介入 `Enact / Repeal / Charter` と CLI、スナップショット形式 10（9 は 4-1 が使った）、`check_invariants`、再生照合 | 4-1 | `tests/nomos_rules.rs`: 3 述語が台本どおり判定され物理は不変（同じ intents を `nomos` オフ世界に与えて身体・資源・台帳の物理列が一致）、`except_sanction` の免責、制裁の帰属（最古のエピソード）、係争の期限と死亡での閉鎖、S と S' のカウンタ、置換 = `Repealed` + `Enacted`、同一 tick の `Enact` 2 回 fork でハッシュ一致、`multiverse/tests/replay.rs` で bit 一致、形式 9 の拒否、不整合の拒否。NormIndex 構築 ≤ 30 µs/tick（1.3k 体、係争 2,000 件を手組み、計測）。proptest で serial = parallel |
 | 4-3 | 観測と学習方策（D6）: `Observation.norms` と問い合わせ、Reflex 21 特徴（零の初期重み、突然変異の順序、長さ 168）、Learner の新ビット順（`FINE_STATES` 1024）、Harm のアクチュエータ、`Perception.see_standing` | 4-2 | Forager / Learner 32 行のゴールデン不変。EXP-002 の X1 / X1-50k / L32 の series が全行一致。`nomos` オフで 64 / 128 / 256 行の Learner が 32 行と同一の決定（手組みテストと 1,000 tick の身体一致）。係争中の隣接個体が Harm の対象になる、`see_standing: false` で特徴が 0 と対象が従来どおり。decide ≤ 200 ns/体·tick（Reflex 進化後、Learner 128 行、規則あり、係争あり。計測） |
 | 4-4 | EXP-003（D10）: 仕様コミット → 実行 → 記録、`WorldConfig::nomos_preset()` と `--preset nomos` の確定 | 4-1 | 仕様コミットが実行より前。14 腕 × 10 シード。決定規則どおりに preset を確定し、値と根拠を STATUS と EXP 文書に。終端報酬の却下理由を EXP 文書にも記す。RISKS R8 / R9 に計測値を追記 |
 | 4-5 | 提案と合意（D7）: `Message::Motion / Vote`、議場・憲章・閉会・施行・置換、イベント `Motioned / Voted / MotionClosed / Enacted / Repealed / Chartered`、`Failure` 5 種、`motion_cost / enforcer_motions / record_votes`、Random の 16 行動、`PolicyKind::Enforcer`、`--policy institution` | 4-2 | `tests/nomos_motions.rs`: 台本で動議 → 投票 → 閉会 → 施行が台帳と `nomos` に並ぶ、定足数・閾値・期限の境界、議場 1 つ、死者の票の除外、改正と `amendable: false`、Enforcer の 6 規則（制裁は同一エピソードに 1 回、履行、動議、投票、不侵害、それ以外は Forager と同一決定）、Random 世界の往復、proptest で serial = parallel。`cz sweep --policy random --nomos` 10 シードで可決 ≤ 1 件（帰無が偶然以上に立法しない） |
@@ -214,7 +233,7 @@ EXP-002 が示した前提条件は、制度実験のベースライン世界を
 
 ## 帰結
 
-- 遷移関数が拡張される（判定・係争・閉会・施行は Apply の一部、Phase 3c）。`nomos` オフの世界は不変で、ゴールデンは Forager / Learner 32 行とも据え置き、制度世界に第 3 のゴールデンを置く。スナップショット形式 9、プロトコル v6、`Failure::COUNT` 16、`InteractionKind` 14 種、`PolicyKind` 5 種。
+- 遷移関数が拡張される（判定・係争・閉会・施行は Apply の一部、Phase 3c）。`nomos` オフの世界は不変で、ゴールデンは Forager / Learner 32 行とも据え置き、制度世界に第 3 のゴールデンを置く。スナップショット形式 9（4-1）→ 10（4-2）、プロトコル v6、`Failure::COUNT` 16、`InteractionKind` 14 種（4-1 で 11）、`PolicyKind` 5 種。
 - ARCHITECTURE の `nomos` クレートの行は `simulation-core/src/nomos/` モジュールに置き換わり、データモデルに `Agent.arrived` / `World.nomos`、Apply に Phase 3c（判定・閉会）が加わる。CLAUDE.md の `Failure` の不変条件は「物理的・手続き的不能のみ」になる。
 - Phase 5（Research Platform）は、本 ADR の H2 / H3 の材料（憲章と規範のパラメータ、`amendable`、`see_standing`、`memory_slots`、`signal_radius`）を格子にし、地域制度・知覚制限付きの係争・立法の学習を候補に持つ。EXP-004 の結果が「学習者は従うが制裁しない」なら、制裁の報酬経路（互恵・評判）が Phase 5 の最初の設計問題になる。
 - EXP-002 の前提条件は EXP-003 で「選んだベースライン」になる。`WorldConfig::default()` は変えないので、EXP-001 / 002 はそのまま再現できる。

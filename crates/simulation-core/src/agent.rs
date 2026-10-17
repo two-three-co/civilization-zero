@@ -45,4 +45,14 @@ pub struct Agent {
     /// other kind, for a newborn and after a `SetPolicy`. Policies never
     /// read it.
     pub last_step: Option<LearnerStep>,
+    /// The tick the agent began standing on its current cell (ADR-0014
+    /// D3): first occupancy is arrival order. Set to `tick + 1` by every
+    /// move in Apply, inherited from the parent at birth (a family shares
+    /// its claim), the intervention's tick for `SpawnAgents`, and `None`
+    /// for the founding cohort, which counts as the oldest (`None <
+    /// Some(_)`). Kernel-written; policies never read it in 4-1. Always
+    /// `None` while `config.nomos` is off, and then adds no byte to
+    /// `dynamics_hash`. `default` so older JSON still parses.
+    #[serde(default)]
+    pub arrived: Option<u64>,
 }

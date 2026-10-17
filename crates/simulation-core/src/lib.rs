@@ -16,6 +16,7 @@ pub mod event;
 pub mod event_log;
 pub mod intervention;
 pub mod memory;
+pub mod nomos;
 pub mod policy;
 pub mod resources;
 pub mod rng;
@@ -30,6 +31,7 @@ pub use event::{DeathCause, Event};
 pub use event_log::{EventLog, LogError};
 pub use intervention::{Intervention, InterventionError, ParamsMode, Who};
 pub use memory::{Interaction, InteractionKind, Message, Signal, Terms};
+pub use nomos::{Nomos, OpenDeal};
 pub use policy::{
     Intent, LearnerStep, Neighbor, Observation, PolicyKind, PolicyParams, PolicyTable,
     REFLEX_FEATURES,

@@ -150,6 +150,12 @@ pub enum InteractionKind {
     /// delivered. Nothing enforces it; keeping it is a `Transfer` like any
     /// other, and breaking it is a fact the ledger can show (ADR-0013 D5).
     Promised,
+    /// `other` gathered `value` food from the cell I stand on although I
+    /// arrived there before it did (ADR-0014 D3: encroachment on first
+    /// occupancy). Written to the cell's first occupant only, and only in
+    /// worlds with `config.nomos` on. A fact, not a violation: whether a
+    /// rule makes it one is Phase 4-2's business.
+    EncroachedBy,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

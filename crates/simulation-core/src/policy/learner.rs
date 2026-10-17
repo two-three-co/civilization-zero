@@ -187,7 +187,16 @@ pub fn greedy_kind(row: &[i16], rng: &mut RngStream) -> usize {
 /// The reward of an energy change: milli-energy / `REWARD_DIVISOR`,
 /// truncated toward zero, saturated to i16.
 pub fn reward(delta_energy: i64) -> i16 {
-    (delta_energy / REWARD_DIVISOR).clamp(i16::MIN as i64, i16::MAX as i64) as i16
+    reward_with_health(delta_energy, 0, 0)
+}
+
+/// The reward with the health term of ADR-0014 D3: `Δenergy / 100 +
+/// weight × Δhealth`, computed in i64 and saturated to i16. With
+/// `weight == 0` this is exactly [`reward`], whatever `delta_health` is,
+/// which is what keeps the learner golden hash unchanged.
+pub fn reward_with_health(delta_energy: i64, delta_health: i64, weight: u16) -> i16 {
+    (delta_energy / REWARD_DIVISOR + weight as i64 * delta_health)
+        .clamp(i16::MIN as i64, i16::MAX as i64) as i16
 }
 
 /// One Q-learning step on a single value: `q + ((r·Q_UNIT + γ·max_next − q) >> 4)`,

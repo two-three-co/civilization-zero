@@ -7,25 +7,35 @@
 //! 2. **Consume** – private inventory → energy conversion.
 //! 3. **Gather**  – resolved against `S(t)` positions. Claimants on the same
 //!    cell are ordered by a seeded lottery key and served sequentially until
-//!    the cell is empty, so food can never be taken twice.
+//!    the cell is empty, so food can never be taken twice. With
+//!    `config.nomos`, each cell that saw a gather is then judged for
+//!    encroachment (ADR-0014 D3): a gatherer that arrived strictly later
+//!    than the cell's first occupant encroached on it — counted in the
+//!    ledger and remembered by the first occupant, nothing else.
 //!    - *3b. Interact* – Transfer / Store / Harm / Signal, resolved at `S(t)`
 //!      positions in actor (id) order (ADR-0013 D3, D5). Negotiation
 //!      messages are delivered here: the addressee must be another living
 //!      agent within `signal_radius`, an `Accept` must name a proposal the
 //!      acceptor remembers, and every delivered message becomes a ledger
 //!      event. Nothing enforces what was promised (3-4).
+//!    - *3c. Audit* – with `config.nomos`, this tick's transfers are booked
+//!      against the open deals and the deals whose deadline is this tick
+//!      are settled as kept or broken (ADR-0014 D3). Counted, not enforced.
 //! 4. **Move**    – all moves applied simultaneously (cells are unbounded,
-//!    so moves never conflict).
+//!    so moves never conflict). With `config.nomos` a mover's `arrived`
+//!    becomes `tick + 1`.
 //! 5. **Upkeep**  – metabolism + action costs, then Rest healing, then
 //!    starvation damage, then ageing.
 //!    - *5a. Learn* – a `Learner`'s previous step is credited with this
-//!      tick's energy change as reward and the row it just decided in as
+//!      tick's energy change as reward (plus `learner_health_weight` times
+//!      its health change, ADR-0014 D3) and the row it just decided in as
 //!      `s'` (`Q += (r + γ·max Q[s'] − Q) >> 4`), and this step is recorded
 //!      in `Agent.last_step` for the next tick (ADR-0013 D6, 3-7). Before
 //!      death and birth, so the energy handed to a child is not a penalty.
 //!    - *5b. Memory* – the kernel appends what each agent gave, received,
 //!      suffered, witnessed, heard, was proposed, had accepted or rejected,
-//!      and promised this tick to `Agent.recent` (ADR-0013 D4).
+//!      promised, and (with `nomos`) was encroached on this tick to
+//!      `Agent.recent` (ADR-0013 D4).
 //! 6. **Death**   – `health <= 0` dies of `Starvation`; otherwise
 //!    `age >= max_age` dies of `OldAge`. Carried food is dropped on the cell,
 //!    remaining energy is written off in the ledger. The dead do not reach
@@ -44,6 +54,7 @@ use crate::config::{ConfigError, WorldConfig};
 use crate::event::{DeathCause, Event};
 use crate::intervention::{Intervention, InterventionError, ParamsMode, Who};
 use crate::memory::{remember, Interaction, InteractionKind, Message, Signal, Terms};
+use crate::nomos::{self, Nomos, OpenDeal};
 use crate::policy::learner::{self, LearnerStep};
 use crate::policy::{decide, Intent, Observation, PolicyKind, PolicyParams, PolicyTable};
 use crate::resources::ResourceGrid;
@@ -82,6 +93,21 @@ pub struct Ledger {
     /// Net energy added (+) or removed (-) by interventions.
     pub energy_intervened: i64,
     pub interventions: u64,
+    /// Social facts (ADR-0014 D3). `gathers` counts every Gather that took
+    /// at least one unit, in every world; the other three are only ever
+    /// non-zero with `config.nomos`. `default` so older ledgers still load.
+    #[serde(default)]
+    pub gathers: u64,
+    /// Gathers on a cell whose first occupant arrived strictly earlier than
+    /// the gatherer. A fact, not a violation.
+    #[serde(default)]
+    pub encroachments: u64,
+    /// Accepted deals settled at their deadline …
+    #[serde(default)]
+    pub promises_due: u64,
+    /// … of which at least one side fell short.
+    #[serde(default)]
+    pub promises_broken: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,6 +130,21 @@ pub struct TickReport {
     pub proposals: u32,
     pub acceptances: u32,
     pub rejections: u32,
+    /// Successful gathers by the gatherer's `PolicyKind` (index order of
+    /// `PolicyKind::ALL`), in every world.
+    pub gathers: [u32; PolicyKind::COUNT],
+    /// Encroachments by the gatherer's kind (ADR-0014 D3; zero without
+    /// `config.nomos`). `encroachments / gathers` per kind is the
+    /// encroachment rate the experiments read.
+    pub encroachments: [u32; PolicyKind::COUNT],
+    /// Deals settled this tick (deadline reached), in acceptance order,
+    /// with what was delivered; `OpenDeal::kept` says how each ended.
+    /// Empty without `config.nomos`.
+    pub promises_settled: Vec<OpenDeal>,
+    /// How many learners decided in each Q row this tick: `learner_states`
+    /// counters, or empty when no learner decided (ADR-0014 D10: the row
+    /// visits the sweep accumulates; not state, so not hashed).
+    pub learner_rows: Vec<u32>,
     /// Events in the order they happened: transfers, harms, delivered
     /// negotiation messages and signals (if recorded) in actor order, `Acted`
     /// (if recorded), then deaths in id order, then births in parent-id order.
@@ -120,6 +161,11 @@ pub struct World {
     /// Next id to hand out. Monotonic; never reused.
     pub next_agent_id: u64,
     pub ledger: Ledger,
+    /// Social facts tracked while `config.nomos` is on (ADR-0014 D2);
+    /// empty otherwise, and then absent from `dynamics_hash`. `default` so
+    /// older JSON still parses.
+    #[serde(default)]
+    pub nomos: Nomos,
 }
 
 impl World {
@@ -178,6 +224,9 @@ impl World {
                     last_signal: None,
                     recent: Vec::new(),
                     last_step: None,
+                    // The founding cohort is the oldest everywhere it
+                    // stands (ADR-0014 D3).
+                    arrived: None,
                 }
             })
             .collect();
@@ -194,6 +243,7 @@ impl World {
             resources,
             agents,
             ledger,
+            nomos: Nomos::default(),
         })
     }
 
@@ -301,17 +351,38 @@ impl World {
             ..TickReport::default()
         };
 
+        let rows = cfg.learner_states as usize;
         for (a, it) in self.agents.iter_mut().zip(&intents) {
             a.memory = it.memory;
             report.actions[it.action.kind_index()] += 1;
+            // Row visits (ADR-0014 D10): a histogram only in ticks in
+            // which some learner decided; a row outside the table (a
+            // hand-built intent) is not counted.
+            if let Some(s) = it.state {
+                if report.learner_rows.is_empty() {
+                    report.learner_rows.resize(rows, 0);
+                }
+                if let Some(c) = report.learner_rows.get_mut(s as usize) {
+                    *c += 1;
+                }
+            }
         }
         // Energies at S(t), for the learners' rewards (phase 5a). Only
-        // worlds with learners pay for the copy.
+        // worlds with learners pay for the copy; health too only when the
+        // reward has a health term (ADR-0014 D3).
         let start_energy: Vec<i64> = if intents.iter().any(|it| it.state.is_some()) {
             self.agents.iter().map(|a| a.energy).collect()
         } else {
             Vec::new()
         };
+        let start_health: Vec<i64> = if cfg.learner_health_weight > 0 && !start_energy.is_empty() {
+            self.agents.iter().map(|a| a.health).collect()
+        } else {
+            Vec::new()
+        };
+        // What agents will remember of this tick, in order of occurrence
+        // (ADR-0013 D4). Applied in phase 5b.
+        let mut notes: Vec<(usize, Interaction)> = Vec::new();
 
         // --- Phase 2: consume -------------------------------------------
         for (i, it) in intents.iter().enumerate() {
@@ -351,6 +422,9 @@ impl World {
         claims.sort_unstable();
         let mut current_cell = usize::MAX;
         let mut cell_had_food = false;
+        // (cell, gatherer index, units taken) of every successful gather,
+        // grouped by cell as `claims` is; only kept with `nomos`.
+        let mut taken: Vec<(usize, usize, u32)> = Vec::new();
         for &(cell, _, i) in &claims {
             let available = self.resources.food[cell];
             if cell != current_cell {
@@ -373,6 +447,11 @@ impl World {
                 self.resources.food[cell] -= q;
                 a.inventory += q;
                 report.food_gathered += q as u64;
+                report.gathers[a.policy.index()] += 1;
+                self.ledger.gathers += 1;
+                if cfg.nomos {
+                    taken.push((cell, i, q));
+                }
                 if q < cfg.gather_amount.min(space) {
                     Outcome::Partial
                 } else {
@@ -381,13 +460,53 @@ impl World {
             };
         }
 
+        // --- Phase 3 (cont.): encroachment (ADR-0014 D3) ------------------
+        // On each cell that saw a gather, the first occupant at S(t) is the
+        // agent with the smallest `arrived` (founders first, then the
+        // smaller id); every other gatherer that arrived strictly later
+        // encroached on it. Cell order, then gatherer id order, so the
+        // first occupant's memory is deterministic. Nothing physical moves.
+        if cfg.nomos {
+            let mut start = 0;
+            while start < taken.len() {
+                let cell = taken[start].0;
+                let mut end = start;
+                while end < taken.len() && taken[end].0 == cell {
+                    end += 1;
+                }
+                let group = &mut taken[start..end];
+                group.sort_unstable_by_key(|&(_, i, _)| i);
+                let here = index.cell(self.agents[group[0].1].pos);
+                let first =
+                    nomos::first_occupant(&self.agents, here).expect("a gatherer stands here");
+                for &(_, i, q) in group.iter() {
+                    if i != first
+                        && nomos::encroaches(self.agents[first].arrived, self.agents[i].arrived)
+                    {
+                        self.ledger.encroachments += 1;
+                        report.encroachments[self.agents[i].policy.index()] += 1;
+                        notes.push((
+                            first,
+                            Interaction {
+                                tick,
+                                other: self.agents[i].id,
+                                kind: InteractionKind::EncroachedBy,
+                                value: q as i64,
+                            },
+                        ));
+                    }
+                }
+                start = end;
+            }
+        }
+
         // --- Phase 3b: transfer / store / harm (ADR-0013 D3) -------------
         // Resolved at S(t) positions in actor (id) order. Targets are named
         // by id; `agents` is sorted, so the lookup is a binary search.
         let mut harmed = vec![false; n];
-        // What agents will remember of this tick, in order of occurrence
-        // (ADR-0013 D4). Applied in phase 5b.
-        let mut notes: Vec<(usize, Interaction)> = Vec::new();
+        // This tick's transfers `(from, to, amount)`, booked against the
+        // open deals in 3c (after every acceptance of the tick is in).
+        let mut transfers: Vec<(AgentId, AgentId, u32)> = Vec::new();
         for (i, it) in intents.iter().enumerate() {
             match it.action {
                 Action::Transfer { to, n: want } => {
@@ -434,6 +553,9 @@ impl World {
                                         to,
                                         amount: q,
                                     });
+                                    if cfg.nomos {
+                                        transfers.push((from, to, q));
+                                    }
                                 }
                                 if q < want.min(have) {
                                     Outcome::Partial
@@ -624,6 +746,21 @@ impl World {
                                         want: terms.want,
                                         by: terms.by,
                                     });
+                                    // The deal the kernel will audit
+                                    // (ADR-0014 D3), settled at its deadline.
+                                    if cfg.nomos {
+                                        self.nomos.deals.push(OpenDeal {
+                                            proposer: to,
+                                            acceptor,
+                                            offer_tick,
+                                            accepted_tick: tick,
+                                            deadline: offer_tick + terms.by as u64,
+                                            give: terms.give,
+                                            want: terms.want,
+                                            given: 0,
+                                            repaid: 0,
+                                        });
+                                    }
                                     Outcome::Ok
                                 }
                             }
@@ -655,6 +792,24 @@ impl World {
             }
         }
 
+        // --- Phase 3c: promise audit (ADR-0014 D3) -------------------------
+        // Every transfer of the tick counts for every open deal whose
+        // window holds it, including deals accepted this tick by a later
+        // actor; then the deals due by now are settled. Counted and
+        // reported, never enforced.
+        if cfg.nomos {
+            for &(from, to, amount) in &transfers {
+                self.nomos.credit_transfer(tick, from, to, amount);
+            }
+            for d in self.nomos.settle(tick) {
+                self.ledger.promises_due += 1;
+                if !d.kept() {
+                    self.ledger.promises_broken += 1;
+                }
+                report.promises_settled.push(d);
+            }
+        }
+
         // --- Phase 4: move ------------------------------------------------
         let mut moved = vec![false; n];
         for (i, it) in intents.iter().enumerate() {
@@ -663,6 +818,10 @@ impl World {
                     Some(p) => {
                         self.agents[i].pos = p;
                         moved[i] = true;
+                        // A new cell, stood on from the next tick (ADR-0014 D3).
+                        if cfg.nomos {
+                            self.agents[i].arrived = Some(tick + 1);
+                        }
                     }
                     None => outcomes[i] = Outcome::Failed(Failure::OutOfBounds),
                 }
@@ -707,7 +866,11 @@ impl World {
                     Some(LearnerStep {
                         state: now,
                         action: intents[i].action.kind_index() as u8,
-                        reward: learner::reward(a.energy - start_energy[i]),
+                        reward: learner::reward_with_health(
+                            a.energy - start_energy[i],
+                            start_health.get(i).map_or(0, |h| a.health - h),
+                            cfg.learner_health_weight,
+                        ),
                     })
                 }
                 _ => None,
@@ -818,6 +981,9 @@ impl World {
                     last_signal: None,
                     recent: Vec::new(),
                     last_step: None,
+                    // A family shares the parent's claim on the cell
+                    // (ADR-0014 D3); `None` while `nomos` is off.
+                    arrived: parent.arrived,
                 };
                 report.events.push(Event::Born {
                     tick,
@@ -917,6 +1083,9 @@ impl World {
                 }
                 let (energy, health) = (self.config.initial_energy, self.config.max_health);
                 let params = PolicyParams::for_kind(policy, &self.config);
+                // Spawned agents arrive at the intervention's tick (ADR-0014
+                // D3): later than everyone already standing there.
+                let arrived = self.config.nomos.then_some(self.tick);
                 for _ in 0..n {
                     self.agents.push(Agent {
                         id: AgentId(self.next_agent_id),
@@ -931,6 +1100,7 @@ impl World {
                         last_signal: None,
                         recent: Vec::new(),
                         last_step: None,
+                        arrived,
                     });
                     self.next_agent_id += 1;
                 }
@@ -1068,6 +1238,33 @@ impl World {
             if !self.bounds().contains(a.pos) {
                 errs.push(format!("{:?} out of bounds: {:?}", a.id, a.pos));
             }
+            if let Some(t) = a.arrived {
+                if !cfg.nomos {
+                    errs.push(format!("{:?} has arrived set while nomos is off", a.id));
+                } else if t > self.tick {
+                    errs.push(format!(
+                        "{:?} arrived in the future: {t} > {}",
+                        a.id, self.tick
+                    ));
+                }
+            }
+        }
+        // Social facts (ADR-0014 D2): nothing tracked without `nomos`; with
+        // it, open deals were accepted in the past, in order, and are not
+        // yet due (settlement happens in the deadline's tick).
+        if !cfg.nomos && !self.nomos.is_empty() {
+            errs.push("nomos state present while nomos is off".into());
+        }
+        for (k, d) in self.nomos.deals.iter().enumerate() {
+            if d.offer_tick > d.accepted_tick || d.accepted_tick > self.tick {
+                errs.push(format!("deal {k} accepted outside the past: {d:?}"));
+            }
+            if d.deadline < self.tick {
+                errs.push(format!("deal {k} is overdue and unsettled: {d:?}"));
+            }
+            if k > 0 && self.nomos.deals[k - 1].accepted_tick > d.accepted_tick {
+                errs.push(format!("deal {k} out of acceptance order"));
+            }
         }
         let l = &self.ledger;
         let food_now = (self.resources.total_food() + self.total_inventory()) as i128;
@@ -1158,6 +1355,16 @@ impl World {
         ] {
             h.u64(v as u64);
         }
+        // Social-fact counters (ADR-0014 4-1): in `state_hash` only, like
+        // every ledger field.
+        for v in [
+            l.gathers,
+            l.encroachments,
+            l.promises_due,
+            l.promises_broken,
+        ] {
+            h.u64(v);
+        }
     }
 
     fn hash_dynamics(&self, h: &mut Fnv64) {
@@ -1205,6 +1412,13 @@ impl World {
                 h.u64(s.action as u64);
                 h.u64(s.reward as i64 as u64);
             }
+            // First occupancy is state only where it is tracked: `None`
+            // (every agent of a world with `nomos` off) adds no bytes
+            // (ADR-0014 D9).
+            if let Some(t) = a.arrived {
+                h.u64(4);
+                h.u64(t);
+            }
             match a.memory.target {
                 Some(p) => h.u64((1 << 32) | ((p.x as u64) << 16) | p.y as u64),
                 None => h.u64(0),
@@ -1224,6 +1438,20 @@ impl World {
                     h.u64(e.kind as u64);
                     h.u64(e.value as u64);
                 }
+            }
+        }
+        // The social-fact state is part of the dynamics only in worlds
+        // that track it (ADR-0014 D9): with `nomos` off nothing is added.
+        if self.config.nomos {
+            h.u64(self.nomos.deals.len() as u64);
+            for d in &self.nomos.deals {
+                h.u64(d.proposer.0);
+                h.u64(d.acceptor.0);
+                h.u64(d.offer_tick);
+                h.u64(d.accepted_tick);
+                h.u64(d.deadline);
+                h.u64(((d.give as u64) << 8) | d.want as u64);
+                h.u64(((d.given as u64) << 32) | d.repaid as u64);
             }
         }
     }
@@ -1308,7 +1536,10 @@ pub const SNAPSHOT_MAGIC: [u8; 4] = *b"CZS\0";
 /// 7: `PolicyParams.table`, `PolicyKind::{Reflex, Learner}`, config
 /// `learner_states` / `learner_inherit_q` (ADR-0013 3-5).
 /// 8: `Agent.last_step`, config `learner_epsilon_permille` (ADR-0013 3-7).
-pub const SNAPSHOT_FORMAT: u32 = 8;
+/// 9: `Agent.arrived`, `World.nomos`, `InteractionKind::EncroachedBy`,
+/// ledger `gathers` / `encroachments` / `promises_due` / `promises_broken`,
+/// config `nomos` / `learner_health_weight` (ADR-0014 4-1).
+pub const SNAPSHOT_FORMAT: u32 = 9;
 
 /// Written form: borrows the world instead of cloning it.
 #[derive(Serialize)]

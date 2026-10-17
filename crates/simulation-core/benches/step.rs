@@ -11,6 +11,19 @@ fn warmed_world(agents: u32, side: u16) -> World {
 /// `mutation` switches weight / scalar mutation on, so after the warm-up a
 /// reflex population carries evolved (dense, non-zero) weights.
 fn warmed_world_of(agents: u32, side: u16, kind: PolicyKind, mutation: bool) -> World {
+    warmed_world_with(agents, side, kind, mutation, false)
+}
+
+/// `nomos` switches the tracking of social facts on (ADR-0014 4-1: first
+/// occupancy, encroachment, the deal audit) — no rules, so the decisions
+/// of a forager or learner world are the same as without it.
+fn warmed_world_with(
+    agents: u32,
+    side: u16,
+    kind: PolicyKind,
+    mutation: bool,
+    nomos: bool,
+) -> World {
     let cfg = WorldConfig {
         seed: 42,
         width: side,
@@ -18,6 +31,7 @@ fn warmed_world_of(agents: u32, side: u16, kind: PolicyKind, mutation: bool) -> 
         initial_agents: agents,
         patch_count: (side as u32 * side as u32) / 700,
         mutation_enabled: mutation,
+        nomos,
         ..WorldConfig::default()
     };
     let mut w = World::generate(cfg, |_| kind).unwrap();
@@ -85,6 +99,24 @@ fn bench_step(c: &mut Criterion) {
             criterion::BatchSize::LargeInput,
         )
     });
+    // The same two worlds with the social-fact tracking on (ADR-0014 4-1,
+    // acceptance: step ≤ +10% with `nomos` on and no rules). Same
+    // decisions and populations as `serial` / `learner`; the difference is
+    // the encroachment judgement, the audit and the `arrived` bookkeeping.
+    for (name, kind) in [
+        ("nomos", PolicyKind::Forager),
+        ("learner_nomos", PolicyKind::Learner),
+    ] {
+        let w = warmed_world_with(1_000, 128, kind, false, true);
+        g.throughput(Throughput::Elements(w.agents.len() as u64 * 10));
+        g.bench_with_input(BenchmarkId::new(name, 1_000), &w, |b, base| {
+            b.iter_batched_ref(
+                || base.clone(),
+                |w| w.run(10),
+                criterion::BatchSize::LargeInput,
+            )
+        });
+    }
     g.finish();
 }
 

@@ -519,10 +519,10 @@ fn snapshots_carry_the_pending_step_in_both_encodings_and_reject_what_does_not_f
     let json = w.to_snapshot();
     assert_eq!(World::from_bytes(&bin).unwrap(), w);
     assert_eq!(World::from_snapshot(&json).unwrap(), w);
-    assert_eq!(SNAPSHOT_FORMAT, 8);
+    assert_eq!(SNAPSHOT_FORMAT, 9);
     assert!(std::str::from_utf8(&json)
         .unwrap()
-        .starts_with("{\"format\":8"));
+        .starts_with("{\"format\":9"));
     println!(
         "mixed-learning snapshot after learning: {} bytes binary, {} bytes json, {} agents",
         bin.len(),
@@ -532,10 +532,10 @@ fn snapshots_carry_the_pending_step_in_both_encodings_and_reject_what_does_not_f
 
     let v: serde_json::Value = serde_json::from_slice(&json).unwrap();
     let mut old = v.clone();
-    old["format"] = serde_json::json!(7);
+    old["format"] = serde_json::json!(8);
     assert_eq!(
         World::from_snapshot(&serde_json::to_vec(&old).unwrap()).err(),
-        Some(SnapshotError::Format(7))
+        Some(SnapshotError::Format(8))
     );
     let agents = v["world"]["agents"].as_array().unwrap();
     let learner_ix = agents
