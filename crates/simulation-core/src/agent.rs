@@ -1,7 +1,9 @@
-use crate::policy::PolicyKind;
+use crate::policy::{PolicyKind, PolicyParams};
 use crate::space::Pos;
 use serde::{Deserialize, Serialize};
 
+/// Never reused: ids are handed out in strictly increasing order for the whole
+/// life of a world (ADR-0008), so an id in a ledger always names one body.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct AgentId(pub u64);
 
@@ -22,7 +24,11 @@ pub struct Agent {
     pub health: i64,
     /// Carried food units. Invariant: `inventory <= inventory_capacity`.
     pub inventory: u32,
+    /// Ticks lived. Invariant: `age < max_age` while alive (when set).
     pub age: u64,
+    /// Inherited from the parent unchanged.
     pub policy: PolicyKind,
+    /// Inherited from the parent, mutated only if `mutation_enabled`.
+    pub params: PolicyParams,
     pub memory: Memory,
 }

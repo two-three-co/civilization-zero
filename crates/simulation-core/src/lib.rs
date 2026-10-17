@@ -12,6 +12,7 @@
 pub mod action;
 pub mod agent;
 pub mod config;
+pub mod event;
 pub mod policy;
 pub mod resources;
 pub mod rng;
@@ -21,6 +22,7 @@ pub mod world;
 pub use action::{Action, Failure, Outcome};
 pub use agent::{Agent, AgentId, Memory};
 pub use config::WorldConfig;
-pub use policy::{Intent, Observation, PolicyKind};
+pub use event::{DeathCause, Event};
+pub use policy::{Intent, Observation, PolicyKind, PolicyParams};
 pub use space::{Dir, Pos};
 pub use world::{Ledger, SnapshotError, TickReport, World};

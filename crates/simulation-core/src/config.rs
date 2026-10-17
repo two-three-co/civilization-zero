@@ -1,5 +1,6 @@
 //! World parameters. All quantities are integers (ADR-0003).
 
+use crate::policy::PolicyParams;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,6 +39,23 @@ pub struct WorldConfig {
     pub starvation_damage: i64,
     /// Health restored by Rest when energy > 0.
     pub rest_heal: i64,
+
+    // --- life cycle (ADR-0008) ---
+    /// A surviving agent whose energy is at or above this value after upkeep
+    /// produces one child. `None` disables reproduction.
+    pub birth_threshold: Option<i64>,
+    /// Energy moved from parent to child at birth (conserved, not created).
+    pub child_energy: i64,
+    /// Agents die of old age once `age >= max_age`. `None` disables ageing
+    /// deaths. When set, initial agents get a uniform random age in `0..max_age`
+    /// so the founding cohort does not die in one tick.
+    pub max_age: Option<u64>,
+    /// Heritable policy parameters of the founding population.
+    pub initial_params: PolicyParams,
+    /// Children receive mutated parameters when true. Off by default.
+    pub mutation_enabled: bool,
+    /// Largest change per parameter per birth, in permille.
+    pub mutation_step_permille: u16,
 }
 
 impl Default for WorldConfig {
@@ -64,6 +82,12 @@ impl Default for WorldConfig {
             gather_amount: 2,
             starvation_damage: 5,
             rest_heal: 1,
+            birth_threshold: Some(80_000),
+            child_energy: 40_000,
+            max_age: Some(3_000),
+            initial_params: PolicyParams::default(),
+            mutation_enabled: false,
+            mutation_step_permille: 50,
         }
     }
 }
@@ -81,7 +105,7 @@ impl std::error::Error for ConfigError {}
 
 impl WorldConfig {
     pub fn validate(&self) -> Result<(), ConfigError> {
-        let checks: [(bool, &'static str); 11] = [
+        let checks: [(bool, &'static str); 15] = [
             (
                 self.width > 0 && self.height > 0,
                 "width/height must be > 0",
@@ -114,6 +138,21 @@ impl WorldConfig {
             (
                 (self.width as u32) * (self.height as u32) <= 4_194_304,
                 "grid larger than 2048x2048 is not supported",
+            ),
+            (
+                self.birth_threshold.is_none_or(|t| {
+                    self.child_energy > 0 && self.child_energy <= t && t <= self.max_energy
+                }),
+                "birth needs 0 < child_energy <= birth_threshold <= max_energy",
+            ),
+            (self.max_age.is_none_or(|m| m > 0), "max_age must be > 0"),
+            (
+                self.initial_params.is_valid(),
+                "initial_params out of range",
+            ),
+            (
+                self.mutation_step_permille <= PolicyParams::PERMILLE_MAX,
+                "mutation_step_permille must be <= 1000",
             ),
         ];
         for (ok, msg) in checks {

@@ -1,6 +1,6 @@
 //! World state and the deterministic transition `S(t+1) = F(S(t), A(t), E(t), R(t))`.
 //!
-//! One tick is executed in fixed phases (ADR-0002):
+//! One tick is executed in fixed phases (ADR-0002, ADR-0008):
 //!
 //! 1. **Decide**  – every living agent produces an `Intent` from a read-only
 //!    view of `S(t)`. Pure; order-independent; parallelisable.
@@ -12,13 +12,22 @@
 //!    so moves never conflict).
 //! 5. **Upkeep**  – metabolism + action costs, then Rest healing, then
 //!    starvation damage, then ageing.
-//! 6. **Death**   – agents with `health <= 0` are removed; carried food is
-//!    dropped on their cell, remaining energy is written off in the ledger.
-//! 7. **Environment** – regrowth every `regrow_interval` ticks.
+//! 6. **Death**   – `health <= 0` dies of `Starvation`; otherwise
+//!    `age >= max_age` dies of `OldAge`. Carried food is dropped on the cell,
+//!    remaining energy is written off in the ledger. The dead do not reach
+//!    the birth phase.
+//! 7. **Birth**   – survivors with `energy >= birth_threshold` are visited in
+//!    id order; each transfers `child_energy` to one child. Child ids are
+//!    `next_agent_id, next_agent_id + 1, …` in that same order, so "parent
+//!    with the smaller id gets the smaller child id" is the specification.
+//!    Children are appended (ids ascend, canonical order is kept) and act
+//!    for the first time in the next tick.
+//! 8. **Environment** – regrowth every `regrow_interval` ticks.
 
 use crate::action::{Action, Failure, Outcome};
 use crate::agent::{Agent, AgentId, Memory};
 use crate::config::{ConfigError, WorldConfig};
+use crate::event::{DeathCause, Event};
 use crate::policy::{decide, Intent, Observation, PolicyKind};
 use crate::resources::ResourceGrid;
 use crate::rng::{RngStream, Stream};
@@ -35,7 +44,9 @@ pub struct Ledger {
     pub energy_gained: i64,
     pub energy_spent: i64,
     pub energy_written_off: i64,
+    pub births: u64,
     pub deaths: u64,
+    pub deaths_by_cause: [u64; DeathCause::COUNT],
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,11 +54,16 @@ pub struct TickReport {
     /// Tick that was executed (state is now at `tick + 1`).
     pub tick: u64,
     pub alive: u32,
+    pub births: u32,
     pub deaths: u32,
+    pub deaths_by_cause: [u32; DeathCause::COUNT],
     pub actions: [u32; Action::KIND_COUNT],
     pub failures: [u32; Failure::COUNT],
     pub food_gathered: u64,
     pub food_consumed: u64,
+    /// Lifecycle events in the order they happened: deaths in id order,
+    /// then births in parent-id order.
+    pub events: Vec<Event>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,6 +73,7 @@ pub struct World {
     pub resources: ResourceGrid,
     /// Living agents, strictly ascending by id (canonical order).
     pub agents: Vec<Agent>,
+    /// Next id to hand out. Monotonic; never reused.
     pub next_agent_id: u64,
     pub ledger: Ledger,
 }
@@ -96,17 +113,22 @@ impl World {
         let agents: Vec<Agent> = (0..config.initial_agents)
             .map(|i| {
                 let mut rng = RngStream::new(config.seed, 0, i as u64, Stream::AgentSpawn);
+                let pos = Pos::new(
+                    rng.below(config.width as u64) as u16,
+                    rng.below(config.height as u64) as u16,
+                );
+                // Spread the founding cohort over the whole life span so it
+                // does not die of old age in a single tick (ADR-0008).
+                let age = config.max_age.map_or(0, |m| rng.below(m));
                 Agent {
                     id: AgentId(i as u64),
-                    pos: Pos::new(
-                        rng.below(config.width as u64) as u16,
-                        rng.below(config.height as u64) as u16,
-                    ),
+                    pos,
                     energy: config.initial_energy,
                     health: config.max_health,
                     inventory: 0,
-                    age: 0,
+                    age,
                     policy: policy_for(i),
+                    params: config.initial_params,
                     memory: Memory::default(),
                 }
             })
@@ -173,7 +195,7 @@ impl World {
         }
     }
 
-    /// Phases 2-7. `intents[i]` belongs to `self.agents[i]`.
+    /// Phases 2-8. `intents[i]` belongs to `self.agents[i]`.
     pub fn apply(&mut self, intents: Vec<Intent>) -> TickReport {
         assert_eq!(intents.len(), self.agents.len(), "one intent per agent");
         let cfg = &self.config;
@@ -300,19 +322,78 @@ impl World {
 
         // --- Phase 6: death -----------------------------------------------
         let before = self.agents.len();
+        let max_age = cfg.max_age;
         let (resources, ledger) = (&mut self.resources, &mut self.ledger);
+        let events = &mut report.events;
+        let mut deaths_by_cause = [0u32; DeathCause::COUNT];
         self.agents.retain(|a| {
-            if a.health > 0 {
+            let cause = if a.health <= 0 {
+                DeathCause::Starvation
+            } else if max_age.is_some_and(|m| a.age >= m) {
+                DeathCause::OldAge
+            } else {
                 return true;
-            }
+            };
             resources.food[bounds.index(a.pos)] += a.inventory;
             ledger.energy_written_off += a.energy;
             ledger.deaths += 1;
+            ledger.deaths_by_cause[cause.index()] += 1;
+            deaths_by_cause[cause.index()] += 1;
+            events.push(Event::Died {
+                tick,
+                agent: a.id,
+                cause,
+                pos: a.pos,
+                age: a.age,
+                energy_written_off: a.energy,
+                food_dropped: a.inventory,
+            });
             false
         });
         report.deaths = (before - self.agents.len()) as u32;
+        report.deaths_by_cause = deaths_by_cause;
 
-        // --- Phase 7: environment -----------------------------------------
+        // --- Phase 7: birth -----------------------------------------------
+        if let Some(threshold) = cfg.birth_threshold {
+            let survivors = self.agents.len();
+            for i in 0..survivors {
+                let parent = &self.agents[i];
+                if parent.energy < threshold {
+                    continue;
+                }
+                let child_id = AgentId(self.next_agent_id);
+                self.next_agent_id += 1;
+                let mut params = parent.params;
+                if cfg.mutation_enabled {
+                    let mut rng = RngStream::new(cfg.seed, tick, child_id.0, Stream::Mutation);
+                    params = params.mutated(cfg.mutation_step_permille, &mut rng);
+                }
+                let child = Agent {
+                    id: child_id,
+                    pos: parent.pos,
+                    energy: cfg.child_energy,
+                    health: cfg.max_health,
+                    inventory: 0,
+                    age: 0,
+                    policy: parent.policy,
+                    params,
+                    memory: Memory::default(),
+                };
+                report.events.push(Event::Born {
+                    tick,
+                    child: child_id,
+                    parent: parent.id,
+                    pos: child.pos,
+                    energy: child.energy,
+                });
+                self.agents[i].energy -= cfg.child_energy;
+                self.agents.push(child);
+                self.ledger.births += 1;
+                report.births += 1;
+            }
+        }
+
+        // --- Phase 8: environment -----------------------------------------
         if (tick + 1) % self.config.regrow_interval == 0 {
             self.ledger.food_regrown += self.resources.regrow(self.config.regrow_amount);
         }
@@ -360,6 +441,12 @@ impl World {
                     a.id, a.inventory
                 ));
             }
+            if cfg.max_age.is_some_and(|m| a.age >= m) {
+                errs.push(format!("{:?} older than max_age: {}", a.id, a.age));
+            }
+            if !a.params.is_valid() {
+                errs.push(format!("{:?} params out of range: {:?}", a.id, a.params));
+            }
             if !self.bounds().contains(a.pos) {
                 errs.push(format!("{:?} out of bounds: {:?}", a.id, a.pos));
             }
@@ -383,6 +470,12 @@ impl World {
         if l.energy_gained != l.food_consumed as i64 * cfg.energy_per_food {
             errs.push("energy gained without matching food consumption".into());
         }
+        if l.deaths != l.deaths_by_cause.iter().sum::<u64>() {
+            errs.push("deaths total does not match deaths by cause".into());
+        }
+        if self.next_agent_id < cfg.initial_agents as u64 + l.births {
+            errs.push("fewer ids handed out than agents created".into());
+        }
         if errs.is_empty() {
             Ok(())
         } else {
@@ -398,7 +491,16 @@ impl World {
         h.u64(self.tick);
         h.u64(self.next_agent_id);
         let l = &self.ledger;
-        for v in [l.food_initial, l.food_regrown, l.food_consumed, l.deaths] {
+        for v in [
+            l.food_initial,
+            l.food_regrown,
+            l.food_consumed,
+            l.births,
+            l.deaths,
+        ] {
+            h.u64(v);
+        }
+        for v in l.deaths_by_cause {
             h.u64(v);
         }
         for v in [
@@ -422,6 +524,7 @@ impl World {
             h.u64(a.inventory as u64);
             h.u64(a.age);
             h.u64(a.policy as u64);
+            h.u64(a.params.hunger_permille as u64);
             match a.memory.target {
                 Some(p) => h.u64((1 << 32) | ((p.x as u64) << 16) | p.y as u64),
                 None => h.u64(0),
@@ -458,7 +561,9 @@ impl World {
     }
 }
 
-pub const SNAPSHOT_FORMAT: u32 = 1;
+/// Bumped whenever `World`'s serialised shape changes. 2: life cycle fields
+/// (ADR-0008).
+pub const SNAPSHOT_FORMAT: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 struct Snapshot {

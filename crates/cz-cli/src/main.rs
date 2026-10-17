@@ -4,12 +4,15 @@
 //!             [--policy forager|random|mixed] [--check]
 //!             [--trace PATH --every K] [--snapshot PATH]
 //!   cz resume --snapshot PATH [--ticks N] [--check]
+//!   cz sweep  [--seeds N] [--seed-start S] [--ticks N] [--policy ...]
+//!             [--window PCT] [--sample K] [--out PREFIX] [--check]
 //!
 //! Timing printed by `run` covers `World::step` only (trace I/O excluded).
 
 use serde::Serialize;
-use simulation_core::{PolicyKind, World, WorldConfig};
+use simulation_core::{DeathCause, PolicyKind, World, WorldConfig};
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 fn main() {
@@ -21,6 +24,7 @@ fn main() {
     let result = match cmd.as_str() {
         "run" => cmd_run(&opts),
         "resume" => cmd_resume(&opts),
+        "sweep" => cmd_sweep(&opts),
         _ => usage(),
     };
     if let Err(e) = result {
@@ -31,7 +35,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  cz run [--seed N] [--agents N] [--side N] [--ticks N] [--policy forager|random|mixed]\n         [--check] [--trace PATH --every K] [--snapshot PATH]\n  cz resume --snapshot PATH [--ticks N] [--check]"
+        "usage:\n  cz run [--seed N] [--agents N] [--side N] [--ticks N] [--policy forager|random|mixed]\n         [--check] [--trace PATH --every K] [--snapshot PATH]\n  cz resume --snapshot PATH [--ticks N] [--check]\n  cz sweep [--seeds N] [--seed-start S] [--ticks N] [--policy ...] [--window PCT]\n           [--sample K] [--out PREFIX] [--check]"
     );
     std::process::exit(2)
 }
@@ -64,18 +68,19 @@ fn get<T: std::str::FromStr>(o: &Opts, k: &str, default: T) -> Result<T, String>
 
 type R = Result<(), Box<dyn std::error::Error>>;
 
-fn cmd_run(o: &Opts) -> R {
+fn build_world(seed: u64, o: &Opts) -> Result<World, Box<dyn std::error::Error>> {
     let side: u16 = get(o, "side", 128)?;
     let cfg = WorldConfig {
-        seed: get(o, "seed", 42)?,
+        seed,
         width: side,
         height: side,
         initial_agents: get(o, "agents", 1_000)?,
         patch_count: get(o, "patches", ((side as u32 * side as u32) / 700).max(1))?,
+        mutation_enabled: o.contains_key("mutate"),
         ..WorldConfig::default()
     };
     let policy = o.get("policy").map(String::as_str).unwrap_or("forager");
-    let world = match policy {
+    Ok(match policy {
         "forager" => World::generate(cfg, |_| PolicyKind::Forager)?,
         "random" => World::generate(cfg, |_| PolicyKind::Random)?,
         "mixed" => World::generate(cfg, |i| {
@@ -86,7 +91,11 @@ fn cmd_run(o: &Opts) -> R {
             }
         })?,
         p => return Err(format!("unknown policy {p}").into()),
-    };
+    })
+}
+
+fn cmd_run(o: &Opts) -> R {
+    let world = build_world(get(o, "seed", 42)?, o)?;
     simulate(world, o)
 }
 
@@ -103,9 +112,15 @@ fn cmd_resume(o: &Opts) -> R {
     simulate(world, &o)
 }
 
+fn check(world: &World) -> R {
+    world
+        .check_invariants()
+        .map_err(|e| format!("invariant violated at tick {}: {e:?}", world.tick).into())
+}
+
 fn simulate(mut world: World, o: &Opts) -> R {
     let ticks: u64 = get(o, "ticks", 1_000)?;
-    let check = o.contains_key("check");
+    let do_check = o.contains_key("check");
     let every: u64 = get(o, "every", 5)?.max(1);
     let mut trace = o.get("trace").map(|_| Trace::new(&world));
 
@@ -116,15 +131,16 @@ fn simulate(mut world: World, o: &Opts) -> R {
         world.config.height,
         world.agents.len(),
         ticks,
-        check
+        do_check
     );
     println!(
-        "{:>6} {:>6} {:>7} {:>9} {:>9} {:>9}",
-        "tick", "alive", "deaths", "gathered", "consumed", "food"
+        "{:>6} {:>6} {:>6} {:>7} {:>7} {:>9} {:>9} {:>9}",
+        "tick", "alive", "births", "d.starv", "d.age", "gathered", "consumed", "food"
     );
     let mut step_time = Duration::ZERO;
     let mut agent_steps = 0u64;
-    let (mut gathered, mut consumed, mut deaths) = (0u64, 0u64, 0u64);
+    let (mut gathered, mut consumed, mut births) = (0u64, 0u64, 0u64);
+    let mut deaths = [0u64; DeathCause::COUNT];
     for _ in 0..ticks {
         if let Some(t) = trace.as_mut() {
             if world.tick % every == 0 {
@@ -137,23 +153,26 @@ fn simulate(mut world: World, o: &Opts) -> R {
         step_time += t0.elapsed();
         gathered += r.food_gathered;
         consumed += r.food_consumed;
-        deaths += r.deaths as u64;
-        if check {
-            world
-                .check_invariants()
-                .map_err(|e| format!("invariant violated at tick {}: {e:?}", world.tick))?;
+        births += r.births as u64;
+        for (acc, d) in deaths.iter_mut().zip(r.deaths_by_cause) {
+            *acc += d as u64;
+        }
+        if do_check {
+            check(&world)?;
         }
         if world.tick % 100 == 0 {
             println!(
-                "{:>6} {:>6} {:>7} {:>9} {:>9} {:>9}",
+                "{:>6} {:>6} {:>6} {:>7} {:>7} {:>9} {:>9} {:>9}",
                 world.tick,
                 world.agents.len(),
-                deaths,
+                births,
+                deaths[DeathCause::Starvation.index()],
+                deaths[DeathCause::OldAge.index()],
                 gathered,
                 consumed,
                 world.resources.total_food()
             );
-            (gathered, consumed, deaths) = (0, 0, 0);
+            (gathered, consumed, births, deaths) = (0, 0, 0, [0; DeathCause::COUNT]);
         }
     }
     let secs = step_time.as_secs_f64();
@@ -181,6 +200,118 @@ fn simulate(mut world: World, o: &Opts) -> R {
     Ok(())
 }
 
+/// Runs several seeds and summarises population dynamics over the last
+/// `--window` percent of ticks. Writes `<out>_summary.csv` (one row per seed)
+/// and `<out>_series.csv` (population every `--sample` ticks).
+fn cmd_sweep(o: &Opts) -> R {
+    let seeds: u64 = get(o, "seeds", 10)?;
+    let seed_start: u64 = get(o, "seed-start", 0)?;
+    let ticks: u64 = get(o, "ticks", 20_000)?;
+    let window_pct: u64 = get(o, "window", 50)?.min(100);
+    let sample: u64 = get(o, "sample", 100)?.max(1);
+    let do_check = o.contains_key("check");
+    let policy = o.get("policy").map(String::as_str).unwrap_or("forager");
+    let win_start = ticks - ticks * window_pct / 100;
+
+    let mut summary = String::from(
+        "seed,policy,final_alive,extinct_at,win_mean,win_min,win_max,win_max_over_min,births,deaths_starvation,deaths_old_age,ticks_per_s\n",
+    );
+    let mut series = String::from("seed,tick,alive,food\n");
+    println!(
+        "{:>5} {:>7} {:>8} {:>9} {:>7} {:>7} {:>7} {:>8} {:>8} {:>7} {:>8}",
+        "seed",
+        "final",
+        "extinct",
+        "win_mean",
+        "min",
+        "max",
+        "max/min",
+        "births",
+        "d.starv",
+        "d.age",
+        "ticks/s"
+    );
+    let mut means = Vec::new();
+    for s in 0..seeds {
+        let seed = seed_start + s;
+        let mut world = build_world(seed, o)?;
+        let (mut sum, mut min, mut max, mut count) = (0u64, u64::MAX, 0u64, 0u64);
+        let mut extinct_at: Option<u64> = None;
+        let t0 = Instant::now();
+        for _ in 0..ticks {
+            if world.tick % sample == 0 {
+                let _ = writeln!(
+                    series,
+                    "{seed},{},{},{}",
+                    world.tick,
+                    world.agents.len(),
+                    world.resources.total_food()
+                );
+            }
+            world.step();
+            if do_check {
+                check(&world)?;
+            }
+            let alive = world.agents.len() as u64;
+            if world.tick > win_start {
+                sum += alive;
+                min = min.min(alive);
+                max = max.max(alive);
+                count += 1;
+            }
+            if extinct_at.is_none() && alive == 0 {
+                extinct_at = Some(world.tick);
+            }
+        }
+        let secs = t0.elapsed().as_secs_f64();
+        let mean = sum as f64 / count.max(1) as f64;
+        let ratio = if min > 0 {
+            max as f64 / min as f64
+        } else {
+            f64::INFINITY
+        };
+        let l = &world.ledger;
+        let extinct = extinct_at.map_or("-".to_string(), |t| t.to_string());
+        means.push(mean);
+        println!(
+            "{:>5} {:>7} {:>8} {:>9.1} {:>7} {:>7} {:>8.3} {:>8} {:>8} {:>7} {:>8.0}",
+            seed,
+            world.agents.len(),
+            extinct,
+            mean,
+            min,
+            max,
+            ratio,
+            l.births,
+            l.deaths_by_cause[DeathCause::Starvation.index()],
+            l.deaths_by_cause[DeathCause::OldAge.index()],
+            ticks as f64 / secs
+        );
+        let _ = writeln!(
+            summary,
+            "{seed},{policy},{},{extinct},{mean:.2},{min},{max},{ratio:.4},{},{},{},{:.0}",
+            world.agents.len(),
+            l.births,
+            l.deaths_by_cause[DeathCause::Starvation.index()],
+            l.deaths_by_cause[DeathCause::OldAge.index()],
+            ticks as f64 / secs
+        );
+    }
+    let n = means.len() as f64;
+    let grand = means.iter().sum::<f64>() / n;
+    let sd = (means.iter().map(|m| (m - grand).powi(2)).sum::<f64>() / n).sqrt();
+    println!(
+        "window = last {window_pct}% of {ticks} ticks; across {seeds} seeds: mean of window means {grand:.1}, sd {sd:.1}, cv {:.3}",
+        if grand > 0.0 { sd / grand } else { f64::NAN }
+    );
+    if let Some(prefix) = o.get("out") {
+        std::fs::write(format!("{prefix}_summary.csv"), summary)?;
+        std::fs::write(format!("{prefix}_series.csv"), series)?;
+        println!("wrote {prefix}_summary.csv and {prefix}_series.csv");
+    }
+    Ok(())
+}
+
 /// Compact trace for the 2D viewer (viewer/index.html).
 #[derive(Serialize)]
 struct Trace {
@@ -199,7 +330,7 @@ struct Frame {
     tick: u64,
     /// Hex-encoded per-cell food, row-major, clamped to 255.
     food: String,
-    /// Flat `[id, x, y, energy, inventory, policy, health]` per agent.
+    /// Flat `[id, x, y, energy, inventory, policy, health, age]` per agent.
     agents: Vec<i64>,
 }
 
@@ -217,7 +348,7 @@ fn hex_bytes(v: &[u32]) -> String {
 impl Trace {
     fn new(w: &World) -> Self {
         Self {
-            format: 1,
+            format: 2,
             width: w.config.width,
             height: w.config.height,
             max_energy: w.config.max_energy,
@@ -231,7 +362,7 @@ impl Trace {
         if self.frames.last().is_some_and(|f| f.tick == w.tick) {
             return;
         }
-        let mut agents = Vec::with_capacity(w.agents.len() * 7);
+        let mut agents = Vec::with_capacity(w.agents.len() * 8);
         for a in &w.agents {
             agents.extend_from_slice(&[
                 a.id.0 as i64,
@@ -241,6 +372,7 @@ impl Trace {
                 a.inventory as i64,
                 matches!(a.policy, PolicyKind::Random) as i64,
                 a.health,
+                a.age as i64,
             ]);
         }
         self.frames.push(Frame {

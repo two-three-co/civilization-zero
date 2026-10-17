@@ -73,7 +73,7 @@
   </aside>
 </main>
 <script>
-const F = 7; // fields per agent: id x y energy inventory policy health
+const F = 8; // fields per agent: id x y energy inventory policy health age
 const $ = (id) => document.getElementById(id);
 const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 let trace = null, frame = 0, playing = false, selected = null, timer = null, img = null;
@@ -82,7 +82,7 @@ const SCALE = 4;
 function hexAt(s, i) { return parseInt(s.substr(i * 2, 2), 16); }
 
 function load(t) {
-  if (t.format !== 1) throw new Error("unsupported trace format " + t.format);
+  if (t.format !== 2) throw new Error("unsupported trace format " + t.format);
   trace = t;
   const c = $("world");
   c.width = t.width * SCALE; c.height = t.height * SCALE; c.hidden = false;
@@ -137,7 +137,7 @@ function drawSelected(f, ctx) {
     ctx.strokeRect(ag[k + 1] * SCALE - 3, ag[k + 2] * SCALE - 3, SCALE + 6, SCALE + 6);
     $("agent").innerHTML = row("id", ag[k]) + row("pos", `${ag[k + 1]}, ${ag[k + 2]}`) +
       row("energy", ag[k + 3]) + row("health", ag[k + 6]) + row("inventory", ag[k + 4]) +
-      row("policy", ag[k + 5] ? "random" : "forager");
+      row("age", ag[k + 7]) + row("policy", ag[k + 5] ? "random" : "forager");
     return;
   }
   $("agent").innerHTML = row("id", selected) + row("status", "not alive in this frame");

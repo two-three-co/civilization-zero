@@ -1,62 +1,9 @@
-//! Scenario tests for action semantics and conflict resolution, using
-//! hand-built worlds and explicit intents (bypassing policies).
+//! Scenario tests for action semantics and conflict resolution.
 
-use simulation_core::{
-    Action, Agent, AgentId, Dir, Failure, Intent, Memory, PolicyKind, Pos, World, WorldConfig,
-};
+mod common;
 
-fn empty_world(cfg: WorldConfig) -> World {
-    World::new(WorldConfig {
-        initial_agents: 0,
-        patch_count: 0,
-        ..cfg
-    })
-    .unwrap()
-}
-
-fn add_agent(w: &mut World, pos: Pos, energy: i64, inventory: u32) -> usize {
-    let id = AgentId(w.next_agent_id);
-    w.next_agent_id += 1;
-    w.agents.push(Agent {
-        id,
-        pos,
-        energy,
-        health: w.config.max_health,
-        inventory,
-        age: 0,
-        policy: PolicyKind::Forager,
-        memory: Memory::default(),
-    });
-    w.ledger.energy_initial += energy;
-    w.ledger.food_initial += inventory as u64;
-    w.agents.len() - 1
-}
-
-fn set_food(w: &mut World, p: Pos, food: u32) {
-    let i = w.bounds().index(p);
-    w.ledger.food_initial = w.ledger.food_initial - w.resources.food[i] as u64 + food as u64;
-    w.resources.food[i] = food;
-    w.resources.capacity[i] = food;
-}
-
-fn intents(actions: &[Action]) -> Vec<Intent> {
-    actions
-        .iter()
-        .map(|&action| Intent {
-            action,
-            memory: Memory::default(),
-        })
-        .collect()
-}
-
-fn cfg() -> WorldConfig {
-    WorldConfig {
-        width: 8,
-        height: 8,
-        regrow_interval: 1_000_000,
-        ..WorldConfig::default()
-    }
-}
+use common::*;
+use simulation_core::{Action, Dir, Failure, Pos, WorldConfig};
 
 #[test]
 fn contended_gather_never_double_allocates() {
@@ -188,10 +135,7 @@ fn starvation_kills_and_drops_inventory_on_cell() {
     let mut w = empty_world(c.clone());
     let p = Pos::new(4, 4);
     add_agent(&mut w, p, 0, 0);
-    add_agent(&mut w, p, c.max_energy, 7);
-    // Agent 1 starves only once its energy is 0; give it a cheap death path:
-    w.agents[1].energy = 0;
-    w.ledger.energy_initial -= c.max_energy;
+    add_agent(&mut w, p, 0, 7);
     let r1 = w.apply(intents(&[Action::Rest, Action::Rest]));
     assert_eq!(r1.deaths, 0); // health 100 -> 40
     let r2 = w.apply(intents(&[Action::Rest, Action::Rest]));

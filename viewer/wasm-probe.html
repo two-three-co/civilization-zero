@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CZ WASM Probe</title>
+<style>
+  :root { --bg: #f6f5f1; --ink: #1d1d1b; --muted: #6b6a65; --line: #dcdad3; --panel: #fff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151514; --ink: #ecebe6; --muted: #9a9890; --line: #33322f; --panel: #1f1f1d; }
+  }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 ui-sans-serif, system-ui, sans-serif; }
+  h1 { font-size: 16px; margin: 0 0 12px; }
+  table { border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); }
+  td, th { padding: 4px 10px; border-bottom: 1px solid var(--line); text-align: right;
+    font-variant-numeric: tabular-nums; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  td:first-child, th:first-child { text-align: left; }
+  code { font-family: ui-monospace, Menlo, monospace; }
+  #log { color: var(--muted); white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h1>simulation-core on wasm32 — feasibility probe (ADR-0009)</h1>
+<p>Runs <code>probe_init(seed, agents, side)</code> then steps in chunks, timing with <code>performance.now()</code>.
+The hash must equal the native value printed by <code>cargo test -p cz-wasm-probe -- --nocapture</code>.</p>
+<table id="t"><thead><tr><th>case</th><th>agents (init → end)</th><th>ticks</th><th>ms</th><th>ticks/s</th><th>ns/agent-step</th><th>state hash</th></tr></thead><tbody></tbody></table>
+<p id="log"></p>
+<script type="module">
+const log = (s) => { document.getElementById("log").textContent += s + "\n"; };
+const url = new URLSearchParams(location.search).get("wasm")
+  || "../target/wasm32-unknown-unknown/release/cz_wasm_probe.wasm";
+const t0 = performance.now();
+const resp = await fetch(url);
+const bytes = await resp.arrayBuffer();
+const { instance } = await WebAssembly.instantiate(bytes, {});
+const { probe_init, probe_step, probe_hash, probe_tick, probe_snapshot_len, memory } = instance.exports;
+log(`wasm ${url}: ${bytes.byteLength} bytes, instantiated in ${(performance.now() - t0).toFixed(1)} ms`);
+
+const cases = [
+  { name: "reference (seed 42)", seed: 42n, agents: 1000, side: 128, ticks: 1000 },
+  { name: "steady state 2k ticks", seed: 42n, agents: 1000, side: 128, ticks: 2000 },
+  { name: "10k agents", seed: 42n, agents: 10000, side: 400, ticks: 200 },
+];
+const body = document.querySelector("#t tbody");
+for (const c of cases) {
+  const n0 = probe_init(c.seed, c.agents, c.side);
+  let agentSteps = 0, alive = n0;
+  const chunk = 50;
+  const start = performance.now();
+  for (let done = 0; done < c.ticks; done += chunk) {
+    agentSteps += alive * chunk; // alive before the chunk; close enough for a rate
+    alive = probe_step(chunk);
+  }
+  const ms = performance.now() - start;
+  const hash = probe_hash();
+  const tr = document.createElement("tr");
+  tr.innerHTML = `<td>${c.name}</td><td>${n0} → ${alive}</td><td>${Number(probe_tick())}</td>` +
+    `<td>${ms.toFixed(1)}</td><td>${(c.ticks / ms * 1000).toFixed(0)}</td>` +
+    `<td>${(ms * 1e6 / agentSteps).toFixed(0)}</td><td><code>0x${hash.toString(16).padStart(16, "0")}</code></td>`;
+  body.appendChild(tr);
+  await new Promise((r) => setTimeout(r, 0));
+}
+log(`snapshot JSON of last world: ${probe_snapshot_len()} bytes; wasm linear memory: ${memory.buffer.byteLength / 1048576} MiB`);
+window.probeDone = true;
+</script>
+</body>
+</html>

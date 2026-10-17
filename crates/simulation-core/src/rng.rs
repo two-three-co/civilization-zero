@@ -14,6 +14,8 @@ pub enum Stream {
     AgentSpawn = 2,
     Decide = 3,
     GatherPriority = 4,
+    /// Keyed by the *child's* id at birth (ADR-0008).
+    Mutation = 5,
 }
 
 /// SplitMix64 finaliser. Bijective on u64, good avalanche, no state.

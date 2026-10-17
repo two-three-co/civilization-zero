@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/simulation-core", "crates/cz-cli"]
+members = ["crates/simulation-core", "crates/cz-cli", "crates/cz-wasm-probe"]
 
 [workspace.package]
 version = "0.1.0"
@@ -20,3 +20,12 @@ debug = 1
 
 [profile.bench]
 debug = 1
+
+# Browser build of the kernel (ADR-0009): no debug info, LTO, single codegen unit.
+[profile.wasm]
+inherits = "release"
+debug = false
+strip = true
+lto = true
+codegen-units = 1
+opt-level = 3

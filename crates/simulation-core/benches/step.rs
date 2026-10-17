@@ -14,8 +14,9 @@ fn warmed_world(agents: u32, side: u16) -> World {
         ..WorldConfig::default()
     };
     let mut w = World::new(cfg).unwrap();
-    // Skip the initial die-off so we measure the steady state.
-    w.run(200);
+    // Skip the founding transient (die-off, first birth wave) so the
+    // population is in its steady band (docs/research/experiments/EXP-001).
+    w.run(1_000);
     w
 }
 
