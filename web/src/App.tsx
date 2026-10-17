@@ -2,10 +2,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { BranchesPanel, type Verification } from "./Branches";
 import { WorldClient } from "./client";
 import { InterventionPanel } from "./Intervene";
+import { compareIntervention, describePolicies, policyCounts } from "./policies";
 import {
+  ACTION_KINDS,
   AGENT_FIELDS,
+  POLICY_KINDS,
   POLICY_MIXES,
   PROTOCOL_VERSION,
+  type AgentDetail,
   type Deal,
   type Frame,
   type Interaction,
@@ -18,7 +22,7 @@ import {
   type Watched,
   type WorldInit,
 } from "./protocol";
-import { drawFrame, drawSparkline, MarkerTrail, pickAgent, SCALE, type Sample } from "./render";
+import { drawCurves, drawFrame, drawSparkline, History, MarkerTrail, pickAgent, RATE_WINDOW, SCALE, type Sample } from "./render";
 import { Tutorial } from "./Tutorial";
 
 const PARAMS = new URLSearchParams(location.search);
@@ -73,7 +77,7 @@ interface Branch {
   intervention: Intervention;
   /** The snapshot B was built from, kept so the fork can be repeated for verification. */
   origin: Uint8Array;
-  history: Map<number, Sample>;
+  history: History;
 }
 
 const NO_RATES: Rates = { simTps: 0, fps: 0, stepMsPerTick: null, xferPerTick: null, harmPerTick: null, sigPerTick: null };
@@ -83,9 +87,10 @@ export default function App() {
   const canvas = useRef<HTMLCanvasElement>(null);
   const canvasB = useRef<HTMLCanvasElement>(null);
   const spark = useRef<HTMLCanvasElement>(null);
+  const curves = useRef<HTMLCanvasElement>(null);
   const trailA = useRef(new MarkerTrail());
   const trailB = useRef(new MarkerTrail());
-  const history = useRef(new Map<number, Sample>());
+  const history = useRef(new History());
   const branch = useRef<Branch | null>(null);
   const busy = useRef(false);
   const tickSamples = useRef<{ t: number; tick: number; xfer: number; harm: number; sig: number }[]>([]);
@@ -112,12 +117,12 @@ export default function App() {
   const [rewound, setRewound] = useState(false);
 
   const show = useCallback((f: Frame) => {
-    history.current.set(f.tick, { alive: f.alive, food: f.foodTotal });
+    history.current.set(f.tick, sampleOf(f));
     setFrame(f);
   }, []);
 
   const showB = useCallback((f: Frame) => {
-    branch.current?.history.set(f.tick, { alive: f.alive, food: f.foodTotal });
+    branch.current?.history.set(f.tick, sampleOf(f));
     setFrameB(f);
   }, []);
 
@@ -224,6 +229,7 @@ export default function App() {
     if (frame && canvas.current) drawFrame(canvas.current, frame, selected, trailA.current);
     if (frameB && canvasB.current) drawFrame(canvasB.current, frameB, selected, trailB.current);
     if (frame && spark.current) drawSparkline(spark.current, history.current, frame.frontier, branch.current?.history);
+    if (frame && curves.current) drawCurves(curves.current, history.current, frame.frontier, branch.current?.history);
   }, [frame, frameB, selected]);
 
   // Seeks are coalesced: while one is in flight, only the newest request
@@ -293,7 +299,7 @@ export default function App() {
       await c.init({ ...DEFAULT_WORLD, snapshot });
       const { frame: fb } = await c.intervene(intervention);
       discardBranch();
-      branch.current = { client: c, forkedAt: fa.tick, intervention, origin, history: new Map() };
+      branch.current = { client: c, forkedAt: fa.tick, intervention, origin, history: new History() };
       setForkMs(performance.now() - t0);
       show(fa);
       showB(fb);
@@ -467,9 +473,10 @@ export default function App() {
             </button>
           </div>
           <p className="legend">
-            <i className="dot forager" /> forager <i className="dot random" /> random walker · green = food · opacity =
-            energy · drag the timeline to rewind (restored from the nearest snapshot, then re-executed and checked
-            against the ledger){frameB ? " · both worlds follow the timeline; B cannot go before its fork tick" : ""}
+            <i className="dot forager" /> forager <i className="dot random" /> random walker <i className="dot reflex" />{" "}
+            reflex (evolving) <i className="dot learner" /> learner (Q) · green = food · opacity = energy · drag the
+            timeline to rewind (restored from the nearest snapshot, then re-executed and checked against the ledger)
+            {frameB ? " · both worlds follow the timeline; B cannot go before its fork tick" : ""}
           </p>
           <p className="legend">
             interactions of the tick just executed, from the ledger: <i className="mark xfer" /> gave food (line to the
@@ -487,6 +494,8 @@ export default function App() {
               <dd>{frame?.tick ?? "–"}</dd>
               <dt>alive</dt>
               <dd>{frame?.alive ?? "–"}</dd>
+              <dt title="living agents by policy kind, from the frame's policy column">policies</dt>
+              <dd>{frame ? describePolicies(policyCounts(frame)) : "–"}</dd>
               <dt>food on map</dt>
               <dd>{frame?.foodTotal ?? "–"}</dd>
               <dt>frontier</dt>
@@ -524,6 +533,16 @@ export default function App() {
             <h2>Population and food (ticks seen)</h2>
             <canvas ref={spark} className="spark" />
           </div>
+          <div className="card">
+            <h2 title="ADR-0013 D8: the curves of the fixed-vs-learning comparison">Compare · A solid, B dashed</h2>
+            <canvas ref={curves} className="curves" />
+            <p className="muted hint">
+              Population, intake per agent per tick, and transfers / harms / signals per tick over the ticks seen, each
+              row on its own scale. Rates are ledger deltas over the trailing {RATE_WINDOW} ticks, so they read the same
+              at any speed. Fork B (<b>Compare: fixed vs learning</b> in Branches, or <b>Fork here</b>) to overlay it
+              from its fork tick.
+            </p>
+          </div>
           {frame && (
             <BranchesPanel
               a={frame}
@@ -534,6 +553,7 @@ export default function App() {
               verification={verification}
               onVerify={() => void verifyFork()}
               onDiscard={discardBranch}
+              onCompare={(kind) => void forkHere(compareIntervention(kind))}
             />
           )}
           {frame && (
@@ -611,7 +631,7 @@ export default function App() {
                 <dt>age</dt>
                 <dd>{agent.age}</dd>
                 <dt>policy</dt>
-                <dd>{agent.policy ? "random" : "forager"}</dd>
+                <dd>{POLICY_KINDS[agent.policy]?.toLowerCase() ?? `kind ${agent.policy}`}</dd>
                 <dt>last signal</dt>
                 <dd>
                   {detail
@@ -620,6 +640,25 @@ export default function App() {
                       : "none"
                     : "…"}
                 </dd>
+                {detail?.last_step && (
+                  <>
+                    <dt title="the kernel's record of the learner's previous decision: Q row, action kind, and that tick's reward in units of 100 milli-energy (3-7)">
+                      last step
+                    </dt>
+                    <dd>
+                      row {detail.last_step.state} · {ACTION_KINDS[detail.last_step.action] ?? detail.last_step.action} ·
+                      reward {detail.last_step.reward}
+                    </dd>
+                  </>
+                )}
+                {detail && describeTable(detail) && (
+                  <>
+                    <dt title="the learner's Q row it last decided in (fixed point, 16 = one reward unit; the greedy pick is the max), or a reflex's weight count">
+                      table
+                    </dt>
+                    <dd className="qrow">{describeTable(detail)}</dd>
+                  </>
+                )}
               </dl>
             ) : (
               <p className="muted">
@@ -756,6 +795,34 @@ export default function App() {
       </footer>
     </>
   );
+}
+
+/** What a frame contributes to the curves: population, food, and the ledger totals the rates are cut from. */
+function sampleOf(f: Frame): Sample {
+  return {
+    alive: f.alive,
+    food: f.foodTotal,
+    consumed: f.ledger.food_consumed,
+    transfers: f.ledger.transfers,
+    harms: f.ledger.harms,
+    signals: f.ledger.signals,
+  };
+}
+
+/**
+ * A learning agent's table in one line: the Q row a learner last decided in
+ * (one value per action kind, the greedy pick is the max), or how many
+ * weights a reflex carries. Fixed policies have none.
+ */
+function describeTable(d: AgentDetail): string | null {
+  const t = d.params.table;
+  if (!t) return null;
+  if ("reflex" in t) return `${t.reflex.weights.length} reflex weights (16 features × 8 kinds, 1/1024 units)`;
+  const rows = t.learner.q.length / ACTION_KINDS.length;
+  if (!d.last_step) return `Q table: ${rows} rows × ${ACTION_KINDS.length} kinds, no step recorded yet`;
+  const row = t.learner.q.slice(d.last_step.state * ACTION_KINDS.length, (d.last_step.state + 1) * ACTION_KINDS.length);
+  const best = Math.max(...row);
+  return `Q row ${d.last_step.state} of ${rows}: ${row.map((q, i) => `${ACTION_KINDS[i]} ${q}${q === best ? "*" : ""}`).join(" · ")}`;
 }
 
 function findAgent(frame: Frame, id: number) {

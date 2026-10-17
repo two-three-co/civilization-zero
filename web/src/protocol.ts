@@ -18,11 +18,25 @@
 // between the two agents with every accepted deal judged (kept / open /
 // broken) by the kernel-side reader, never by the page — and a `deals`
 // request lists every deal of a tick window so a thread can be found.
+//
+// v5 brings the learning policies to the page (ADR-0013 3-9c): the policy
+// column of `Frame.agents` is the kind's code 0..=3 (it was 0 / 1), the
+// founding mixes include reflex / learner / mixed-learning, interventions
+// include `set_policy` (D7) — "fixed vs learning" is a fork with it — and
+// `AgentDetail` carries a learner's Q table and last step. Nothing else
+// moved: the Transferable arrays and every request keep their v4 shape.
 
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 
 /** Fields per agent in `Frame.agents`, matching the kernel's trace layout. */
-export const AGENT_FIELDS = 8; // id, x, y, energy, inventory, policy (0 forager / 1 random), health, age
+export const AGENT_FIELDS = 8; // id, x, y, energy, inventory, policy (index into POLICY_KINDS), health, age
+
+/** `PolicyKind` as serde renders it (interventions, `AgentDetail.policy`). */
+export type PolicyKind = "Forager" | "Random" | "Reflex" | "Learner";
+/** The policy column of `Frame.agents` indexes this (cz-web `policy_code`, the kernel's order). */
+export const POLICY_KINDS: PolicyKind[] = ["Forager", "Random", "Reflex", "Learner"];
+/** `Action::kind_index` order: what a learner's `last_step.action` and the columns of its Q row mean. */
+export const ACTION_KINDS = ["move", "gather", "consume", "rest", "transfer", "store", "harm", "signal"] as const;
 
 /**
  * Fields per marker in `Frame.social`: kind, tick, x, y, x2, y2, value.
@@ -34,9 +48,15 @@ export const MARKER_TRANSFER = 0; // value = food units moved
 export const MARKER_HARM = 1; // value = health taken
 export const MARKER_SIGNAL = 2; // value = the symbol said
 
-/** How a fresh world's founding population is assigned fixed policies (same rule as `cz run --policy`). */
-export type PolicyMix = "forager" | "mixed" | "random";
-export const POLICY_MIXES: PolicyMix[] = ["forager", "mixed", "random"];
+/**
+ * How a fresh world's founding population is assigned policies (same rule
+ * as `cz run --policy`): `mixed` alternates forager / random by founding
+ * index, `mixed-learning` cycles forager / reflex / learner. The evolving
+ * mixes (`reflex`, `mixed-learning`) turn weight mutation on, as the CLI
+ * does without `--no-mutate` (ADR-0013 D6).
+ */
+export type PolicyMix = "forager" | "mixed" | "random" | "reflex" | "learner" | "mixed-learning";
+export const POLICY_MIXES: PolicyMix[] = ["forager", "mixed", "random", "reflex", "learner", "mixed-learning"];
 
 export interface WorldInit {
   seed: number;
@@ -57,12 +77,19 @@ export interface WorldInit {
   snapshot?: Uint8Array;
 }
 
-/** Exactly the kernel's `Intervention` as serde renders it (ADR-0010 2a-1). */
+/** Which living agents a `set_policy` applies to (`Who`): everyone, one id, or each independently with probability permille / 1000 (a seed-keyed draw). */
+export type Who = "all" | { id: number } | { fraction: { permille: number } };
+/** What a `set_policy` does to the heritable params (`ParamsMode`): the config defaults with a blank table, or keep them (a learner keeps what it learned). */
+export type ParamsMode = "default" | "keep";
+
+/** Exactly the kernel's `Intervention` as serde renders it (ADR-0010 2a-1, ADR-0013 D7). */
 export type Intervention =
   | { op: "drought"; regrow_amount: number; regrow_interval: number }
   | { op: "scale_food"; permille: number }
-  | { op: "spawn_agents"; n: number; pos: { x: number; y: number }; policy: "Forager" | "Random" }
-  | { op: "remove_agent"; id: number };
+  | { op: "spawn_agents"; n: number; pos: { x: number; y: number }; policy: PolicyKind }
+  | { op: "remove_agent"; id: number }
+  /** Give some living agents another policy; bodies, memories and signals are untouched. "Fixed vs learning" is a fork plus this. */
+  | { op: "set_policy"; who: Who; kind: PolicyKind; params: ParamsMode };
 
 /** A ledger record of an applied intervention (`Event::Intervened`). */
 export interface InterventionEvent {
@@ -133,6 +160,22 @@ export interface Interaction {
   value: number;
 }
 
+/**
+ * The table a learning policy decides with (`PolicyTable`, ADR-0013 D6):
+ * a reflex's 16 features × 8 action kinds of fixed-point weights
+ * (row-major by feature, 1/1024 units), or a learner's `learner_states`
+ * rows × 8 kinds of fixed-point Q values (16 = one reward unit = 100
+ * milli-energy). Fixed policies have none.
+ */
+export type PolicyTable = { reflex: { weights: number[] } } | { learner: { q: number[] } };
+
+/** A learner's last decision as the kernel recorded it (`LearnerStep`, 3-7): the Q row, the `ACTION_KINDS` index and that tick's reward in units of 100 milli-energy. */
+export interface LearnerStep {
+  state: number;
+  action: number;
+  reward: number;
+}
+
 /** The kernel's `Agent` as serde renders it (`WasmWorld::agent_json`). */
 export interface AgentDetail {
   id: number;
@@ -141,12 +184,14 @@ export interface AgentDetail {
   health: number;
   inventory: number;
   age: number;
-  policy: "Forager" | "Random";
-  params: { hunger_permille: number };
+  policy: PolicyKind;
+  params: { hunger_permille: number; table: PolicyTable | null };
   memory: { target: Pos | null };
   last_signal: Signal | null;
   /** Oldest first, at most `memory_slots` (8 by default). Written by the kernel only. */
   recent: Interaction[];
+  /** Learners only, once they have decided; `null` for every other kind, a newborn, or right after a `set_policy`. */
+  last_step: LearnerStep | null;
 }
 
 /** Any ledger record (`Event` as serde renders it, tagged by `kind`). */

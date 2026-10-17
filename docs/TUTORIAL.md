@@ -14,7 +14,7 @@ Civilization Zero の最初の遊べるマイルストーン。ブラウザだ�
 
 ## 1. 観察する（Play）
 
-**Play** を押す。オレンジが採集者（forager）、青がランダム歩行者、緑が食料。個体の明るさはエネルギー。
+**Play** を押す。オレンジが採集者（forager）、青がランダム歩行者、黄が進化する反射（reflex）、ピンクが学習者（learner）、緑が食料。個体の明るさはエネルギー。
 最初の 100〜300 tick で、食料から遠い個体が餓死し、豊かな場所の個体がエネルギーを分けて子を産み、
 人口は約 1,300 の帯域に落ち着く（docs/research/experiments/EXP-001）。
 
@@ -97,9 +97,22 @@ frontier（到達した最大 tick）にいるとき、「Intervene」カード�
 
 読み方の規則（ADR-0013 D5 の 3-9b での確定）: 取引の窓は提案の tick から期限（提案 tick + by）まで。窓の中で提案者が渡した合計が give 以上、受諾者が返した合計が want 以上になれば kept。期限を過ぎてどちらかが不足なら broken。移転と約束の対応はカーネルが記録しないので、窓が重なる取引は同じ移転を両方で数える。
 
+## 8. 固定方策と学習方策を比べる（Phase 3、3-9c）
+
+学習方策（ADR-0013 D6）は 2 種類ある。**Learner** は表形式 Q 学習（整数、生涯内で学ぶ、子は表を継承）、**Reflex** は 16 特徴の線形反射で世代間の突然変異だけで変わる。どちらも固定方策と同じ `Observation → Intent` の純関数で、学習（Q の更新）はカーネルが Apply で行う。「固定 vs 学習」は fork と `SetPolicy` 介入（D7）の組み合わせで、Toy 1 の分岐比較がそのまま実験になる。
+
+1. **https://two-three-co.github.io/civilization-zero/** を開き（既定の採集者だけの世界）、`tick` 欄に 300 と入れて **Go**。
+2. 右列「Branches」の **Compare: fixed vs learning** を押す（隣の選択は B の方策。既定は Learner）。tick 300 の開始状態から世界 B が作られ、B の全員が学習者に切り替わる。身体・位置・記憶はそのままで、方策と白紙の Q 表だけが変わる。Branches の表の **policies** が A「1442 forager」/ B「1442 learner」になり、state hash が分かれる。
+3. `15 tick/frame` にして **Play**。地図 B の個体がピンク（learner）になり、移転の線・加害の ✕・発信の輪が B にだけ出る。右列「Compare · A solid, B dashed」の 5 本のカーブで比べる: **alive**（B は tick 300〜450 で 1,442 → 約 500 体まで落ちてから回復し、tick 1,000 以降は A より多い）、**intake / agent / tick**（1 体 1 tick あたりの摂取量。A ≈ 0.17、B は落ち込みの後 0.16 前後）、**transfers / harms / signals / tick**（A は 0、B は学習者が社会行動を試すので非零）。率は直近 50 tick の台帳差分なので、速度を変えても読みは同じ。Branches の表には食料消費の累計と、各世界のワーカーの ms/tick も並ぶ（学習世界は採集者の世界の 2〜2.5 倍かかる）。
+4. **Verify: fork again** を押す。同じスナップショットに同じ `set_policy` を適用して同じ tick まで進めた 3 つ目の世界が B とハッシュ一致 = **MATCH**。学習の Q 更新が整数演算だから、学習世界でも決定論の契約（ADR-0012）はそのまま成り立つ。コマンドラインでも同じ歴史になる: `cz run --seed 42 --ticks 600 --set-policy learner --set-policy-at 300` の hash `0xdf5ff028506d418a` は、tick 600 に戻した B の state hash と一致する（A は `cz run --seed 42 --ticks 600` の `0xf7f61e25359e29dd`）。
+5. 学習者の中を見るには、ヘッダの **world** で **learner**（全員 Learner）を選ぶ。`?policy=learner` の世界は `cz run --seed 42 --policy learner` と同じで、tick 1000 の hash は `0x83e036b522fecf63`。地図の個体をクリックすると「Agent」カードに **last step**（前 tick に決めた Q 表の行・行動の種類・報酬）と **table**（その行の Q 値 8 個。最大に `*`）が出る。零の初期 Q では未試行の種類が同点で最大になるので、各状態で全種類を 1 回ずつ試してから好みがつく様子が読める。**reflex**（進化する反射。突然変異 ON）と **mixed-learning**（forager / reflex / learner を founding index で輪番）も同様に `cz run --policy …` と hash が一致する。
+6. 「Intervene」の **Set policy** は同じ介入の一般形: 対象（all / fraction = permille で各個体を seed 付きで抽選 / one agent）、kind、params（default = 白紙の表、keep = 学習者は学んだ Q を保つ）を選んで **Apply**（head のみ）か **Fork here**。台帳の履歴に `set policy → reflex for each agent with probability 500‰ (keep params)` のように記録される。
+
+注意: 採集者の世界の fork で B を **Reflex** にすると、B の身体の軌跡は A と同一になる（hash だけ違う）。Reflex の初期重みは Forager 等価で、進化は世界の設定 `mutation_enabled` に依るところ、介入は設定を変えないから。進化する Reflex を見るには `reflex` / `mixed-learning` の世界を選ぶ。
+
 ## 分かっている制限
 
 - 分岐は A と B の 1 組だけ。B をさらに分岐することはまだできない。
 - B の介入履歴と個体インスペクタは未対応（B の地図にもマーカーは出る）。
-- 世界の設定は seed（`?seed=`、既定 42）と方策構成（forager / mixed / random）だけ変えられる。128×128、1,000 体は固定。
-- 制度・学習はまだ存在しない（Phase 3〜4）。スレッドは台帳を読むだけで、不履行に対して世界の中で何かが起きるわけではない（制裁は Phase 4）。学習方策との比較は 3-9c。
+- 世界の設定は seed（`?seed=`、既定 42）と方策構成（forager / mixed / random / reflex / learner / mixed-learning）だけ変えられる。128×128、1,000 体、学習者の表の行数（32）と ε（5%）は固定。
+- 制度はまだ存在しない（Phase 4）。スレッドは台帳を読むだけで、不履行に対して世界の中で何かが起きるわけではない（制裁は Phase 4）。学習者の報酬は自分のエネルギーだけなので、分かち合いは出なくて当然（ADR-0013 D6）。

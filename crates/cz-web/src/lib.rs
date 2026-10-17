@@ -15,7 +15,11 @@
 //! (3-9b) are the same ledger read for a pair: `thread_json` lists what
 //! passed between two agents and judges each accepted deal from the
 //! transfers that followed ([`thread`]); `deals_json` lists every deal of
-//! a window so one can be found.
+//! a window so one can be found. "Fixed vs learning" (3-9c) needs nothing
+//! new here: the page forks at the current tick and applies
+//! `Intervention::SetPolicy` through `intervene` (ADR-0013 D7); this crate
+//! only widens the founding mixes to the learning policies and reports the
+//! policy of every agent (`policy_code`) so the map can colour all four.
 //!
 //! Numbers cross the boundary as `u32` so JavaScript never needs `BigInt`;
 //! the state hash is a 16-hex-digit string. Errors are `String`s (wasm-bindgen
@@ -45,11 +49,25 @@ fn js<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
-/// How a fresh world's founding population is split between the fixed
-/// policies. The rule is `cz run --policy`'s, so a browser world and a CLI
-/// world with the same mix reach the same hashes. A forager-only world has
-/// no social behaviour at all (foragers never transfer, harm or signal), so
-/// the UI offers `mixed` and `random` to see the social layer at work.
+/// Names of the founding mixes a world can be built with, as `cz run
+/// --policy` spells them.
+pub const POLICY_MIXES: [&str; 6] = [
+    "forager",
+    "random",
+    "mixed",
+    "reflex",
+    "learner",
+    "mixed-learning",
+];
+
+/// How a fresh world's founding population is split between the policies.
+/// The rule is `cz run --policy`'s, so a browser world and a CLI world with
+/// the same mix reach the same hashes: `mixed` alternates Forager / Random
+/// by founding index, `mixed-learning` cycles Forager / Reflex / Learner
+/// (3-5). A forager-only world has no social behaviour at all (foragers
+/// never transfer, harm or signal), so the UI offers `mixed` and `random`
+/// to see the social layer at work, and the learning mixes (3-9c) to watch
+/// a world that learns from the start.
 pub fn policy_mix(name: &str) -> Result<fn(u32) -> PolicyKind, String> {
     match name {
         "forager" => Ok(|_| PolicyKind::Forager),
@@ -61,10 +79,35 @@ pub fn policy_mix(name: &str) -> Result<fn(u32) -> PolicyKind, String> {
                 PolicyKind::Random
             }
         }),
+        "reflex" => Ok(|_| PolicyKind::Reflex),
+        "learner" => Ok(|_| PolicyKind::Learner),
+        "mixed-learning" => Ok(|i| match i % 3 {
+            0 => PolicyKind::Forager,
+            1 => PolicyKind::Reflex,
+            _ => PolicyKind::Learner,
+        }),
         other => Err(format!(
-            "unknown policy mix {other:?}: expected forager, random or mixed"
+            "unknown policy mix {other:?}: expected one of {}",
+            POLICY_MIXES.join(", ")
         )),
     }
+}
+
+/// Whether a founding mix turns weight mutation on, as `cz run --policy`
+/// does without `--no-mutate` (ADR-0013 D6: Reflex evolves between
+/// generations, so the evolving mixes mutate by default; every other mix
+/// keeps the config default, off). Same rule, same hashes.
+pub fn evolves(name: &str) -> bool {
+    matches!(name, "reflex" | "mixed-learning")
+}
+
+/// Policy column of `agents()`: the kind's index in [`PolicyKind::ALL`]
+/// (0 forager, 1 random, 2 reflex, 3 learner), fixed by the kernel's order.
+pub fn policy_code(kind: PolicyKind) -> i32 {
+    PolicyKind::ALL
+        .iter()
+        .position(|k| *k == kind)
+        .expect("every kind is in ALL") as i32
 }
 
 /// Whether `e` names `id` in any role (actor, target, child, parent, or the
@@ -98,8 +141,10 @@ pub struct WasmWorld {
 impl WasmWorld {
     /// A fresh world. `patches` is the number of food patches (`cz` uses
     /// `width * height / 700`); `snapshot_every` bounds how far a `seek` has
-    /// to re-execute; `policy` is `forager`, `random` or `mixed` (see
-    /// [`policy_mix`]).
+    /// to re-execute; `policy` is one of [`POLICY_MIXES`] (see
+    /// [`policy_mix`]; the evolving mixes mutate, see [`evolves`]). The
+    /// rest of the config is the kernel default, as `cz run` without
+    /// options: `cz run --seed S --policy P` reaches the same hashes.
     #[wasm_bindgen(constructor)]
     pub fn new(
         seed: u32,
@@ -116,6 +161,7 @@ impl WasmWorld {
             height,
             initial_agents: agents,
             patch_count: patches,
+            mutation_enabled: evolves(policy),
             ..WorldConfig::default()
         };
         let world = World::generate(config, policy_mix(policy)?).map_err(js)?;
@@ -250,8 +296,9 @@ impl WasmWorld {
             .collect()
     }
 
-    /// `AGENT_FIELDS` values per living agent:
-    /// id, x, y, energy, inventory, policy (0 forager / 1 random), health, age.
+    /// `AGENT_FIELDS` values per living agent: id, x, y, energy, inventory,
+    /// policy ([`policy_code`]: 0 forager / 1 random / 2 reflex / 3
+    /// learner), health, age.
     pub fn agents(&self) -> Vec<i32> {
         let w = self.view();
         let mut out = Vec::with_capacity(w.agents.len() * AGENT_FIELDS);
@@ -262,7 +309,7 @@ impl WasmWorld {
                 a.pos.y as i32,
                 a.energy.clamp(0, i32::MAX as i64) as i32,
                 a.inventory as i32,
-                matches!(a.policy, PolicyKind::Random) as i32,
+                policy_code(a.policy),
                 a.health.clamp(0, i32::MAX as i64) as i32,
                 a.age.min(i32::MAX as u64) as i32,
             ]);

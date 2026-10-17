@@ -145,12 +145,12 @@ export function drawFrame(canvas: HTMLCanvasElement, frame: Frame, selected: num
   ctx.fillRect(0, 0, w * SCALE, h * SCALE);
   ctx.drawImage(scratch.canvas, 0, 0, w * SCALE, h * SCALE);
 
-  const forager = css("--forager");
-  const random = css("--random");
+  // One colour per policy kind, indexed by the agent's policy code (POLICY_KINDS order).
+  const colours = [css("--forager"), css("--random"), css("--reflex"), css("--learner")];
   const A = frame.agents;
   for (let k = 0; k < A.length; k += AGENT_FIELDS) {
     ctx.globalAlpha = 0.25 + 0.75 * Math.min(1, A[k + 3] / 100_000);
-    ctx.fillStyle = A[k + 5] ? random : forager;
+    ctx.fillStyle = colours[A[k + 5]] ?? colours[0];
     ctx.fillRect(A[k + 1] * SCALE + 0.5, A[k + 2] * SCALE + 0.5, SCALE - 1, SCALE - 1);
   }
   ctx.globalAlpha = 1;
@@ -187,9 +187,177 @@ export function pickAgent(frame: Frame, cellX: number, cellY: number): number | 
   return best;
 }
 
+/** One shown tick of a world: population, food, and the ledger totals the rate curves are cut from. */
 export interface Sample {
   alive: number;
   food: number;
+  /** `Ledger.food_consumed` at the tick (running total). */
+  consumed: number;
+  transfers: number;
+  harms: number;
+  signals: number;
+}
+
+/** Ticks a per-tick rate is averaged over (a trailing window ending at the sample). */
+export const RATE_WINDOW = 50;
+/** Most points a curve is drawn with; longer series are strided so a long run does not slow the frame. */
+const MAX_DRAWN = 1200;
+
+type Points = [number, Sample][];
+
+/**
+ * The samples of one world, one per tick shown, kept in tick order as they
+ * arrive so no frame has to sort them. Play appends; a rewind followed by
+ * play overwrites the ticks it revisits (same ledger, same values).
+ */
+export class History {
+  readonly pts: Points = [];
+
+  set(tick: number, s: Sample): void {
+    const p = this.pts;
+    if (p.length === 0 || tick > p[p.length - 1][0]) {
+      p.push([tick, s]);
+      return;
+    }
+    let lo = 0;
+    let hi = p.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (p[mid][0] < tick) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo < p.length && p[lo][0] === tick) p[lo] = [tick, s];
+    else p.splice(lo, 0, [tick, s]);
+  }
+}
+
+/** Indices to draw: every point while the series is short, every k-th (and the last) when it is long. */
+function strided(n: number): number[] {
+  const stride = Math.max(1, Math.ceil(n / MAX_DRAWN));
+  const out: number[] = [];
+  for (let i = 0; i < n; i += stride) out.push(i);
+  if (n > 0 && out[out.length - 1] !== n - 1) out.push(n - 1);
+  return out;
+}
+
+/**
+ * Per-tick rate of a running total at sample `i`: the total's change over
+ * the trailing `RATE_WINDOW` ticks (or since the first sample while the
+ * series is shorter than that), divided by the ticks elapsed. `j` is the
+ * index of the window's start, maintained by the caller as `i` advances.
+ */
+function rateAt(pts: Points, i: number, j: number, pick: (s: Sample) => number): number | null {
+  const [ti, si] = pts[i];
+  const [tj, sj] = pts[j];
+  return ti > tj ? (pick(si) - pick(sj)) / (ti - tj) : null;
+}
+
+/** The values of one curve at every sample of a series, in tick order (`null` where undefined). */
+function valuesOf(pts: Points, curve: Curve): (number | null)[] {
+  const out: (number | null)[] = [];
+  let j = 0;
+  for (let i = 0; i < pts.length; i++) {
+    while (j + 1 < i && pts[j + 1][0] <= pts[i][0] - RATE_WINDOW) j++;
+    out.push(curve.at(pts, i, j));
+  }
+  return out;
+}
+
+interface Curve {
+  label: string;
+  digits: number;
+  at: (pts: Points, i: number, j: number) => number | null;
+}
+
+/** The comparison's curves (ADR-0013 D8 / 3-9c), top to bottom. */
+export const CURVES: Curve[] = [
+  { label: "alive", digits: 0, at: (p, i) => p[i][1].alive },
+  {
+    label: `intake / agent / tick (${RATE_WINDOW}-tick mean)`,
+    digits: 3,
+    at: (p, i, j) => {
+      const r = rateAt(p, i, j, (s) => s.consumed);
+      return r === null || p[i][1].alive === 0 ? null : r / p[i][1].alive;
+    },
+  },
+  { label: "transfers / tick", digits: 2, at: (p, i, j) => rateAt(p, i, j, (s) => s.transfers) },
+  { label: "harms / tick", digits: 2, at: (p, i, j) => rateAt(p, i, j, (s) => s.harms) },
+  { label: "signals / tick", digits: 2, at: (p, i, j) => rateAt(p, i, j, (s) => s.signals) },
+];
+
+/**
+ * Small multiples for "fixed vs learning" (and any other fork): population,
+ * intake per agent per tick, and transfers / harms / signals per tick over
+ * the ticks seen so far, world A solid and world B dashed on one scale per
+ * row. Rates are ledger deltas over the trailing `RATE_WINDOW` ticks, so
+ * they read the same at any ticks-per-frame setting. Everything drawn is a
+ * frame the worker sent; nothing is simulated here.
+ */
+export function drawCurves(canvas: HTMLCanvasElement, series: History, frontier: number, other?: History): void {
+  const r = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.max(1, Math.round(r.width * dpr));
+  canvas.height = Math.max(1, Math.round(r.height * dpr));
+  const ctx = canvas.getContext("2d")!;
+  ctx.scale(dpr, dpr);
+  const pts = series.pts;
+  const opts = other ? other.pts : [];
+  ctx.fillStyle = css("--muted");
+  ctx.font = "11px system-ui";
+  if (pts.length < 2) {
+    ctx.fillText("play to collect ticks", 2, 11);
+    return;
+  }
+  const span = Math.max(1, frontier, opts.length > 0 ? opts[opts.length - 1][0] : 0);
+  const rowH = r.height / CURVES.length;
+  const colourA = css("--forager");
+  const colourB = css("--learner");
+  CURVES.forEach((curve, row) => {
+    const va = valuesOf(pts, curve);
+    const vb = valuesOf(opts, curve);
+    let max = 1e-9;
+    for (const v of va) if (v !== null && v > max) max = v;
+    for (const v of vb) if (v !== null && v > max) max = v;
+    const top = row * rowH + 13;
+    const bottom = (row + 1) * rowH - 3;
+    const line = (data: Points, vals: (number | null)[], colour: string, dashed: boolean) => {
+      ctx.strokeStyle = colour;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash(dashed ? [3, 3] : []);
+      ctx.beginPath();
+      let pen = false;
+      for (const i of strided(data.length)) {
+        const v = vals[i];
+        if (v === null) {
+          pen = false;
+          continue;
+        }
+        const x = (data[i][0] / span) * r.width;
+        const y = bottom - (v / max) * (bottom - top);
+        if (pen) ctx.lineTo(x, y);
+        else ctx.moveTo(x, y);
+        pen = true;
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+    };
+    if (row > 0) {
+      ctx.strokeStyle = css("--line");
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, row * rowH + 0.5);
+      ctx.lineTo(r.width, row * rowH + 0.5);
+      ctx.stroke();
+    }
+    line(pts, va, colourA, false);
+    line(opts, vb, colourB, true);
+    const last = (vals: (number | null)[]) => {
+      for (let i = vals.length - 1; i >= 0; i--) if (vals[i] !== null) return vals[i]!.toFixed(curve.digits);
+      return "–";
+    };
+    ctx.fillStyle = css("--muted");
+    ctx.fillText(`${curve.label} · A ${last(va)}${other ? ` · B ${last(vb)}` : ""}`, 2, row * rowH + 10);
+  });
 }
 
 /**
@@ -197,40 +365,43 @@ export interface Sample {
  * ticks seen so far, each on its own scale. A second world (`other`, the
  * fork) is drawn dashed on the same scales so the two can be compared.
  */
-export function drawSparkline(
-  canvas: HTMLCanvasElement,
-  series: Map<number, Sample>,
-  frontier: number,
-  other?: Map<number, Sample>,
-): void {
+export function drawSparkline(canvas: HTMLCanvasElement, series: History, frontier: number, other?: History): void {
   const r = canvas.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
   canvas.width = Math.max(1, Math.round(r.width * dpr));
   canvas.height = Math.max(1, Math.round(r.height * dpr));
   const ctx = canvas.getContext("2d")!;
   ctx.scale(dpr, dpr);
-  const pts = [...series.entries()].sort((a, b) => a[0] - b[0]);
-  const opts = other ? [...other.entries()].sort((a, b) => a[0] - b[0]) : [];
+  const pts = series.pts;
+  const opts = other ? other.pts : [];
   if (pts.length < 2) return;
-  const span = Math.max(1, frontier, ...opts.map(([t]) => t));
-  const line = (data: [number, Sample][], pick: (s: Sample) => number, max: number, color: string, dashed: boolean) => {
+  const span = Math.max(1, frontier, opts.length > 0 ? opts[opts.length - 1][0] : 0);
+  const line = (data: Points, pick: (s: Sample) => number, max: number, color: string, dashed: boolean) => {
     if (data.length < 2) return;
     ctx.strokeStyle = color;
     ctx.lineWidth = 1.5;
     ctx.setLineDash(dashed ? [3, 3] : []);
     ctx.beginPath();
-    data.forEach(([t, s], i) => {
+    strided(data.length).forEach((i, k) => {
+      const [t, s] = data[i];
       const x = (t / span) * r.width;
       const y = r.height - 4 - (pick(s) / max) * (r.height - 18);
-      if (i === 0) ctx.moveTo(x, y);
+      if (k === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     });
     ctx.stroke();
     ctx.setLineDash([]);
   };
-  const all = [...pts, ...opts];
-  const aliveMax = Math.max(1, ...all.map(([, s]) => s.alive));
-  const foodMax = Math.max(1, ...all.map(([, s]) => s.food));
+  let aliveMax = 1;
+  let foodMax = 1;
+  for (const [, s] of pts) {
+    aliveMax = Math.max(aliveMax, s.alive);
+    foodMax = Math.max(foodMax, s.food);
+  }
+  for (const [, s] of opts) {
+    aliveMax = Math.max(aliveMax, s.alive);
+    foodMax = Math.max(foodMax, s.food);
+  }
   const foodColor = `rgb(${css("--food")})`;
   const aliveColor = css("--forager");
   line(pts, (s) => s.food, foodMax, foodColor, false);

@@ -2,7 +2,8 @@
 //! natively; `tests/wasm.rs` runs the same kind of check inside wasm.
 
 use cz_web::{
-    policy_mix, WasmWorld, AGENT_FIELDS, MARKER_FIELDS, MARKER_HARM, MARKER_SIGNAL, MARKER_TRANSFER,
+    evolves, policy_code, policy_mix, WasmWorld, AGENT_FIELDS, MARKER_FIELDS, MARKER_HARM,
+    MARKER_SIGNAL, MARKER_TRANSFER, POLICY_MIXES,
 };
 use serde_json::Value;
 use simulation_core::{AgentId, Event, Intervention, PolicyKind, World, WorldConfig};
@@ -216,51 +217,307 @@ type Rule = fn(u32) -> PolicyKind;
 
 #[test]
 fn the_policy_mix_is_the_cli_rule_and_foragers_alone_are_socially_inert() {
-    let rules: [(&str, Rule); 3] = [
-        ("forager", |_| PolicyKind::Forager),
-        ("random", |_| PolicyKind::Random),
-        ("mixed", |i| {
-            if i % 2 == 0 {
-                PolicyKind::Forager
-            } else {
-                PolicyKind::Random
-            }
-        }),
+    // `cz run --policy NAME`'s assignment, and its mutation default: the
+    // evolving mixes mutate unless `--no-mutate` (ADR-0013 D6).
+    let rules: [(&str, Rule, bool); 6] = [
+        ("forager", |_| PolicyKind::Forager, false),
+        ("random", |_| PolicyKind::Random, false),
+        (
+            "mixed",
+            |i| {
+                if i % 2 == 0 {
+                    PolicyKind::Forager
+                } else {
+                    PolicyKind::Random
+                }
+            },
+            false,
+        ),
+        ("reflex", |_| PolicyKind::Reflex, true),
+        ("learner", |_| PolicyKind::Learner, false),
+        (
+            "mixed-learning",
+            |i| match i % 3 {
+                0 => PolicyKind::Forager,
+                1 => PolicyKind::Reflex,
+                _ => PolicyKind::Learner,
+            },
+            true,
+        ),
     ];
-    for (name, rule) in rules {
+    let mut hashes = Vec::new();
+    for (name, rule, mutates) in rules {
+        assert_eq!(evolves(name), mutates, "{name}");
         let mut ww = WasmWorld::new(9, 32, 32, 200, 3, 25, name).unwrap();
         ww.step(60).unwrap();
-        let mut d = World::generate(crowded(9), rule).unwrap();
+        let mut d = World::generate(
+            WorldConfig {
+                mutation_enabled: mutates,
+                ..crowded(9)
+            },
+            rule,
+        )
+        .unwrap();
         d.run(60);
         assert_eq!(ww.state_hash_hex(), hex(&d), "{name}");
-        let random_walkers = ww
-            .agents()
-            .chunks(AGENT_FIELDS)
-            .filter(|a| a[5] == 1)
-            .count();
-        assert_eq!(
-            random_walkers,
-            d.agents
-                .iter()
-                .filter(|a| a.policy == PolicyKind::Random)
-                .count(),
-            "{name}"
-        );
+        hashes.push(ww.state_hash_hex());
+        // The policy column tells all four kinds apart (3-9c).
+        for kind in PolicyKind::ALL {
+            let code = policy_code(kind);
+            assert_eq!(
+                ww.agents()
+                    .chunks(AGENT_FIELDS)
+                    .filter(|a| a[5] == code)
+                    .count(),
+                d.agents.iter().filter(|a| a.policy == kind).count(),
+                "{name}: {kind:?}"
+            );
+        }
         let ledger: Value = serde_json::from_str(&ww.ledger_json().unwrap()).unwrap();
         let social = ["transfers", "harms", "signals"]
             .iter()
             .map(|k| ledger[k].as_u64().unwrap())
             .sum::<u64>();
-        if name == "forager" {
-            assert_eq!(social, 0, "foragers never transfer, harm or signal");
-            assert!(ww.social().is_empty());
-        } else {
-            assert!(social > 0, "{name}: random walkers interact");
+        match name {
+            "forager" => {
+                assert_eq!(social, 0, "foragers never transfer, harm or signal");
+                assert!(ww.social().is_empty());
+            }
+            // Reflex starts from forager-equivalent weights (3-6); whether
+            // a mutated child has interacted by tick 60 is not promised.
+            "reflex" => {}
+            _ => assert!(
+                social > 0,
+                "{name}: random walkers and blank learners interact"
+            ),
         }
     }
-    assert!(WasmWorld::new(9, 32, 32, 200, 3, 25, "learner").is_err());
-    assert!(policy_mix("mixed").is_ok());
+    hashes.sort();
+    hashes.dedup();
+    assert_eq!(hashes.len(), 6, "six mixes, six worlds");
+    for name in POLICY_MIXES {
+        assert!(policy_mix(name).is_ok(), "{name}");
+    }
+    assert!(WasmWorld::new(9, 32, 32, 200, 3, 25, "walker").is_err());
     assert!(policy_mix("").is_err());
+    assert_eq!(
+        PolicyKind::ALL.map(policy_code),
+        [0, 1, 2, 3],
+        "forager / random / reflex / learner, the kernel's order"
+    );
+}
+
+/// 3-9c: "fixed vs learning" is a fork plus `SetPolicy`, and the page does
+/// it with the same `fromSnapshot` + `intervene(json)` as any other fork.
+/// Done twice it reaches the same hash, equal to `Multiverse::fork` with the
+/// same intervention; the fork reports every agent as a learner with its Q
+/// table and the kernel's record of its last step, and the ledger totals
+/// the curves are drawn from carry on from the parent's.
+#[test]
+fn set_policy_crosses_the_boundary_and_the_compare_fork_is_reproducible() {
+    use multiverse::{BranchId, Multiverse};
+    use simulation_core::{ParamsMode, Who};
+
+    let parse = |s: String| -> Value { serde_json::from_str(&s).unwrap() };
+    let codes =
+        |w: &WasmWorld| -> Vec<i32> { w.agents().chunks(AGENT_FIELDS).map(|a| a[5]).collect() };
+    let mut parent = WasmWorld::new(9, 32, 32, 200, 3, 25, "forager").unwrap();
+    parent.step(100).unwrap();
+    parent.seek(60).unwrap();
+    let bytes = parent.snapshot_bytes();
+    let ledger_at_60 = parent.ledger_json().unwrap();
+    let switch = r#"{"op":"set_policy","who":"all","kind":"Learner","params":"default"}"#;
+
+    let fork = || {
+        let mut b = WasmWorld::from_snapshot(&bytes, 25).unwrap();
+        assert_eq!(
+            b.ledger_json().unwrap(),
+            ledger_at_60,
+            "the ledger is state"
+        );
+        let event = b.intervene(switch).unwrap();
+        assert!(
+            event.starts_with(r#"{"kind":"intervened","tick":60,"#)
+                && event.contains(r#""op":"set_policy""#),
+            "{event}"
+        );
+        assert!(
+            codes(&b).iter().all(|&c| c == 3),
+            "everyone switched at once"
+        );
+        b.step(100).unwrap();
+        b
+    };
+    let (b, c) = (fork(), fork());
+    assert_eq!(
+        b.state_hash_hex(),
+        c.state_hash_hex(),
+        "same compare twice, same history"
+    );
+    assert_eq!((b.origin(), b.tick(), b.frontier()), (60, 160, 160));
+    assert!(
+        codes(&b).iter().all(|&c| c == 3),
+        "children inherit the kind"
+    );
+    assert_eq!(
+        b.interventions_json()
+            .unwrap()
+            .matches("set_policy")
+            .count(),
+        1
+    );
+
+    let mut mv = Multiverse::new(
+        World::generate(crowded(9), |_| PolicyKind::Forager).unwrap(),
+        25,
+    );
+    mv.step(BranchId(0), 100).unwrap();
+    let f = mv
+        .fork(
+            BranchId(0),
+            60,
+            &[Intervention::SetPolicy {
+                who: Who::All,
+                kind: PolicyKind::Learner,
+                params: ParamsMode::Default,
+            }],
+        )
+        .unwrap();
+    mv.step(f, 100).unwrap();
+    assert_eq!(b.state_hash_hex(), hex(mv.branch(f).unwrap().head()));
+
+    // A is untouched: still foragers, a different history from tick 60 on.
+    parent.seek(160).unwrap();
+    assert!(codes(&parent).iter().all(|&c| c == 0));
+    assert_ne!(parent.state_hash_hex(), b.state_hash_hex());
+
+    // What the inspector shows for a learner: its policy, the Q table (32
+    // rows × 8 kinds, no longer blank) and the kernel-written last step.
+    let id = b.agents()[0] as u32;
+    let a = parse(b.agent_json(id).unwrap());
+    assert_eq!(a["policy"], "Learner");
+    let q = a["params"]["table"]["learner"]["q"].as_array().unwrap();
+    assert_eq!(q.len(), 32 * 8);
+    assert!(
+        q.iter().any(|v| v.as_i64().unwrap() != 0),
+        "100 ticks taught it something"
+    );
+    let step = &a["last_step"];
+    assert!(step["state"].as_u64().unwrap() < 32, "{step}");
+    assert!(step["action"].as_u64().unwrap() < 8, "{step}");
+    assert!(step["reward"].is_i64(), "{step}");
+    let p = parse(parent.agent_json(parent.agents()[0] as u32).unwrap());
+    assert_eq!(
+        (&p["params"]["table"], &p["last_step"]),
+        (&Value::Null, &Value::Null)
+    );
+
+    // The curves' inputs are in the ledger, and learners with a blank table
+    // try every kind, so the fork's social totals grow from the parent's.
+    let (lb, lp) = (parse(b.ledger_json().unwrap()), parse(ledger_at_60));
+    for k in [
+        "food_consumed",
+        "transfers",
+        "harms",
+        "signals",
+        "births",
+        "deaths",
+    ] {
+        assert!(
+            lb[k].as_u64().unwrap() >= lp[k].as_u64().unwrap(),
+            "{k}: {lb} vs {lp}"
+        );
+    }
+    assert!(lb["food_consumed"].as_u64().unwrap() > lp["food_consumed"].as_u64().unwrap());
+    assert!(
+        lb["transfers"].as_u64().unwrap()
+            + lb["harms"].as_u64().unwrap()
+            + lb["signals"].as_u64().unwrap()
+            > 0
+    );
+    assert_eq!(
+        lp["transfers"].as_u64().unwrap()
+            + lp["harms"].as_u64().unwrap()
+            + lp["signals"].as_u64().unwrap(),
+        0
+    );
+
+    // The other shapes of the record pass through unchanged; an invalid one
+    // is rejected without touching the state; a `Fraction` draw is a
+    // function of the snapshot, so the same fraction picks the same agents.
+    let fraction = r#"{"op":"set_policy","who":{"fraction":{"permille":500}},"kind":"Reflex","params":"keep"}"#;
+    let mut w = WasmWorld::from_snapshot(&bytes, 25).unwrap();
+    let before = w.state_hash_hex();
+    assert!(w
+        .intervene(r#"{"op":"set_policy","who":{"fraction":{"permille":1001}},"kind":"Reflex","params":"keep"}"#)
+        .is_err());
+    assert!(w
+        .intervene(r#"{"op":"set_policy","who":"all","kind":"Walker","params":"default"}"#)
+        .is_err());
+    assert_eq!(w.state_hash_hex(), before);
+    w.intervene(fraction).unwrap();
+    let half = codes(&w);
+    let reflex = half.iter().filter(|&&c| c == 2).count();
+    assert!(
+        reflex > 0 && reflex < half.len(),
+        "{reflex} of {}",
+        half.len()
+    );
+    let mut again = WasmWorld::from_snapshot(&bytes, 25).unwrap();
+    again.intervene(fraction).unwrap();
+    assert_eq!(codes(&again), half);
+    let first = w.agents()[0] as u32;
+    w.intervene(&format!(
+        r#"{{"op":"set_policy","who":{{"id":{first}}},"kind":"Random","params":"default"}}"#
+    ))
+    .unwrap();
+    assert_eq!(w.agents()[5], 1);
+    assert_eq!(&codes(&w)[1..], &half[1..]);
+    w.step(20).unwrap();
+    assert_eq!(
+        w.interventions_json()
+            .unwrap()
+            .matches("set_policy")
+            .count(),
+        2
+    );
+    // Behind the head it is a fork, as for every intervention.
+    w.seek(70).unwrap();
+    assert!(w.intervene(switch).is_err());
+}
+
+/// The learning world's golden (ADR-0013 completion criterion 4): the
+/// default world with every founder a `Learner`, 200 ticks, as
+/// `tests/wasm.rs` checks under wasm. Pinned here natively so the two
+/// cannot drift apart silently; if the Learner's rule changes on purpose,
+/// update both and STATUS's golden table.
+pub const LEARNER_GOLDEN_200_HEX: &str = "cb8bc0a9772c09a4";
+
+#[test]
+fn the_learner_world_golden_is_pinned_for_the_wasm_check() {
+    let mut ww = WasmWorld::new(42, 128, 128, 1000, 24, 100, "learner").unwrap();
+    ww.step(200).unwrap();
+    let mut d = World::generate(
+        WorldConfig {
+            seed: 42,
+            ..WorldConfig::default()
+        },
+        |_| PolicyKind::Learner,
+    )
+    .unwrap();
+    d.run(200);
+    assert_eq!(ww.state_hash_hex(), hex(&d));
+    assert_eq!(
+        ww.dynamics_hash_hex(),
+        format!("{:016x}", d.dynamics_hash())
+    );
+    assert_eq!(ww.dynamics_hash_hex(), LEARNER_GOLDEN_200_HEX);
+    assert_ne!(
+        ww.dynamics_hash_hex(),
+        "658ee873d1866501",
+        "not the forager's"
+    );
+    assert!(ww.agents().chunks(AGENT_FIELDS).all(|a| a[5] == 3));
 }
 
 #[test]

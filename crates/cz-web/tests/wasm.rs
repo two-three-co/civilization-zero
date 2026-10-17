@@ -4,7 +4,7 @@
 //! changes, change it here too.
 #![cfg(target_arch = "wasm32")]
 
-use cz_web::{WasmWorld, MARKER_FIELDS};
+use cz_web::{WasmWorld, AGENT_FIELDS, MARKER_FIELDS};
 use wasm_bindgen_test::*;
 
 const GOLDEN_200_HEX: &str = "658ee873d1866501";
@@ -66,7 +66,72 @@ fn the_social_surface_works_under_wasm() {
     assert_eq!(again.state_hash_hex(), w.state_hash_hex());
     assert_eq!(again.social(), markers);
 
-    assert!(WasmWorld::new(3, 32, 32, 200, 3, 25, "learner").is_err());
+    assert!(WasmWorld::new(3, 32, 32, 200, 3, 25, "walker").is_err());
+}
+
+/// The learning world's golden, computed natively
+/// (`tests/native.rs::the_learner_world_golden_is_pinned_for_the_wasm_check`):
+/// the integer Q learner must reach the same hash under wasm. If the
+/// Learner's rule changes on purpose, update both constants.
+const LEARNER_GOLDEN_200_HEX: &str = "cb8bc0a9772c09a4";
+
+/// 3-9c under wasm: a world of learners reaches the native hash, and
+/// "fixed vs learning" — a fork of a forager world with every agent
+/// switched by `SetPolicy` through `intervene` — is reproducible and
+/// reports its agents as learners (policy code 3). `tests/native.rs`
+/// checks the contents against `Multiverse::fork`; this checks the code
+/// path under wasm.
+#[wasm_bindgen_test]
+fn learning_worlds_run_under_wasm_and_the_compare_fork_is_reproducible() {
+    let codes =
+        |w: &WasmWorld| -> Vec<i32> { w.agents().chunks(AGENT_FIELDS).map(|a| a[5]).collect() };
+    let mut learners = WasmWorld::new(42, 128, 128, 1000, 24, 100, "learner").unwrap();
+    learners.step(200).unwrap();
+    assert_eq!(learners.dynamics_hash_hex(), LEARNER_GOLDEN_200_HEX);
+    assert!(codes(&learners).iter().all(|&c| c == 3));
+
+    let mut parent = WasmWorld::new(3, 32, 32, 200, 3, 25, "forager").unwrap();
+    parent.step(100).unwrap();
+    parent.seek(60).unwrap();
+    let bytes = parent.snapshot_bytes();
+    let fork = || {
+        let mut b = WasmWorld::from_snapshot(&bytes, 25).unwrap();
+        b.intervene(r#"{"op":"set_policy","who":"all","kind":"Learner","params":"default"}"#)
+            .unwrap();
+        b.step(80).unwrap();
+        b
+    };
+    let (b, c) = (fork(), fork());
+    assert_eq!(b.state_hash_hex(), c.state_hash_hex());
+    assert!(codes(&b).iter().all(|&c| c == 3));
+    assert!(codes(&parent).iter().all(|&c| c == 0));
+    let ledger: serde_json::Value = serde_json::from_str(&b.ledger_json().unwrap()).unwrap();
+    assert!(
+        ledger["transfers"].as_u64().unwrap()
+            + ledger["harms"].as_u64().unwrap()
+            + ledger["signals"].as_u64().unwrap()
+            > 0,
+        "blank learners try every kind"
+    );
+    let a: serde_json::Value =
+        serde_json::from_str(&b.agent_json(b.agents()[0] as u32).unwrap()).unwrap();
+    assert_eq!(
+        a["params"]["table"]["learner"]["q"]
+            .as_array()
+            .unwrap()
+            .len(),
+        32 * 8
+    );
+
+    let mixed = WasmWorld::new(3, 32, 32, 200, 3, 25, "mixed-learning").unwrap();
+    let mut seen: Vec<i32> = codes(&mixed);
+    seen.sort();
+    seen.dedup();
+    assert_eq!(
+        seen,
+        vec![0, 2, 3],
+        "forager / reflex / learner by founding index"
+    );
 }
 
 /// Negotiation threads (ADR-0013 3-9b) under wasm: in the crowded random

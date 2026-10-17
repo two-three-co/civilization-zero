@@ -10,6 +10,7 @@
 
 import {
   AGENT_FIELDS,
+  POLICY_KINDS,
   type AgentDetail,
   type Envelope,
   type Frame,
@@ -58,13 +59,24 @@ function ensureCapacity(s: State, agents: number): void {
   s.agents = bigger;
 }
 
-/** The kernel's rule for `WorldInit.policy` (`cz run --policy`): 1 = random walker. */
+/**
+ * The kernel's rule for `WorldInit.policy` (`cz run --policy`), as policy
+ * codes (POLICY_KINDS order). The mock moves only random walkers (1)
+ * differently; its reflex (2) and learner (3) agents behave like foragers
+ * and never learn — it is a stand-in, not the kernel.
+ */
 function policyOf(c: WorldInit, i: number): number {
   switch (c.policy ?? "forager") {
     case "random":
       return 1;
     case "mixed":
       return i % 2 === 1 ? 1 : 0;
+    case "reflex":
+      return 2;
+    case "learner":
+      return 3;
+    case "mixed-learning":
+      return [0, 2, 3][i % 3];
     default:
       return 0;
   }
@@ -300,13 +312,14 @@ function watched(s: State, watch: Watch): Watched {
       pos: { x: s.agents[k + 1], y: s.agents[k + 2] },
       energy: s.agents[k + 3],
       inventory: s.agents[k + 4],
-      policy: s.agents[k + 5] === 1 ? "Random" : "Forager",
+      policy: POLICY_KINDS[s.agents[k + 5]] ?? "Forager",
       health: s.agents[k + 6],
       age: s.agents[k + 7],
-      params: { hunger_permille: 500 },
+      params: { hunger_permille: 500, table: null },
       memory: { target: null },
       last_signal: null,
       recent: [],
+      last_step: null,
     };
     break;
   }

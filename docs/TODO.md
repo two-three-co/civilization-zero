@@ -15,8 +15,9 @@ Phase 2 の計画は ADR-0010（Toy 1）に従う。
 - [ ] Store / Transfer 行動（イベント台帳と同時に実装）。
 - [ ] `Event::Acted { agent, intent, outcome }` の記録（2a-3、Store/Transfer と同時。全行動記録は設定で ON/OFF、台帳サイズを計測）。
 - [ ] 台帳のバイナリ形式（postcard は内部タグ付き enum を復号できないので別ワイヤ型が要る。JSON Lines で足りている間はやらない）。
-- [ ] 2b-6 の磨き込み（任意）: 分岐を 2 本以上、fork した B をさらに fork、B の介入履歴の表示、B 側の個体インスペクタ。
-- [ ] wasm サイズ（205 KB → 3-3 で 226 KB → 3-9a で 278 KB、3-4 と合わせて 286 KB → 3-9b で 337 KB。3-9a の +52 KB は `agent_json` / `ledger_json` / `agent_events_json` の serde_json 直列化が主、3-9b の +51 KB は `thread_json` / `deals_json` の `Thread` / `Deal` 直列化）: serde_json を境界から外す（介入・イベント・個体を構造体や typed array で渡す）か、`--profile wasm` 相当の設定を wasm-pack に通せば縮む見込み。計測してから。
+- [ ] 2b-6 の磨き込み（任意）: 分岐を 2 本以上、fork した B をさらに fork、B の介入履歴の表示、B 側の個体インスペクタ（3-9c の比較で B の学習者を見たいときは `?policy=learner` で A を学習世界にする）。
+- [ ] 3-9c の残り（任意）: 学習世界単独の画面 tick/s・fps の前面計測（2 世界同期の値は STATUS にある）、曲線の履歴は 1 フレーム 1 点（1,200 点を超えると間引いて描画、tick/フレームを下げた長時間再生ではメモリが伸びる）。
+- [ ] wasm サイズ（205 KB → 3-3 で 226 KB → 3-9a で 278 KB、3-4 と合わせて 286 KB → 3-9b で 337 KB → 3-9c で 345 KB。3-9a の +52 KB は `agent_json` / `ledger_json` / `agent_events_json` の serde_json 直列化が主、3-9b の +51 KB は `thread_json` / `deals_json` の `Thread` / `Deal` 直列化）: serde_json を境界から外す（介入・イベント・個体を構造体や typed array で渡す）か、`--profile wasm` 相当の設定を wasm-pack に通せば縮む見込み。計測してから。
 
 ## Phase 3: Agent Cognition（ADR-0013 のタスク表に従う）
 
@@ -30,7 +31,7 @@ Phase 2 の計画は ADR-0010（Toy 1）に従う。
 - [ ] 3-8 EXP-002 事前登録 → 実行 → 記録
 - [x] 3-9a UI: 社会マーカー（`Frame.social`）・台帳集計（`Frame.ledger`）・インスペクタの記憶/相互作用・世界の方策構成選択（済 2026-10-17: プロトコル v3、cz-web に `social / ledger_json / agent_json / agent_events_json` と `policy` 引数。ローカルと公開 URL で確認済み）
 - [x] 3-9b UI: 交渉スレッド（済 2026-10-17: `crates/cz-web/src/thread.rs` が 2 者間の台帳を台帳順に並べ、各 `Accepted` を取引として窓内の移転から kept / open / broken を判定。`thread_json` / `deals_json`、プロトコル v4（`Watch.partner` → `Watched.thread`、`deals` 要求）、`?seed=`、インスペクタの Thread と Deals カード。判定は cz-web 側、UI は表示のみ。ブラウザは `?policy=mixed&seed=23` の #909 ↔ #363 で確認）
-- [ ] 3-9c UI: fixed vs learning 比較（fork + `SetPolicy`、人口・摂取量・移転数カーブ、方策選択。cz-web の `agents()` の policy 列を 0/1 から `PolicyKind` 全体に広げる）
+- [x] 3-9c UI: fixed vs learning 比較（済 2026-10-17: Branches の「Compare: fixed vs learning」= 現 tick で fork + `SetPolicy { All, kind, Default }`（B の kind は Learner 既定、Reflex / Forager / Random も可）、「Compare · A solid, B dashed」の 5 カーブ（人口・摂取量/体/tick・移転/tick・加害/tick・発信/tick、直近 50 tick の台帳差分）、介入パネルの Set policy（All / Fraction / Id × Default / Keep）、cz-web の `policy_mix` に `reflex / learner / mixed-learning`（CLI と同じ割当、evolving mix は突然変異 ON）、`agents()` の policy 列を `policy_code` 0..=3 に、地図 4 色、インスペクタに Learner の last step と Q 行、Learner 世界のゴールデン `cb8bc0a9772c09a4` を native / wasm で固定、プロトコル v5。ブラウザ計測は STATUS）
 - [ ] 3-10 文書（ゴールデン表、STATUS、RISKS 追補、TUTORIAL 追補）
 
 ## Phase 6 以降
