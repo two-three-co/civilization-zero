@@ -1,4 +1,4 @@
-# Architecture（Phase 3 完了、Phase 4 の 4-7 時点）
+# Architecture（Phase 3 完了、Phase 4 の 4-8 時点）
 
 > 実装と一致している内容のみを書く。未実装の層は「予定」と明記する。製品ゴールは docs/PRODUCT.md。
 
@@ -25,7 +25,7 @@ crates/simulation-core     ← Deterministic World Kernel。外部依存は serd
 | `cz-cli` | `cz run` / `cz resume` / `cz sweep`、計測、trace 出力 | 実装済み |
 | `cz-wasm-probe` | カーネルを wasm32 で動かす最小 C-ABI（`probe_init/step/hash`） | 実装済み（計測用） |
 | `multiverse` | 再生（再実行 + 台帳照合）、`Multiverse` / `Branch`（head + 台帳 + 周期スナップショット）、fork と系譜 | 実装済み（ADR-0012） |
-| `web/`（npm, 非 Cargo） | Toy 1 UI: Vite + React + TS、UI ↔ Worker プロトコル（v6）、カーネル Worker（wasm）とモック Worker、社会マーカーとインスペクタ、交渉スレッドと取引の一覧、「Compare: fixed vs learning」（fork + `SetPolicy`）と A/B の率カーブ（ADR-0013 3-9a/b/c）、制度の読み出し経路（`Frame.institution`、`institution / timeline / violations / sanctions` 要求。画面は 4-8） | 実装済み（2b-1/2b-2、3-9a/b/c、4-7 は経路のみ） |
+| `web/`（npm, 非 Cargo） | Toy 1 UI: Vite + React + TS、UI ↔ Worker プロトコル（v6）、カーネル Worker（wasm）とモック Worker、社会マーカーとインスペクタ、交渉スレッドと取引の一覧、「Compare: fixed vs learning」（fork + `SetPolicy`）と A/B の率カーブ（ADR-0013 3-9a/b/c）、制度エクスプローラ（ADR-0014 D12、4-7 / 4-8: `Frame.institution` と `institution / timeline / violations / sanctions` 要求、時系列・違反・制裁・率の 4 カード、介入パネルの Enact / Repeal / Charter、「Compare: with vs without rule」、地図の係争の輪郭と制裁のマーカー。判定はすべて cz-web 側） | 実装済み（2b-1/2b-2、3-9a/b/c、4-7/4-8） |
 | `cz-web` | wasm-bindgen パッケージ: `WasmWorld` = `Multiverse` + cursor（巻き戻し用の復元ビュー）。社会層の読み出し `social / ledger_json / agent_json / agent_events_json`、方策構成付きコンストラクタ（`policy_mix`: forager / random / mixed / reflex / learner / mixed-learning、`cz run --policy` と同じ割当と突然変異の既定）、`agents()` の policy 列は `policy_code`（0..=3）、交渉スレッドの読み手 `thread.rs`（`thread_json / deals_json`: 2 者間の台帳と、各受諾を窓内の移転から kept / open / broken と判定。表示のための読み方で世界には何も返さない） | 実装済み（2b-1、3-9a/b/c） |
 | （`simulation-core/src/policy/`） | 方策は遷移関数の一部なので別クレートにしない（ADR-0013 D1）。`policy.rs` が根（Forager / Random / Reflex と共通のアクチュエータ、`Observation` と規範の問い合わせ）、`policy/learner.rs` が Q 学習者（3-7）。他者観測・相互作用・記憶・通信もカーネル内。4-3（ADR-0014 D6）で Reflex は 21 特徴、Learner は 10 ビット、Harm は係争中の隣人を優先 | 実装済み（3-6, 3-7, 4-3）。forager / random / reflex のファイル分割は未 |
 | （`simulation-core/src/nomos.rs`, `nomos/index.rs`） | Nomos Engine（ADR-0014 D2: 別クレートにしない）。4-1: `config.nomos` オンで追跡する社会的事実 = 先占（`Agent.arrived`、到着順）、侵害（先占者以外の採取。台帳のカウンタと先占者の記憶 `EncroachedBy`）、約束の監査（`World.nomos.deals`: 受諾から期限まで移転を数え、期限 tick に履行 / 不履行を決着）。4-2: Institution DSL（`Norm { kind: Encroach \| BrokenPromise \| Harm, standing_ticks, sanction: HARM \| REJECT のビット集合, except_sanction }`、`Charter`）、施行中の規則 `Rule`（kind ごとに 1 つ、id は再利用しない）、係争のエピソード `Standing`（(agent, rule) ごとに 1 つ）、判定（侵害 → `Encroach`、不履行 → `BrokenPromise`、加害 → `Harm`）、制裁の識別（係争中の個体への加害 / 拒否を `Sanctioned` と読む。最古の該当エピソードに帰属）、派生 `NormIndex`（tick 開始時の係争フラグ）、布告 `Enact / Repeal / Charter`。4-3: `Observation.norms` として Decide にも渡り、学習方策が読む（`policy.rs`）。動議・投票（4-5）は未 | 4-1〜4-3 実装済み（2026-10-17）。4-4 以降は未 |

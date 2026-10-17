@@ -4,24 +4,26 @@
 // wasm first: `npm run build:wasm` (wasm-pack writes src/wasm/, gitignored).
 
 import init, { WasmWorld } from "../wasm/cz_web.js";
-import type {
-  AgentDetail,
-  Deal,
-  Envelope,
-  Frame,
-  Institution,
-  InterventionEvent,
-  Ledger,
-  LedgerEvent,
-  Request,
-  Response,
-  Sanctions,
-  Thread,
-  Timeline,
-  Timing,
-  Violations,
-  Watch,
-  WorldInit,
+import {
+  AGENT_FIELDS,
+  MARKER_SANCTION,
+  type AgentDetail,
+  type Deal,
+  type Envelope,
+  type Frame,
+  type Institution,
+  type InterventionEvent,
+  type Ledger,
+  type LedgerEvent,
+  type Request,
+  type Response,
+  type Sanctions,
+  type Thread,
+  type Timeline,
+  type Timing,
+  type Violations,
+  type Watch,
+  type WorldInit,
 } from "../protocol";
 
 const ready = init();
@@ -50,8 +52,59 @@ function span(from: number, to: number): [number, number] {
   return [Math.max(0, Math.floor(from)), Math.max(0, Math.floor(to))];
 }
 
+/**
+ * The sanctions of the tick the view just executed (tick − 1) as markers
+ * (4-8): the kernel's `sanctioned` records of that tick — a harm or
+ * rejection it counted as a sanction (ADR-0014 D4) — placed at the agents'
+ * positions in the view exactly as `social()` places the harms (a
+ * sanctioner who died that tick puts the marker at the accused alone; both
+ * gone, no marker). Read only where a sanction can exist: a world with
+ * institutions that has a rule in force or has sanctioned before. Nothing is
+ * judged here; the page is told which harms the kernel called sanctions.
+ */
+function sanctionMarkers(w: WasmWorld, tick: number, agents: Int32Array, inst: Institution, ledger: Ledger): Int32Array | null {
+  const ever = ledger.sanctions[0] + ledger.sanctions[1] + ledger.sanctions[2] > 0;
+  if (!inst.nomos || tick === 0 || (inst.rules.length === 0 && !ever)) return null;
+  const events = JSON.parse(w.events_at(tick - 1)) as LedgerEvent[];
+  const out: number[] = [];
+  let at: Map<number, number> | null = null;
+  for (const e of events) {
+    if (e.kind !== "sanctioned") continue;
+    if (!at) {
+      at = new Map();
+      for (let k = 0; k < agents.length; k += AGENT_FIELDS) at.set(agents[k], k);
+    }
+    const kb = at.get(e.by);
+    const kt = at.get(e.target);
+    if (kb === undefined && kt === undefined) continue;
+    const from = kb ?? kt!;
+    out.push(
+      MARKER_SANCTION,
+      tick - 1,
+      agents[from + 1],
+      agents[from + 2],
+      kt === undefined ? -1 : agents[kt + 1],
+      kt === undefined ? -1 : agents[kt + 2],
+      e.via === "harm" ? 1 : 2,
+    );
+  }
+  return out.length > 0 ? Int32Array.from(out) : null;
+}
+
 function frame(w: WasmWorld, watch?: Watch): Frame {
   const tick = w.tick();
+  const agents = w.agents();
+  const ledger = JSON.parse(w.ledger_json()) as Ledger;
+  // The institution of the view, read from the state (ADR-0014 D12).
+  const institution = JSON.parse(w.institution_json()) as Institution;
+  let social = w.social();
+  const sanctions = sanctionMarkers(w, tick, agents, institution, ledger);
+  if (sanctions) {
+    const merged = new Int32Array(social.length + sanctions.length);
+    merged.set(social);
+    merged.set(sanctions, social.length);
+    social = merged;
+  }
   const f: Frame = {
     source: "kernel",
     tick,
@@ -59,16 +112,15 @@ function frame(w: WasmWorld, watch?: Watch): Frame {
     height: w.height(),
     hash: w.state_hash_hex(),
     food: w.food(),
-    agents: w.agents(),
-    social: w.social(),
-    ledger: JSON.parse(w.ledger_json()) as Ledger,
+    agents,
+    social,
+    ledger,
     alive: w.alive(),
     foodTotal: w.food_total(),
     frontier: w.frontier(),
     snapshotEvery: w.snapshot_every(),
     origin: w.origin(),
-    // The institution of the view, read from the state (ADR-0014 D12).
-    institution: JSON.parse(w.institution_json()) as Institution,
+    institution,
     timing: { ...timing },
   };
   if (watch) {

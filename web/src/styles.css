@@ -506,3 +506,65 @@ dd.qrow {
   font-size: 12px;
   color: var(--muted);
 }
+/* Institutions (ADR-0014 4-8): the accused outline, the sanction marker and its colour. */
+:root {
+  --accused: #d97706;
+  --sanction: #7c3aed;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --accused: #fcd34d;
+    --sanction: #a78bfa;
+  }
+}
+.badge.inst {
+  border-color: var(--sanction);
+  color: var(--sanction);
+}
+.mark.accused {
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid var(--accused);
+}
+.mark.harmable {
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid var(--sanction);
+}
+.mark.sanction::before,
+.mark.sanction::after {
+  border-top-color: var(--sanction);
+  border-top-width: 2.5px;
+}
+.fields label.check {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-start;
+  align-self: end;
+  padding-bottom: 3px;
+}
+.fields label.check input {
+  width: auto;
+}
+button.link.id {
+  color: var(--ink);
+  text-decoration: none;
+  font-variant-numeric: tabular-nums;
+}
+button.link.id:hover {
+  text-decoration: underline;
+}
+.curves.norms {
+  height: 260px;
+}
+dl .pair {
+  display: contents;
+}
+.history.rules li {
+  padding: 3px 0;
+}
+.pick input[type="checkbox"] {
+  margin: 0 2px 0 0;
+  vertical-align: -1px;
+}

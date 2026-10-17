@@ -42,6 +42,12 @@
 // received), `violations` (recorded ones, or the episodes open now) and
 // `sanctions` (each tied to the episode it answered). Motions (4-5) will
 // join the timeline and the frame without changing these shapes.
+//
+// 4-8 (the institution explorer) adds one marker kind within v6:
+// `MARKER_SANCTION`, which the kernel worker appends to `Frame.social` from
+// the `sanctioned` records of the tick just executed, so the map can show
+// which harms (and rejections) the kernel counted as sanctions. Nothing
+// else moved.
 
 export const PROTOCOL_VERSION = 6;
 
@@ -70,6 +76,14 @@ export const MARKER_FIELDS = 7;
 export const MARKER_TRANSFER = 0; // value = food units moved
 export const MARKER_HARM = 1; // value = health taken
 export const MARKER_SIGNAL = 2; // value = the symbol said
+/**
+ * A harm or rejection the kernel recorded as a sanction (`Event::Sanctioned`,
+ * ADR-0014 D4), from the sanctioner (x, y) to the accused (x2, y2); value =
+ * 1 for `via: harm`, 2 for `via: reject` (the `SANCTION_*` bits). The same
+ * harm is also in the array as a `MARKER_HARM`; the sanction is drawn over
+ * it. Appended by the kernel worker (4-8), never by the mock.
+ */
+export const MARKER_SANCTION = 3;
 
 /**
  * How a fresh world's founding population is assigned policies (same rule
@@ -543,9 +557,10 @@ export interface Frame {
   /** `AGENT_FIELDS` values per living agent. Transferred, not copied. */
   agents: Int32Array;
   /**
-   * `MARKER_FIELDS` values per transfer / harm / signal of the tick the view
-   * just executed (tick − 1), at the agents' positions in the view.
-   * Transferred, not copied. Empty at tick 0 and from the mock.
+   * `MARKER_FIELDS` values per transfer / harm / signal — and, in a world
+   * with institutions, per sanction — of the tick the view just executed
+   * (tick − 1), at the agents' positions in the view. Transferred, not
+   * copied. Empty at tick 0 and from the mock.
    */
   social: Int32Array;
   /** The kernel's running totals at this tick. */

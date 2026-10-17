@@ -1,6 +1,7 @@
 import { useState } from "react";
+import { describeCompareRule, describeDecree, normName, sumKinds } from "./nomos";
 import { describePolicies, describeSetPolicy, policyCounts } from "./policies";
-import { POLICY_KINDS, type Frame, type Intervention, type PolicyKind } from "./protocol";
+import { NORM_KINDS, POLICY_KINDS, type Frame, type Intervention, type NormKind, type PolicyKind } from "./protocol";
 
 export interface Verification {
   status: "running" | "done";
@@ -23,6 +24,8 @@ interface Props {
   onDiscard: () => void;
   /** "Compare: fixed vs learning" (ADR-0013 D8 / 3-9c): fork B at A's current tick with everyone in it switched to `kind`. */
   onCompare: (kind: PolicyKind) => void;
+  /** "Compare: with vs without rule" (ADR-0014 D8 / 4-8): fork B at A's current tick and enact the default norm of `kind` there — or repeal A's rule of that kind. */
+  onCompareRule: (kind: NormKind) => void;
 }
 
 /**
@@ -57,13 +60,55 @@ function CompareControls({ tick, replacing, onCompare }: { tick: number; replaci
   );
 }
 
+/**
+ * The one-press institution comparison (ADR-0014 D8 / D12 (e)): a fork of A
+ * at its current tick plus one decree in B — `enact` of the chosen kind's
+ * default norm when A has no such rule, `repeal` of A's rule when it has.
+ * The two worlds then differ by that rule alone; the Norms · rates card
+ * draws both.
+ */
+function CompareRuleControls({ a, replacing, onCompareRule }: { a: Frame; replacing: boolean; onCompareRule: (kind: NormKind) => void }) {
+  const [kind, setKind] = useState<NormKind>("encroach");
+  const inst = a.institution;
+  return (
+    <>
+      <div className="row compare-row">
+        <button
+          onClick={() => onCompareRule(kind)}
+          disabled={!inst.nomos}
+          title={
+            inst.nomos
+              ? "fork a second world at this tick that differs from this one by one rule (enacted there, or repealed there)"
+              : "this world has no institutions: tick institutions in the header first"
+          }
+        >
+          Compare: with vs without rule
+        </button>
+        <select value={kind} onChange={(e) => setKind(e.target.value as NormKind)} aria-label="norm kind for B" title="which kind of rule the two worlds differ by">
+          {NORM_KINDS.map((k) => (
+            <option key={k} value={k}>
+              {normName(k)}
+            </option>
+          ))}
+        </select>
+      </div>
+      <p className="muted hint">
+        {inst.nomos
+          ? `${replacing ? "Replaces B: " : ""}a second world forks from A at tick ${a.tick} and ${describeCompareRule(inst, kind)}. Everything else — bodies, positions, memories, the other rules — is shared, so the Norms · rates card (A solid, B dashed) shows what that one rule does.`
+          : "Needs a world with institutions (header: institutions, or ?nomos=1); the kernel rejects decrees elsewhere."}
+      </p>
+    </>
+  );
+}
+
 /** Side-by-side numbers for the main world (A) and its fork (B). */
-export function BranchesPanel({ a, b, forkedAt, intervention, forkMs, verification, onVerify, onDiscard, onCompare }: Props) {
+export function BranchesPanel({ a, b, forkedAt, intervention, forkMs, verification, onVerify, onDiscard, onCompare, onCompareRule }: Props) {
   if (!b || forkedAt === null) {
     return (
       <div className="card placeholder">
         <h2>Branches</h2>
         <CompareControls tick={a.tick} replacing={false} onCompare={onCompare} />
+        <CompareRuleControls a={a} replacing={false} onCompareRule={onCompareRule} />
         <p className="muted">
           Or rewind to any tick, set an intervention below and press <b>Fork here</b>: a second world starts from that
           tick with the intervention, and both run in lockstep from then on.
@@ -142,6 +187,40 @@ export function BranchesPanel({ a, b, forkedAt, intervention, forkMs, verificati
             <td>{b.ledger.signals}</td>
             <td>{delta(a.ledger.signals, b.ledger.signals)}</td>
           </tr>
+          {(a.institution.nomos || b.institution.nomos) && (
+            <>
+              <tr title="rules in force at each world's tick (Frame.institution)">
+                <td>rules in force</td>
+                <td>{a.institution.rules.length}</td>
+                <td>{b.institution.rules.length}</td>
+                <td>{delta(a.institution.rules.length, b.institution.rules.length)}</td>
+              </tr>
+              <tr title="episodes of accusation open now">
+                <td>accused</td>
+                <td>{a.institution.accused.episodes}</td>
+                <td>{b.institution.accused.episodes}</td>
+                <td>{delta(a.institution.accused.episodes, b.institution.accused.episodes)}</td>
+              </tr>
+              <tr title="ledger totals since tick 0 (B's continue from the fork), all kinds">
+                <td>encroachments</td>
+                <td>{a.ledger.encroachments}</td>
+                <td>{b.ledger.encroachments}</td>
+                <td>{delta(a.ledger.encroachments, b.ledger.encroachments)}</td>
+              </tr>
+              <tr>
+                <td>violations</td>
+                <td>{sumKinds(a.ledger.violations)}</td>
+                <td>{sumKinds(b.ledger.violations)}</td>
+                <td>{delta(sumKinds(a.ledger.violations), sumKinds(b.ledger.violations))}</td>
+              </tr>
+              <tr>
+                <td>sanctions</td>
+                <td>{sumKinds(a.ledger.sanctions)}</td>
+                <td>{sumKinds(b.ledger.sanctions)}</td>
+                <td>{delta(sumKinds(a.ledger.sanctions), sumKinds(b.ledger.sanctions))}</td>
+              </tr>
+            </>
+          )}
           <tr title="kernel time per tick of each world's last step request, measured in its worker">
             <td>worker ms/tick</td>
             <td>{msPerTick(a)}</td>
@@ -179,6 +258,7 @@ export function BranchesPanel({ a, b, forkedAt, intervention, forkMs, verificati
         integer arithmetic in the kernel.
       </p>
       <CompareControls tick={a.tick} replacing={true} onCompare={onCompare} />
+      <CompareRuleControls a={a} replacing={true} onCompareRule={onCompareRule} />
     </div>
   );
 }
@@ -202,10 +282,8 @@ function describe(iv: Intervention): string {
     case "set_policy":
       return describeSetPolicy(iv);
     case "enact":
-      return `enact ${iv.norm.kind.replace("_", " ")} (accused ${iv.norm.standing_ticks} ticks, sanction ${iv.norm.sanction})`;
     case "repeal":
-      return `repeal rule #${iv.rule}`;
     case "charter":
-      return `charter: quorum ${iv.charter.quorum_permille}‰, threshold ${iv.charter.threshold_permille}‰, ${iv.charter.vote_ticks} ticks, ${iv.charter.amendable ? "amendable" : "not amendable"}`;
+      return describeDecree(iv);
   }
 }

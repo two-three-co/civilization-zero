@@ -1,4 +1,14 @@
-import { AGENT_FIELDS, MARKER_FIELDS, MARKER_HARM, MARKER_SIGNAL, MARKER_TRANSFER, type Frame } from "./protocol";
+import {
+  AGENT_FIELDS,
+  FLAG_ACCUSED,
+  FLAG_HARMABLE,
+  MARKER_FIELDS,
+  MARKER_HARM,
+  MARKER_SANCTION,
+  MARKER_SIGNAL,
+  MARKER_TRANSFER,
+  type Frame,
+} from "./protocol";
 
 export const SCALE = 4;
 
@@ -11,6 +21,8 @@ interface Palette {
   xfer: string;
   harm: string;
   sig: string;
+  /** A harm or rejection the kernel counted as a sanction (ADR-0014 D4, 4-8). */
+  sanction: string;
 }
 
 /** How long a marker stays visible after the frame that produced it. */
@@ -59,9 +71,12 @@ export class MarkerTrail {
 
 /**
  * Transfers (line from giver to receiver, dot at the receiver), harms (line
- * from attacker to victim, cross at the victim) and signals (ring around
- * the speaker) of one frame, at the agents' positions in that frame. A
- * marker whose other party is gone (`x2 = -1`) is drawn at the one left.
+ * from attacker to victim, cross at the victim), signals (ring around the
+ * speaker) and sanctions (line from the sanctioner to the accused, a larger
+ * cross — or, for a rejection, a barred ring — at the accused, drawn over
+ * the harm it also is) of one frame, at the agents' positions in that
+ * frame. A marker whose other party is gone (`x2 = -1`) is drawn at the one
+ * left.
  */
 function drawMarkers(ctx: CanvasRenderingContext2D, m: Int32Array, alpha: number, palette: Palette): void {
   if (m.length === 0) return;
@@ -108,6 +123,28 @@ function drawMarkers(ctx: CanvasRenderingContext2D, m: Int32Array, alpha: number
         ctx.arc(x, y, SCALE * 1.25, 0, Math.PI * 2);
         ctx.stroke();
         break;
+      case MARKER_SANCTION:
+        ctx.strokeStyle = palette.sanction;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        if (other) {
+          ctx.moveTo(x, y);
+          ctx.lineTo(x2, y2);
+        }
+        if (m[k + 6] === 2) {
+          // A rejection that counted: a ring with a bar, nothing physical happened.
+          ctx.arc(x2, y2, 4.5, 0, Math.PI * 2);
+          ctx.moveTo(x2 - 3, y2 + 3);
+          ctx.lineTo(x2 + 3, y2 - 3);
+        } else {
+          ctx.moveTo(x2 - 4.5, y2 - 4.5);
+          ctx.lineTo(x2 + 4.5, y2 + 4.5);
+          ctx.moveTo(x2 + 4.5, y2 - 4.5);
+          ctx.lineTo(x2 - 4.5, y2 + 4.5);
+        }
+        ctx.stroke();
+        ctx.lineWidth = 1.5;
+        break;
     }
   }
   ctx.restore();
@@ -115,9 +152,11 @@ function drawMarkers(ctx: CanvasRenderingContext2D, m: Int32Array, alpha: number
 
 /**
  * Food as a translucent green layer (1 px per cell, scaled up), agents as
- * squares whose opacity is their energy, then the social markers of the
- * tick just executed (and, through `trail`, the fading ones of recent
- * frames), then the selection ring.
+ * squares whose opacity is their energy — outlined when they stand accused
+ * (ADR-0014 4-8: amber, or the sanction colour when a harm reaching them now
+ * would count as a sanction, from the kernel's `flags` column) — then the
+ * social markers of the tick just executed (and, through `trail`, the
+ * fading ones of recent frames), then the selection ring.
  */
 export function drawFrame(canvas: HTMLCanvasElement, frame: Frame, selected: number | null, trail?: MarkerTrail): void {
   const { width: w, height: h } = frame;
@@ -148,14 +187,31 @@ export function drawFrame(canvas: HTMLCanvasElement, frame: Frame, selected: num
   // One colour per policy kind, indexed by the agent's policy code (POLICY_KINDS order).
   const colours = [css("--forager"), css("--random"), css("--reflex"), css("--learner")];
   const A = frame.agents;
+  let anyAccused = false;
   for (let k = 0; k < A.length; k += AGENT_FIELDS) {
     ctx.globalAlpha = 0.25 + 0.75 * Math.min(1, A[k + 3] / 100_000);
     ctx.fillStyle = colours[A[k + 5]] ?? colours[0];
     ctx.fillRect(A[k + 1] * SCALE + 0.5, A[k + 2] * SCALE + 0.5, SCALE - 1, SCALE - 1);
+    if (A[k + 8] & FLAG_ACCUSED) anyAccused = true;
   }
   ctx.globalAlpha = 1;
 
-  const palette: Palette = { xfer: css("--xfer"), harm: css("--harm"), sig: css("--sig") };
+  const palette: Palette = { xfer: css("--xfer"), harm: css("--harm"), sig: css("--sig"), sanction: css("--sanction") };
+  if (anyAccused) {
+    // The accused, as the kernel's NormIndex has them at this tick: an
+    // outline around the square, in the sanction colour where a harm now
+    // would be a sanction (the rule in force allows it and the episode
+    // opened before this tick).
+    const accused = css("--accused");
+    ctx.lineWidth = 1;
+    for (let k = 0; k < A.length; k += AGENT_FIELDS) {
+      const flags = A[k + 8];
+      if (!(flags & FLAG_ACCUSED)) continue;
+      ctx.strokeStyle = flags & FLAG_HARMABLE ? palette.sanction : accused;
+      ctx.strokeRect(A[k + 1] * SCALE - 0.5, A[k + 2] * SCALE - 0.5, SCALE + 1, SCALE + 1);
+    }
+  }
+
   if (trail) {
     trail.push(frame);
     trail.draw(ctx, frame.tick, palette);
@@ -196,10 +252,21 @@ export interface Sample {
   transfers: number;
   harms: number;
   signals: number;
+  /** Social facts and institutions (ADR-0014 4-1 / 4-2 ledger counters; the per-kind ones summed over the kinds). */
+  gathers: number;
+  encroachments: number;
+  violations: number;
+  sanctions: number;
+  episodesClosed: number;
+  episodesSanctioned: number;
+  /** Episodes of accusation open at the tick (`Frame.institution.accused.episodes`): a state, not a total. */
+  accused: number;
 }
 
 /** Ticks a per-tick rate is averaged over (a trailing window ending at the sample). */
 export const RATE_WINDOW = 50;
+/** The window of the institution rates (ADR-0014 D12: E, violations / tick, S′ over the last 100 ticks). */
+export const NORM_WINDOW = 100;
 /** Most points a curve is drawn with; longer series are strided so a long run does not slow the frame. */
 const MAX_DRAWN = 1200;
 
@@ -242,9 +309,9 @@ function strided(n: number): number[] {
 
 /**
  * Per-tick rate of a running total at sample `i`: the total's change over
- * the trailing `RATE_WINDOW` ticks (or since the first sample while the
- * series is shorter than that), divided by the ticks elapsed. `j` is the
- * index of the window's start, maintained by the caller as `i` advances.
+ * the trailing window (or since the first sample while the series is
+ * shorter than that), divided by the ticks elapsed. `j` is the index of the
+ * window's start, maintained by the caller as `i` advances.
  */
 function rateAt(pts: Points, i: number, j: number, pick: (s: Sample) => number): number | null {
   const [ti, si] = pts[i];
@@ -252,48 +319,140 @@ function rateAt(pts: Points, i: number, j: number, pick: (s: Sample) => number):
   return ti > tj ? (pick(si) - pick(sj)) / (ti - tj) : null;
 }
 
+/**
+ * Ratio of two running totals' changes over the same window (E =
+ * Δencroachments / Δgathers, S′ = Δsanctions / Δviolations, …): the
+ * conditional rate `cz sweep` reports for its window. Undefined (null)
+ * while the denominator has not moved.
+ */
+function ratioAt(pts: Points, i: number, j: number, num: (s: Sample) => number, den: (s: Sample) => number): number | null {
+  const [ti, si] = pts[i];
+  const [tj, sj] = pts[j];
+  if (ti <= tj) return null;
+  const d = den(si) - den(sj);
+  return d > 0 ? (num(si) - num(sj)) / d : null;
+}
+
 /** The values of one curve at every sample of a series, in tick order (`null` where undefined). */
-function valuesOf(pts: Points, curve: Curve): (number | null)[] {
+function valuesOf(pts: Points, curve: Curve, window: number): (number | null)[] {
   const out: (number | null)[] = [];
   let j = 0;
   for (let i = 0; i < pts.length; i++) {
-    while (j + 1 < i && pts[j + 1][0] <= pts[i][0] - RATE_WINDOW) j++;
+    while (j + 1 < i && pts[j + 1][0] <= pts[i][0] - window) j++;
     out.push(curve.at(pts, i, j));
   }
   return out;
 }
 
-interface Curve {
+export interface Curve {
+  /** The row's caption on the canvas. */
   label: string;
+  /** A short name for a table. */
+  name: string;
   digits: number;
   at: (pts: Points, i: number, j: number) => number | null;
 }
 
+/** A set of curves drawn together, with the trailing window its rates are cut over. */
+export interface CurveSet {
+  window: number;
+  curves: Curve[];
+}
+
 /** The comparison's curves (ADR-0013 D8 / 3-9c), top to bottom. */
 export const CURVES: Curve[] = [
-  { label: "alive", digits: 0, at: (p, i) => p[i][1].alive },
+  { label: "alive", name: "alive", digits: 0, at: (p, i) => p[i][1].alive },
   {
     label: `intake / agent / tick (${RATE_WINDOW}-tick mean)`,
+    name: "intake / agent / tick",
     digits: 3,
     at: (p, i, j) => {
       const r = rateAt(p, i, j, (s) => s.consumed);
       return r === null || p[i][1].alive === 0 ? null : r / p[i][1].alive;
     },
   },
-  { label: "transfers / tick", digits: 2, at: (p, i, j) => rateAt(p, i, j, (s) => s.transfers) },
-  { label: "harms / tick", digits: 2, at: (p, i, j) => rateAt(p, i, j, (s) => s.harms) },
-  { label: "signals / tick", digits: 2, at: (p, i, j) => rateAt(p, i, j, (s) => s.signals) },
+  { label: "transfers / tick", name: "transfers / tick", digits: 2, at: (p, i, j) => rateAt(p, i, j, (s) => s.transfers) },
+  { label: "harms / tick", name: "harms / tick", digits: 2, at: (p, i, j) => rateAt(p, i, j, (s) => s.harms) },
+  { label: "signals / tick", name: "signals / tick", digits: 2, at: (p, i, j) => rateAt(p, i, j, (s) => s.signals) },
 ];
+
+export const SOCIAL_CURVES: CurveSet = { window: RATE_WINDOW, curves: CURVES };
+
+/**
+ * The institution's rates (ADR-0014 D12 (d), 4-8), each a ledger delta over
+ * the trailing `NORM_WINDOW` ticks as `cz sweep` cuts them for its window:
+ * the encroachment rate E = encroachments / gathers (a fact in every world
+ * with `nomos`, rule or not), violations and sanctions per tick, the
+ * conditional rate S′ = sanctions / violations, S = episodes sanctioned /
+ * episodes closed, and how many stand accused (a state, drawn as it is).
+ * The per-policy E of `cz sweep` is not in the ledger, so the curve is the
+ * whole population's.
+ */
+export const NORM_CURVES: CurveSet = {
+  window: NORM_WINDOW,
+  curves: [
+    {
+      label: `E = encroachments / gathers (${NORM_WINDOW}-tick)`,
+      name: "E (encroachments / gathers)",
+      digits: 3,
+      at: (p, i, j) => ratioAt(p, i, j, (s) => s.encroachments, (s) => s.gathers),
+    },
+    { label: "violations / tick", name: "violations / tick", digits: 2, at: (p, i, j) => rateAt(p, i, j, (s) => s.violations) },
+    { label: "sanctions / tick", name: "sanctions / tick", digits: 2, at: (p, i, j) => rateAt(p, i, j, (s) => s.sanctions) },
+    {
+      label: `S′ = sanctions / violations (${NORM_WINDOW}-tick)`,
+      name: "S′ (sanctions / violations)",
+      digits: 3,
+      at: (p, i, j) => ratioAt(p, i, j, (s) => s.sanctions, (s) => s.violations),
+    },
+    {
+      label: `S = episodes sanctioned / closed (${NORM_WINDOW}-tick)`,
+      name: "S (episodes sanctioned / closed)",
+      digits: 3,
+      at: (p, i, j) => ratioAt(p, i, j, (s) => s.episodesSanctioned, (s) => s.episodesClosed),
+    },
+    { label: "accused (episodes open)", name: "accused episodes", digits: 0, at: (p, i) => p[i][1].accused },
+  ],
+};
+
+/**
+ * Each curve of a set at the sample of tick `tick` (the view's; the latest
+ * sample at or before it when that exact tick was never shown), `null`
+ * where undefined there or while nothing was sampled — for a table next to
+ * the canvas that follows the timeline back as the cards do.
+ */
+export function valuesAt(series: History, set: CurveSet, tick: number): (number | null)[] {
+  const pts = series.pts;
+  if (pts.length === 0 || pts[0][0] > tick) return set.curves.map(() => null);
+  let lo = 0;
+  let hi = pts.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (pts[mid][0] <= tick) lo = mid;
+    else hi = mid - 1;
+  }
+  const i = lo;
+  let j = i;
+  while (j > 0 && pts[j][0] > pts[i][0] - set.window) j--;
+  return set.curves.map((curve) => curve.at(pts, i, j));
+}
 
 /**
  * Small multiples for "fixed vs learning" (and any other fork): population,
  * intake per agent per tick, and transfers / harms / signals per tick over
  * the ticks seen so far, world A solid and world B dashed on one scale per
- * row. Rates are ledger deltas over the trailing `RATE_WINDOW` ticks, so
- * they read the same at any ticks-per-frame setting. Everything drawn is a
- * frame the worker sent; nothing is simulated here.
+ * row — or, with `set`, any other set of curves (the institution's rates,
+ * `NORM_CURVES`). Rates are ledger deltas over the set's trailing window,
+ * so they read the same at any ticks-per-frame setting. Everything drawn is
+ * a frame the worker sent; nothing is simulated here.
  */
-export function drawCurves(canvas: HTMLCanvasElement, series: History, frontier: number, other?: History): void {
+export function drawCurves(
+  canvas: HTMLCanvasElement,
+  series: History,
+  frontier: number,
+  other?: History,
+  set: CurveSet = SOCIAL_CURVES,
+): void {
   const r = canvas.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
   canvas.width = Math.max(1, Math.round(r.width * dpr));
@@ -309,12 +468,12 @@ export function drawCurves(canvas: HTMLCanvasElement, series: History, frontier:
     return;
   }
   const span = Math.max(1, frontier, opts.length > 0 ? opts[opts.length - 1][0] : 0);
-  const rowH = r.height / CURVES.length;
+  const rowH = r.height / set.curves.length;
   const colourA = css("--forager");
   const colourB = css("--learner");
-  CURVES.forEach((curve, row) => {
-    const va = valuesOf(pts, curve);
-    const vb = valuesOf(opts, curve);
+  set.curves.forEach((curve, row) => {
+    const va = valuesOf(pts, curve, set.window);
+    const vb = valuesOf(opts, curve, set.window);
     let max = 1e-9;
     for (const v of va) if (v !== null && v > max) max = v;
     for (const v of vb) if (v !== null && v > max) max = v;

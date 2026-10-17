@@ -10,7 +10,7 @@ Civilization Zero の最初の遊べるマイルストーン。ブラウザだ�
 - 配布された `dist/` フォルダ: 任意の静的サーバーで配信する（例: `python3 -m http.server 8766` を `dist` の親で実行し `/dist/` を開く）。`file://` では Worker が動かないブラウザがある。
 
 画面右上のバッジが **kernel · wasm** なら本物。`mock worker` と出ていたら `?mock=1` 付きで開いている（見た目確認用の偽物）。
-右列の「Five-minute tour」カードが、下の 5 ステップを自動で進捗判定する。
+右列の「Five-minute tour」カードが、下の 5 ステップ（と Phase 4 の 6 段目「Enact a rule」、10 節）を自動で進捗判定する。
 
 ## 1. 観察する（Play）
 
@@ -120,11 +120,27 @@ frontier（到達した最大 tick）にいるとき、「Intervene」カード�
 - **「飢えながら休む」**: `?policy=learner` で空腹・在庫なし・食料なし・隣接なしの個体を選ぶと、last step が `rest` で報酬が −5 の列になっていることがある。死に終端報酬が無い設計（ADR-0013 D6）の帰結の候補。
 - **移転や発信は学習ではない**: B にだけ出る移転の線と発信の輪は、無料の行動が同点で選ばれているだけ（EXP-002 P5f）。記号の意味も分かち合いも学んでいない。
 
+## 10. 規則を布告し、違反と制裁を読み、規則の有無で比べる（Phase 4、4-8）
+
+Phase 4（ADR-0014）では、世界の中に**規則**（先占の侵害・約束の不履行・加害のどれを違反とし、違反者を何 tick 係争中にし、どの応答を制裁と数えるか）を置ける。規則は物理を変えない: 違反は禁止されず、制裁は普通の加害や拒否で、「係争中の個体に届いた」ときにカーネルが制裁と**読む**だけである（D1 / D4）。画面はカーネルと cz-web の読み手が書いた事実を並べるだけで、ページは何も判定しない（D12）。
+
+1. **https://two-three-co.github.io/civilization-zero/?nomos=1&policy=learner&seed=3** を開く（`?nomos=1` で世界は `WorldConfig::nomos_preset()`（EXP-003 の決定: 制度オン・ε 10‰・加害コスト 2,000）で建てられ、`cz run --preset nomos --seed 3 --policy learner` と同じ hash になる。ヘッダの **institutions** チェックでも同じ。既定の URL では制度が無く、布告はカーネルに拒否される）。ヘッダに `institution · 0 rules · 0 accused` のバッジが出る。
+2. `tick` 欄に 300 と入れて **Go**。「Intervene」で **Enact** を選ぶ: norm = encroachment（先占の侵害）、standing ticks = 32、sanction: harm（CLI `--enact encroach` の既定）。**Apply** を押すと「Ledger · interventions」に `tick 300 enact encroachment · accused 32 ticks after each violation · sanction: harm`、その下の「Institution · ledger」の **Timeline · decrees** に `tick 300 rule #0 enacted by decree: …` が出る。規則 id `#0` はカーネルが付けたもので、読み手が台帳の布告を原点から辿って復元している（4-7）。同じカードの上段は状態そのもの: 施行中の規則、係争中の件数（種別）、憲章（動議は 4-5 まで無い）。
+3. `30 tick/frame` で **Play**。バッジが `institution · 1 rule · 500 accused` 前後になり、地図の係争中の個体に輪郭が付く（琥珀 = 係争中、紫 = 係争中でいま殴ると制裁になる）。赤い ✕ の加害のうちカーネルが制裁と読んだものには紫の大きな ✕ が重なる。右列:
+   - **Norms · rates**: 直近 100 tick の台帳差分。E（侵害/採集）≈ 0.14、違反 ≈ 23/tick、制裁 ≈ 3〜4/tick、S′（制裁/違反）≈ 0.15、S（制裁された係争/閉じた係争）≈ 0.2、係争中 ≈ 520。`cz sweep` の窓の列と同じ定義で、速度を変えても読みは同じ。
+   - **Violations · recent**: 既定では違反は台帳に記録されない（約 21 件/tick、D9）ので、いま開いている係争が `#6324 → #7027 accused under rule #0 (encroachment) since tick 2567 (violations 4, sanctions 1) · until tick 2599` のように並ぶ。**record violations**（`&violations=1`）で開き直すと、直近 100 tick の違反が「誰が・どの規則を・誰に・いつ・根拠（`gathered 2 on cell (40, 119) where the other arrived first`）」で並ぶ（tick 2,580 で約 2,350 件）。
+   - **Sanctions**: 直近 100 tick の制裁が「`#7286 → #5139 sanctioned by a harm under rule #0 (encroachment) · answering the episode open since tick 2560 (violations 3, sanctions 1, still open)`」のように、**答えた係争**付きで並ぶ。係争が閉じた後は、違反が記録されていれば `closed · rebuilt from the recorded violations`、無ければ `episode unknown`。
+   - 一覧の `#id` を押すか地図をクリックすると「Agent」カードに **arrived**（先占の到着 tick）、**standing**（`Accused under rule #0 (encroachment) since tick 56 (violations 1, sanctions 1), until tick 88 · against #527`）、**voted**（動議が無いので `no motion open`）が出て、記憶と台帳に `sanctioned by #527 (−20 health)` / `sanctioned by #527 (harm, rule #0)` が読める。
+4. 「Branches」の **Compare: with vs without rule** を押す（隣の選択は規則の種類。既定は encroachment）。A にその種類の規則が有れば B はそれを **repeal** し、無ければ B に CLI 既定の norm を **enact** する。ここでは B が `repeal rule #0` の世界になる。`15 tick/frame` で **Play** すると、Norms · rates の表に `A · B` の 2 列が出て B は違反・制裁とも 0/tick（規則が無いので何も違反にならない）、E は A も B も ≈ 0.14（侵害という**事実**は規則が無くても数える）。比較表には規則数・係争・侵害・違反・制裁の行が加わる（tick 2,715 で違反 55,712 / 52,582、制裁 15,642 / 15,183、alive +3）。
+5. **Verify: fork again** → **MATCH**。布告も介入なので、2b-6 / 3-9c と同じ契約（同じスナップショット + 同じ介入 = 同じ歴史）がそのまま成り立つ。
+6. 比較の読み方の注意: **Random の世界では規則の有無で物理が変わらない**（`?nomos=1&policy=random&seed=3` で tick 40 に布告し tick 80 で比べると、A / B の alive・食料・加害・発信は同一で、違反 23 / 18・制裁 13 / 5 だけが違う）。ランダム歩行者は規範を読まないので、制裁は「たまたま係争中の個体に届いた加害」である。学習者（Reflex / Learner）は観測の規範情報（`ACCUSED` / `VIOLATOR_ADJACENT` など、4-3）を読み、Harm のアクチュエータが係争中の隣人を優先するので、規則の有無で決定が分かれる。どちらの世界でも「制度が何を変えたか」は事前登録した指標（EXP-004、4-6）でしか言えない。
+7. **Repeal** は施行中の規則を id で選んで外す（開いている係争は閉じ、台帳の `episodes_closed` に数えられる）。**Charter** は定足数・閾値・期限・改正可否の 4 欄で、動議（4-5）が読む。どちらも台帳に `Intervened` として載り、Timeline · decrees に `rule #0 repealed by decree (…)` / `charter replaced by decree: …` と出る。
+
 ## 分かっている制限
 
 - 分岐は A と B の 1 組だけ。B をさらに分岐することはまだできない。
 - B の介入履歴と個体インスペクタは未対応（B の地図にもマーカーは出る）。
-- 世界の設定は seed（`?seed=`、既定 42）と方策構成（forager / mixed / random / reflex / learner / mixed-learning）だけ変えられる。128×128、1,000 体、学習者の表の行数（32）と ε（5%）は固定。
-- 制度はまだ存在しない（Phase 4）。スレッドは台帳を読むだけで、不履行に対して世界の中で何かが起きるわけではない（制裁は Phase 4）。学習者の報酬は自分のエネルギーだけなので、分かち合いは出なくて当然（ADR-0013 D6）。
+- 世界の設定は seed（`?seed=`、既定 42）、方策構成（forager / mixed / random / reflex / learner / mixed-learning）、制度の有無（`?nomos=1`。オンなら `nomos_preset` = ε 10‰・加害コスト 2,000）と違反の記録（`?violations=1`）だけ変えられる。128×128、1,000 体、学習者の表の行数（32）は固定。
+- 制度は布告（Enact / Repeal / Charter）でしか変わらない。動議・投票・`Enforcer`（議場で規則を提案し守らせる台本の方策）と `institution` の方策構成は 4-5 で入る。規則は物理を変えず、制裁は普通の加害・拒否をカーネルが「制裁」と読んだもの（ADR-0014 D1 / D4）。率のカーブの E は方策別ではなく世界全体（方策別は `cz sweep`）。学習者の報酬は自分のエネルギーだけなので、分かち合いは出なくて当然（ADR-0013 D6）。
 - 発信（`Say`）は既定では台帳に載らない（`record_signals` で ON）。地図の輪は各個体の「最後の発信」から描いているので、巻き戻した tick では消える。移転・加害・提案・受諾・拒否は常に台帳にある。
-- 学習者の ε（5%）と加害のコストは固定。既定世界の暴力水準はこの 2 つの帰結で、学習の結果ではない（docs/research/RISKS.md R8）。
+- 学習者の ε と加害のコストは固定（既定世界 5% / 制度の世界 10‰、加害コストは `nomos_preset` で 2,000）。既定世界の暴力水準はこの 2 つの帰結で、学習の結果ではない（docs/research/RISKS.md R8）。

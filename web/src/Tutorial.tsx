@@ -14,8 +14,9 @@ interface Props {
 const KEY = "cz.tutorial.hidden";
 
 /**
- * The five-minute tour (PRODUCT.md, Toy 1). Nothing here drives the UI; each
- * step is ticked off when the world's own state shows it happened.
+ * The five-minute tour (PRODUCT.md, Toy 1) plus the Phase 4 step (ADR-0014
+ * 4-8). Nothing here drives the UI; each step is ticked off when the world's
+ * own state shows it happened.
  */
 export function Tutorial({ frame, frameB, events, verification, rewound }: Props) {
   const [hidden, setHidden] = useState(false);
@@ -60,6 +61,14 @@ export function Tutorial({ frame, frameB, events, verification, rewound }: Props
       title: "Check it is real",
       done: verification?.status === "done" && verification.match === true,
       text: "Press Verify: fork again. A third world is built from the same snapshot with the same intervention and driven to the same tick. Same inputs, same hash — that is the determinism contract, demonstrated rather than claimed.",
+    },
+    {
+      title: "Enact a rule",
+      done:
+        (frame?.institution.rules.length ?? 0) > 0 ||
+        (frameB?.institution.rules.length ?? 0) > 0 ||
+        events.some((e) => e.intervention.op === "enact"),
+      text: "Tick institutions in the header (the world is rebuilt with them on; ?nomos=1), pick Enact in Intervene — encroachment, accused 32 ticks, sanction: harm — and Apply. The Institution card reads the decree back from the ledger with the rule id the kernel gave it; Violations lists who stands accused of what, Sanctions ties each harm that counted to the episode it answered, the map outlines the accused and crosses the sanctions, and Norms · rates draws E, violations / tick and S′. Then press Compare: with vs without rule in Branches: B forks here without the rule, and Verify still says MATCH.",
     },
   ];
   const next = steps.findIndex((s) => !s.done);

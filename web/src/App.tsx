@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BranchesPanel, type Verification } from "./Branches";
 import { WorldClient } from "./client";
+import { InstitutionCard, NormRatesCard, SanctionsCard, ViolationsCard, type Readings } from "./Institution";
 import { InterventionPanel } from "./Intervene";
+import { compareRuleIntervention, describeStanding, sumKinds } from "./nomos";
 import { compareIntervention, describePolicies, policyCounts } from "./policies";
 import {
   ACTION_KINDS,
@@ -22,7 +24,20 @@ import {
   type Watched,
   type WorldInit,
 } from "./protocol";
-import { drawCurves, drawFrame, drawSparkline, History, MarkerTrail, pickAgent, RATE_WINDOW, SCALE, type Sample } from "./render";
+import {
+  drawCurves,
+  drawFrame,
+  drawSparkline,
+  History,
+  MarkerTrail,
+  NORM_CURVES,
+  NORM_WINDOW,
+  pickAgent,
+  RATE_WINDOW,
+  SCALE,
+  valuesAt,
+  type Sample,
+} from "./render";
 import { Tutorial } from "./Tutorial";
 
 const PARAMS = new URLSearchParams(location.search);
@@ -39,10 +54,29 @@ const POLICY: PolicyMix = (POLICY_MIXES as string[]).includes(PARAMS.get("policy
 // STATUS records; `cz run --seed N --policy …` reproduces any other.
 const SEED_PARAM = PARAMS.get("seed");
 const SEED = SEED_PARAM !== null && /^\d{1,9}$/.test(SEED_PARAM) ? Number(SEED_PARAM) : 42;
-const DEFAULT_WORLD: WorldInit = { seed: SEED, width: 128, height: 128, agents: 1000, snapshotEvery: 250, policy: POLICY };
+// `?nomos=1` builds the world with institutions (ADR-0014 D10: the kernel
+// worker uses `WorldConfig::nomos_preset()`, as `cz run --preset nomos`), so
+// decrees are accepted and encroachments, violations and sanctions are
+// counted; `?violations=1` also records every violation in the ledger (D9:
+// ≈ 21 per tick, so off by default — the explorer then lists the episodes
+// open now instead). Both reload with a fresh world when toggled.
+const NOMOS = PARAMS.get("nomos") === "1";
+const RECORD_VIOLATIONS = NOMOS && PARAMS.get("violations") === "1";
+const DEFAULT_WORLD: WorldInit = {
+  seed: SEED,
+  width: 128,
+  height: 128,
+  agents: 1000,
+  snapshotEvery: 250,
+  policy: POLICY,
+  nomos: NOMOS,
+  recordViolations: RECORD_VIOLATIONS,
+};
 const SPEEDS = [1, 4, 15, 30];
 /** Ticks of ledger history shown for the watched agent. */
 const WATCH_WINDOW = 100;
+/** How often, while playing, the institution cards re-read the ledger (one-shot requests behind the steps). */
+const READ_EVERY_MS = 500;
 /** Ticks of ledger history a negotiation thread (and the deals finder) covers (3-9b). */
 const THREAD_WINDOW = 2000;
 /** Most recent thread entries / deals listed. */
@@ -88,6 +122,9 @@ export default function App() {
   const canvasB = useRef<HTMLCanvasElement>(null);
   const spark = useRef<HTMLCanvasElement>(null);
   const curves = useRef<HTMLCanvasElement>(null);
+  const normCurves = useRef<HTMLCanvasElement>(null);
+  /** When the institution cards last re-read the ledger (play loop throttle). */
+  const lastRead = useRef(0);
   const trailA = useRef(new MarkerTrail());
   const trailB = useRef(new MarkerTrail());
   const history = useRef(new History());
@@ -115,10 +152,29 @@ export default function App() {
   const [forkMs, setForkMs] = useState<number | null>(null);
   const [verification, setVerification] = useState<Verification | null>(null);
   const [rewound, setRewound] = useState(false);
+  /** What the kernel-side reader last said about A's institution (ADR-0014 D12): decrees, violations, sanctions. */
+  const [readings, setReadings] = useState<Readings | null>(null);
 
   const show = useCallback((f: Frame) => {
     history.current.set(f.tick, sampleOf(f));
     setFrame(f);
+  }, []);
+
+  // The institution cards: three one-shot requests to A's worker, answered
+  // behind whatever step is in flight. Read as of the view's tick, so after
+  // a seek they say what the ledger said then. Skipped in a world without
+  // institutions, where all three would be empty.
+  const readInstitution = useCallback(async (f: Frame) => {
+    const c = client.current;
+    if (!c || !f.institution.nomos) return;
+    lastRead.current = performance.now();
+    try {
+      const from = Math.max(0, f.tick - NORM_WINDOW);
+      const [t, v, s] = await Promise.all([c.timeline(0, f.tick), c.violations(from, f.tick), c.sanctions(from, f.tick)]);
+      setReadings({ at: t.frame.tick, timeline: t.timeline, violations: v.violations, sanctions: s.sanctions });
+    } catch (e) {
+      setError((e as Error).message);
+    }
   }, []);
 
   const showB = useCallback((f: Frame) => {
@@ -142,6 +198,7 @@ export default function App() {
     c.init(DEFAULT_WORLD)
       .then((f) => {
         show(f);
+        void readInstitution(f);
         return c.history();
       })
       .then((h) => setEvents(h.history))
@@ -150,7 +207,7 @@ export default function App() {
       c.terminate();
       discardBranch();
     };
-  }, [show, discardBranch]);
+  }, [show, discardBranch, readInstitution]);
 
   // The selected agent is "watched": every frame from A then carries its
   // kernel-written memory, last signal and ledger history — and, once a
@@ -211,6 +268,7 @@ export default function App() {
         });
         show(f);
         if (fb) showB(fb);
+        if (f.institution.nomos && now - lastRead.current > READ_EVERY_MS) void readInstitution(f);
       } catch (e) {
         setError((e as Error).message);
         setPlaying(false);
@@ -223,13 +281,22 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [playing, speed, show, showB]);
+  }, [playing, speed, show, showB, readInstitution]);
+
+  // Paused: the cards catch up with the last frame (the loop's throttle may have skipped it).
+  useEffect(() => {
+    if (!playing && frame) void readInstitution(frame);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playing]);
 
   useEffect(() => {
     if (frame && canvas.current) drawFrame(canvas.current, frame, selected, trailA.current);
     if (frameB && canvasB.current) drawFrame(canvasB.current, frameB, selected, trailB.current);
     if (frame && spark.current) drawSparkline(spark.current, history.current, frame.frontier, branch.current?.history);
     if (frame && curves.current) drawCurves(curves.current, history.current, frame.frontier, branch.current?.history);
+    if (frame && normCurves.current && frame.institution.nomos) {
+      drawCurves(normCurves.current, history.current, frame.frontier, branch.current?.history, NORM_CURVES);
+    }
   }, [frame, frameB, selected]);
 
   // Seeks are coalesced: while one is in flight, only the newest request
@@ -256,6 +323,7 @@ export default function App() {
             if (f.tick < f.frontier) setRewound(true);
             show(f);
             if (fb) showB(fb);
+            if (seekWanted.current === null) void readInstitution(f);
           }
         } catch (e) {
           setError((e as Error).message);
@@ -264,7 +332,7 @@ export default function App() {
         }
       })();
     },
-    [show, showB],
+    [show, showB, readInstitution],
   );
 
   const onScrub = (tick: number) => {
@@ -281,6 +349,7 @@ export default function App() {
       // The history shown is the ledger's, not what the UI remembers.
       const h = await client.current.history();
       setEvents(h.history);
+      void readInstitution(f);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -380,6 +449,14 @@ export default function App() {
     url.searchParams.set("policy", p);
     location.assign(url.toString());
   };
+  // So are institutions on or off (`WorldConfig::nomos_preset()` vs the default config), and recording violations.
+  const switchNomos = (on: boolean, record = RECORD_VIOLATIONS) => {
+    const url = new URL(location.href);
+    url.searchParams.set("nomos", on ? "1" : "0");
+    if (on && record) url.searchParams.set("violations", "1");
+    else url.searchParams.delete("violations");
+    location.assign(url.toString());
+  };
 
   const agent = frame && selected !== null ? findAgent(frame, selected) : null;
   const watched = frame?.watched && frame.watched.id === selected ? frame.watched : null;
@@ -389,6 +466,9 @@ export default function App() {
   const atHead = !!frame && frame.tick === frame.frontier;
   const L = frame?.ledger;
   const per = (v: number | null) => (v === null ? "–" : v.toFixed(2));
+  const inst = frame?.institution ?? null;
+  const normValuesA = frame && inst?.nomos ? valuesAt(history.current, NORM_CURVES, frame.tick) : null;
+  const normValuesB = frameB && inst?.nomos && branch.current ? valuesAt(branch.current.history, NORM_CURVES, frameB.tick) : null;
 
   return (
     <>
@@ -409,6 +489,35 @@ export default function App() {
             ))}
           </select>
         </label>
+        <label
+          className="muted pick"
+          title="institutions (ADR-0014): on, the world is built with WorldConfig::nomos_preset() — EXP-003's decision, as `cz run --preset nomos` — so decrees are accepted and encroachments, violations and sanctions are counted. Changing it reloads with a fresh world"
+        >
+          <input type="checkbox" checked={NOMOS} onChange={(e) => switchNomos(e.target.checked)} aria-label="institutions" />
+          institutions
+        </label>
+        {NOMOS && (
+          <label
+            className="muted pick"
+            title="record every violation as a ledger event (`cz run --record-violations`; ≈ 21 per tick), so the Violations card names each with its grounds instead of listing the episodes open now. Reloads"
+          >
+            <input
+              type="checkbox"
+              checked={RECORD_VIOLATIONS}
+              onChange={(e) => switchNomos(true, e.target.checked)}
+              aria-label="record violations"
+            />
+            record violations
+          </label>
+        )}
+        {inst?.nomos && (
+          <span
+            className="badge inst"
+            title="the institution at the view's tick (Frame.institution): rules in force and episodes of accusation open"
+          >
+            institution · {inst.rules.length} {inst.rules.length === 1 ? "rule" : "rules"} · {inst.accused.episodes} accused
+          </span>
+        )}
         <span className="muted">
           {frame ? `${frame.width}×${frame.height} · seed ${DEFAULT_WORLD.seed} · frontier ${frame.frontier}` : "starting…"}
           {frameB ? ` · B forked @${branch.current?.forkedAt}` : ""}
@@ -484,6 +593,15 @@ export default function App() {
             (ring) · markers fade over 0.6 s · foragers never interact — pick the <b>mixed</b> world above or spawn
             random walkers to see them
           </p>
+          {inst?.nomos && (
+            <p className="legend">
+              institutions (ADR-0014), from the kernel's flags and ledger: <i className="mark accused" /> stands accused
+              (an episode is open) <i className="mark harmable" /> accused, and a harm now would count as a sanction{" "}
+              <i className="mark harm sanction" /> a harm the kernel recorded as a sanction (over the red cross; a ring
+              with a bar for a rejection that counted)
+              {inst.rules.length === 0 ? " · no rule is in force yet — Enact one in Intervene" : ""}
+            </p>
+          )}
         </section>
         <aside>
           <Tutorial frame={frame} frameB={frameB} events={events} verification={verification} rewound={rewound} />
@@ -554,6 +672,7 @@ export default function App() {
               onVerify={() => void verifyFork()}
               onDiscard={discardBranch}
               onCompare={(kind) => void forkHere(compareIntervention(kind))}
+              onCompareRule={(kind) => void forkHere(compareRuleIntervention(frame.institution, kind))}
             />
           )}
           {frame && (
@@ -563,10 +682,21 @@ export default function App() {
               width={frame.width}
               height={frame.height}
               selectedAgent={selected}
+              institution={frame.institution}
               events={events}
               onApply={(iv) => void intervene(iv)}
               onFork={(iv) => void forkHere(iv)}
             />
+          )}
+          {frame && (
+            <InstitutionCard frame={frame} readings={readings} onSelect={setSelected} onEnable={() => switchNomos(true)} />
+          )}
+          {frame && inst?.nomos && normValuesA && (
+            <>
+              <NormRatesCard canvasRef={normCurves} valuesA={normValuesA} valuesB={normValuesB} />
+              <ViolationsCard frame={frame} readings={readings} onSelect={setSelected} />
+              <SanctionsCard frame={frame} readings={readings} onSelect={setSelected} />
+            </>
           )}
           <div className="card">
             <h2>Deals · ledger</h2>
@@ -632,6 +762,24 @@ export default function App() {
                 <dd>{agent.age}</dd>
                 <dt>policy</dt>
                 <dd>{POLICY_KINDS[agent.policy]?.toLowerCase() ?? `kind ${agent.policy}`}</dd>
+                {detail && detail.arrived !== null && (
+                  <>
+                    <dt title="first occupancy (ADR-0014 D3): the tick the agent began standing on its cell; whoever arrived earlier is the first occupant, and gathering there is an encroachment on them">
+                      arrived
+                    </dt>
+                    <dd>tick {detail.arrived}</dd>
+                  </>
+                )}
+                {detail && inst?.nomos && (
+                  <>
+                    <dt title="episodes of accusation open against the agent at this tick (the kernel's standing, 4-7)">standing</dt>
+                    <dd className="qrow">
+                      {detail.standing.length === 0 ? "not accused" : detail.standing.map((a) => describeStanding(a)).join(" · ")}
+                    </dd>
+                    <dt title="whether the agent has voted on the open motion (motions arrive with 4-5)">voted</dt>
+                    <dd>{inst.motion ? (detail.voted ? "yes" : "not yet") : "no motion open"}</dd>
+                  </>
+                )}
                 <dt>last signal</dt>
                 <dd>
                   {detail
@@ -806,6 +954,13 @@ function sampleOf(f: Frame): Sample {
     transfers: f.ledger.transfers,
     harms: f.ledger.harms,
     signals: f.ledger.signals,
+    gathers: f.ledger.gathers,
+    encroachments: f.ledger.encroachments,
+    violations: sumKinds(f.ledger.violations),
+    sanctions: sumKinds(f.ledger.sanctions),
+    episodesClosed: sumKinds(f.ledger.episodes_closed),
+    episodesSanctioned: sumKinds(f.ledger.episodes_sanctioned),
+    accused: f.institution.accused.episodes,
   };
 }
 
