@@ -34,14 +34,21 @@ Phase 2 の計画は ADR-0010（Toy 1）に従う。
 - [x] 3-9c UI: fixed vs learning 比較（済 2026-10-17: Branches の「Compare: fixed vs learning」= 現 tick で fork + `SetPolicy { All, kind, Default }`（B の kind は Learner 既定、Reflex / Forager / Random も可）、「Compare · A solid, B dashed」の 5 カーブ（人口・摂取量/体/tick・移転/tick・加害/tick・発信/tick、直近 50 tick の台帳差分）、介入パネルの Set policy（All / Fraction / Id × Default / Keep）、cz-web の `policy_mix` に `reflex / learner / mixed-learning`（CLI と同じ割当、evolving mix は突然変異 ON）、`agents()` の policy 列を `policy_code` 0..=3 に、地図 4 色、インスペクタに Learner の last step と Q 行、Learner 世界のゴールデン `cb8bc0a9772c09a4` を native / wasm で固定、プロトコル v5。ブラウザ計測は STATUS）
 - [x] 3-10 文書（済 2026-10-17: ADR-0013 の完了判定、STATUS の Phase 3 完了判定、RISKS R8〜R11、TUTORIAL 9 節。**Phase 3 完了**）
 
-## Phase 4: Institutions（Nomos Engine）— 設計 ADR から
+## Phase 4: Institutions（Nomos Engine）— [ADR-0014](adr/0014-phase4-institutions.md) のタスク表に従う
 
-- [ ] Phase 4 の設計 ADR: 違反の定義（台帳の `Transferred / Harmed / Proposed / Accepted / Rejected` と `Promised` の不履行から計算する操作的指標）→ 制裁の選択（個体が `Harm` や移転拒否を選ぶ相互作用。物理は変えない、RISKS R4）→ 規範の提案と合意（Institution DSL の最小形）。完了条件に PRODUCT.md Phase 4 のデモ（制度エクスプローラ）を含める。
-- [ ] 前提条件の扱いを ADR に書く: 制裁なしのベースラインが加害死 43%（ε = 5% の探索由来、RISKS R8）、報酬は自己エネルギーのみ（R9）、死の終端報酬なし。
-- [ ] EXP-003 候補の採否（ADR で決める）: 死の終端報酬の有無、ε と `harm_cost` の格子、`--mutate` だけの Forager、立っている食料・総再生量の指標、Q 表の行ごとの訪問回数。
-- [ ] 学習世界の巻き戻し時間（復号 + 再実行）の再計測（RISKS R11）。
+- [x] Phase 4 の設計 ADR（済 2026-10-17: ADR-0014。制度は物理を変えない 2 経路（D1）、`simulation-core/src/nomos/` と `World.nomos` / `NormIndex`（D2）、先占 = 到着順と侵害・不履行の操作的定義（D3）、違反・係争・制裁の判定はカーネルの純関数（D4）、Institution DSL = `Norm` × `Charter` の最小形と表現できないこと（D5）、観測の規範情報と Reflex 21 特徴 / Learner の新ビット順 / 体力項（D6）、動議・投票・憲章・改正と台本 `Enforcer`、学習方策は立法しない（D7）、介入 Enact / Repeal / Charter と fork 比較（D8）、決定論と台帳の契約（D9）、前提条件と EXP-003 候補の採否（D10）、H1 の事前登録の形 = EXP-004（D11）、制度エクスプローラは読み手だけ（D12）。完了条件にデモと計測の門とスナップショット上限）
+- [ ] 4-1 社会的事実の追跡: `WorldConfig.nomos`、`Agent.arrived`（先占）、侵害の判定と `EncroachedBy`、約束の監査、台帳 `gathers / encroachments / promises_*`、`TickReport` の方策別件数と `learner_rows`、`learner_health_weight`、`cz sweep` の新指標（侵害率・立っている食料・再生量・訪問回数）、記録量のスモーク計測（`Violated` の既定を決める）。`nomos` オフでゴールデン不変
+- [ ] 4-2 `nomos` モジュール: `Norm / Rule / Charter / Standing / Nomos`、`NormIndex`、3 述語の判定・係争・制裁の識別・エピソードのカウンタ、イベント `Violated / Sanctioned`、記憶 `Sanctioned / SanctionedBy / SawSanction`、介入 `Enact / Repeal / Charter` と CLI、スナップショット形式 9、再生照合
+- [ ] 4-3 観測と学習方策: `Observation.norms`、Reflex 21 特徴（零の初期重み、突然変異の順序）、Learner の新ビット順（`FINE_STATES` 1024、64〜256 行は `nomos` オフで 32 行と同一決定）、Harm のアクチュエータ、`Perception.see_standing`。EXP-002 の series が全行一致、decide ≤ 200 ns
+- [ ] 4-4 EXP-003（ε × `harm_cost` × 体力項の格子 + Forager + Learner 128 行、14 腕 × 10 シード）: 事前登録 → 実行 → `WorldConfig::nomos_preset()` の確定。死の終端報酬は却下（D10）、`--mutate` だけの Forager は Phase 6 へ
+- [ ] 4-5 提案と合意: `Message::Motion / Vote`、議場 1 つと憲章（定足数・閾値・期限・改正の可否）、閉会と施行・置換、`Failure` 5 種、Random の 16 行動、`PolicyKind::Enforcer`（陽性対照の台本）、`--policy institution`
+- [ ] 4-6 EXP-004（H1: 先占規範と制裁。L0 / L1 / LE0 / LE + 帰無 5 本、主対比 30 シード）: 事前登録 → 実行 → 記録。「創発」「世界初」を書かない
+- [ ] 4-7 ∥ cz-web の読み手: `institution_json / timeline_json / violations_json / sanctions_json`、`agents()` の `flags` 列、`Frame.institution`、`watch` の係争、プロトコル v6、モック worker（4-2 の型が決まれば先行可）
+- [ ] 4-8 ∥ 制度エクスプローラ: 時系列カード、違反と制裁の一覧、率のカーブ、介入パネル Enact / Repeal / Charter、「Compare: with vs without rule」、インスペクタの係争、地図のマーカー、`institution` ミックス、ツアーの段、TUTORIAL §10（PRODUCT.md Phase 4 のデモ、公開 URL で確認）
+- [ ] 4-9 計測とゴールデン: 制度世界のゴールデン（native = wasm、CI）、decide / step / NormIndex / スナップショット（既定 ≤ 1 MB、制度世界 ≤ 2 MB）/ 巻き戻し（RISKS R11、学習世界と制度世界）/ ブラウザ tick/s / wasm ≤ 400 KB
+- [ ] 4-10 文書: ADR-0014 の完了判定、STATUS、RISKS R12〜R14、HYPOTHESES、ARCHITECTURE（`nomos` モジュール、Apply 3c、プロトコル v6）、CLAUDE.md の `Failure` の文言、TUTORIAL §10〜11、README
 
 ## Phase 6 以降
 
 - [ ] 突然変異 ON の事前登録実験、固定小数点 NN の検討（ADR-0013 で先送り）。
-- [ ] EXP-003 候補（EXP-002 の次の問い。決定は ADR で）: 死の終端報酬の有無（D6 で先送り。Learner が「空腹・在庫なし・食料は視界に・隣接なし」で Rest を選ぶ 10/10 の行が消えるか）、ε と `harm_cost` の格子（加害死 43% が探索由来なら ε で線形に下がるはず。デモ世界の既定を決める材料）、`--mutate` だけの Forager（Reflex の `hunger_permille` 低下を重みの進化と分ける）、`cz sweep` に立っている食料と再生量の指標。
+- [ ] `--mutate` だけの Forager（Reflex の `hunger_permille` 低下を重みの進化と分ける。ADR-0014 D10 で EXP-003 から外し、Phase 6 の進化実験の腕にする。他の EXP-003 候補の採否は ADR-0014 D10）。

@@ -1,14 +1,14 @@
 # 実装進捗（新しいセッションはまずここを読む）
 
-最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · **Phase 2 = Toy 1 完了（配信中: https://two-three-co.github.io/civilization-zero/ ）。Phase 3（Agent Cognition, ADR-0013）完了（2026-10-17、完了判定は下表）**（ADR-0010）· カーネル版 `simulation-core 0.1.0`
+最終更新: 2026-10-17 · **Phase 1 完了（ライフサイクル含む）** · **Phase 2 = Toy 1 完了（配信中: https://two-three-co.github.io/civilization-zero/ ）。Phase 3（Agent Cognition, ADR-0013）完了（2026-10-17、完了判定は下表）。Phase 4（Institutions / Nomos Engine）は設計 [ADR-0014](adr/0014-phase4-institutions.md) のみ（2026-10-17、コードは未着手）**（ADR-0010）· カーネル版 `simulation-core 0.1.0`
 リポジトリ: https://github.com/two-three-co/civilization-zero（public）· CI: GitHub Actions（fmt / clippy / test debug+release / wasm ビルド）
 
 ## 状態の区別
 
 - **実装済み・テスト通過・計測済み**: Phase 1〜3 の全項目（下表）、EXP-001 / EXP-002（事前登録済み・10 シード）、公開 URL のデモ（Toy 1 と Phase 3 の記憶・マーカー・交渉スレッド・fixed vs learning）。
-- **設計のみ**: なし。Phase 4（制度、Nomos Engine）は設計 ADR が未着手。
-- **未着手**: Nomos / Genesis の全コード（Phase 4〜6）。`web/` は本物のカーネル（wasm）で観察・巻き戻し・介入・分岐比較・再現性検証・社会層の読み出し・固定 vs 学習の比較ができ、ツアー付き（PRODUCT.md の Phase 2 と Phase 3 のデモを公開 URL で満たす）。
-- **任意の残件**（docs/TODO.md）: wasm サイズ（345 KB）、学習世界の巻き戻し時間の再計測、2b-6 の磨き込み、乱数統計検定。
+- **設計のみ**: Phase 4（Institutions / Nomos Engine）= [ADR-0014](adr/0014-phase4-institutions.md)（2026-10-17。決定 D1〜D12、タスク 4-1〜4-10、完了条件にデモと計測の門。コードは未着手）。
+- **未着手**: Nomos / Genesis の全コード（Phase 4〜6。Phase 4 は ADR-0014 のタスク 4-1〜4-10）。`web/` は本物のカーネル（wasm）で観察・巻き戻し・介入・分岐比較・再現性検証・社会層の読み出し・固定 vs 学習の比較ができ、ツアー付き（PRODUCT.md の Phase 2 と Phase 3 のデモを公開 URL で満たす）。
+- **任意の残件**（docs/TODO.md）: wasm サイズ（345 KB）、2b-6 の磨き込み、乱数統計検定（学習世界の巻き戻し時間の再計測は ADR-0014 の 4-9 に含めた）。
 
 ## Phase 1 チェックリスト
 
@@ -27,7 +27,7 @@
 | 11 | 自動テスト | 済 | 148 テスト（proptest 含む、2026-10-17 時点）+ wasm 5 本、debug/release 両方通過、CI 緑 |
 | 12 | ベンチマーク | 済 | criterion、下記 |
 | 13 | 2D ビューア | 済 | `viewer/index.html`（trace 形式 2、年齢表示）、ブラウザで確認済み |
-| 14 | ドキュメント | 済 | PRODUCT, README, ARCHITECTURE, TUTORIAL, ADR×13, research/*, EXP-001 / EXP-002 |
+| 14 | ドキュメント | 済 | PRODUCT, README, ARCHITECTURE, TUTORIAL, ADR×14, research/*, EXP-001 / EXP-002 |
 | 15 | 出生・寿命・死因・イベント | 済 | ADR-0008、`tests/lifecycle.rs`、EXP-001 |
 | 16 | 個体数の収束計測（10 シード） | 済 | `cz sweep`、EXP-001: 全シード収束、CV 0.033（ADR-0011 後の再実行でも同値） |
 | 17 | decide フェーズのプロファイルと高速化 | 済 | ADR-0011、`docs/perf/*.svg`、step 194 → 132 µs/tick |
@@ -212,4 +212,4 @@ ADR-0011 で走査を行スライス化（ハッシュ不変、-16%）→ 2 パ�
 
 ## 次のタスク
 
-**Phase 3 完了（2026-10-17）。次は Phase 4（Institutions / Nomos Engine）の設計 ADR**: 3-2〜3-4 の台帳（移転・加害・提案・受諾・拒否・履行/不履行）の上に「違反の定義 → 制裁の選択 → 規範の提案と合意」を載せる。ADR の前提条件として EXP-002 の結果を扱う: 制裁のない既定世界で Learner の死因の 43% が加害死（源は ε = 5% の探索）、報酬が自己エネルギーのみで分かち合いは出ない、死に終端報酬がない（RISKS R8〜R10）。EXP-003 候補（終端報酬、ε と `harm_cost` の格子、`--mutate` だけの Forager、立っている食料の指標）の採否もその ADR で決める。H1 の判定は個体数ではなく事前登録した指標（先占者以外の採取率と制裁の条件付き確率）で行う。decide 基準は改定済み（ADR-0013 D6: Forager ≤ 100、Reflex 初期重み ≤ 150、進化後・Learner ≤ 200 ns/体·tick、製品の門 1.3k 体で ≥ 1,800 tick/s native）。任意の残件は docs/TODO.md（wasm サイズ 345 KB、学習世界の巻き戻し時間の再計測、2b-6 の磨き込み、乱数統計検定）。
+**Phase 3 完了（2026-10-17）。Phase 4（Institutions / Nomos Engine）の設計は [ADR-0014](adr/0014-phase4-institutions.md)（2026-10-17、決定 D1〜D12）。次は ADR-0014 のタスク表の 4-1**（社会的事実の追跡: `WorldConfig.nomos`、`Agent.arrived` による先占、侵害と約束の監査、台帳カウンタ、`learner_health_weight`、`cz sweep` の新指標、記録量のスモーク計測。`nomos` オフでゴールデン不変）。4-1 の後は 4-2（`nomos` モジュール: 規範・規則・憲章・係争・制裁の判定、介入 Enact / Repeal / Charter、スナップショット形式 9）→ 4-3（観測の規範情報、Reflex 21 特徴、Learner の新ビット順、Harm のアクチュエータ）→ 4-5（動議・投票・`Enforcer`）→ 4-6（EXP-004 = H1 の事前登録実験、帰無モデル 5 本、主対比 30 シード）。4-4（EXP-003: ε × `harm_cost` × 体力項の格子でベースライン世界 `nomos_preset` を決める）は 4-1 の直後に 4-2 と並行でき、4-7 / 4-8（cz-web の読み手と制度エクスプローラ、プロトコル v6）は 4-2 の型が決まり次第モック worker で先行できる。EXP-003 候補の採否は ADR-0014 D10（死の終端報酬は却下 = 表は個体と一緒に消える、ε × `harm_cost` と体力項を主格子、立っている食料と Q 行の訪問回数は採用、`--mutate` だけの Forager は Phase 6 へ）。完了条件は PRODUCT.md Phase 4 のデモ（制度エクスプローラ: 提案・合意・違反・制裁の時系列、Compare: with vs without rule）と計測の門（制度世界 1.3k 体で ≥ 1,800 tick/s native、ブラウザ ≥ 60 tick/s、decide ≤ 200 ns、Nomos の追加コスト ≤ step の 20%、スナップショット既定世界 ≤ 1 MB / 制度世界 ≤ 2 MB、wasm ≤ 400 KB）。任意の残件は docs/TODO.md（wasm サイズ 345 KB、2b-6 の磨き込み、乱数統計検定）。
