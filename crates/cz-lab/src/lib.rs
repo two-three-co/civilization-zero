@@ -29,8 +29,12 @@
 //!
 //! [`Manifest`] is `RUN.json` (`lab_result: 1`): the design, the kernel's
 //! commit, the machine, start / end, and one record per world (cell, seed,
-//! ticks, `dynamics_hash`, ms). [`cohort`] holds the frame of the
-//! per-agent tracking of ADR-0015 D4, whose kernel material arrives in 5-2.
+//! ticks, `dynamics_hash`, ms). [`cohort`] is the per-agent tracking of
+//! ADR-0015 D4 (5-2): every run tallies each agent's gathers,
+//! encroachments, sanctions, birth and death from the kernel's per-tick
+//! material (`TickReport.gatherers / encroachers` and the events), writes
+//! the eleven cohort columns at the end of the summary row and, on
+//! request, one `agents` row per agent.
 //!
 //! This crate depends on the kernel only. `cz-cli` drives it from the
 //! command line (`cz sweep`, `cz lab run`, `cz lab summarize`);
@@ -45,6 +49,7 @@ pub mod stats;
 pub mod summary;
 pub mod tally;
 
+pub use cohort::{AgentTally, CohortMetrics, CohortTally, Counts, AGENTS_COLUMNS};
 pub use design::{
     evolves, policy_mix, Base, Cell, Columns, Contrast, Design, Metric, Scheduled, Seeds,
     DESIGN_FORMAT, POLICY_MIXES, PRESETS,

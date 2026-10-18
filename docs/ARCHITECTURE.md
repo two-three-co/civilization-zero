@@ -1,4 +1,4 @@
-# Architecture（Phase 4 完了 + Phase 5-1 時点、2026-10-18）
+# Architecture（Phase 4 完了 + Phase 5-2 時点、2026-10-18）
 
 > 実装と一致している内容のみを書く。未実装の層は「予定」と明記する。製品ゴールは docs/PRODUCT.md。
 
@@ -24,8 +24,8 @@ crates/simulation-core     ← Deterministic World Kernel。外部依存は serd
 | クレート | 役割 | 状態 |
 |---|---|---|
 | `simulation-core` | 空間・資源・身体・行動解決・ライフサイクル・乱数・スナップショット | 実装済み |
-| `cz-cli` | `cz run` / `cz resume` / `cz log` / `cz replay` / `cz fork` / `cz sweep` / `cz lab run` / `cz lab summarize`、計測、trace 出力。世界の構築と sweep の集計は `cz-lab` に委譲（5-1） | 実装済み |
-| `cz-lab` | 実験の設計 `Design`（`format: 1`、base / cells / schedule / contrasts）、`run_cell`（1 世界 → summary / series / qpolicy 行、`Tally`、列の契約）、`paired_stats`（同じ seed の対、95% ブートストラップ CI、d_z）、`summarize`、`Manifest`（RUN.json）、`cohort`（D4 の枠） | 実装済み（ADR-0015 5-1。`cz-lab-web` と `web/src/lab/` は 5-8 / 5-9 で予定） |
+| `cz-cli` | `cz run` / `cz resume` / `cz log` / `cz replay` / `cz fork` / `cz sweep` / `cz lab run [--agents]` / `cz lab summarize`、計測、trace 出力。世界の構築と sweep の集計は `cz-lab` に委譲（5-1）、`--agents` は個体表 `<cell>_agents.csv`（5-2） | 実装済み |
+| `cz-lab` | 実験の設計 `Design`（`format: 1`、base / cells / schedule / contrasts）、`run_cell`（1 世界 → summary / series / qpolicy 行、`Tally`、列の契約。5-2: 走行中に `cohort::CohortTally` を駆動し、summary の末尾にコホート 11 列、`RunOptions::agents` で個体ごとの `agents` 行）、`paired_stats`（同じ seed の対、95% ブートストラップ CI、d_z）、`summarize`（5-2 でコホート 5 指標も）、`Manifest`（RUN.json）、`cohort`（ADR-0015 D4: id 添字の `Vec<Option<AgentTally>>`、`TickReport.gatherers / encroachers` と `Born / Died / Sanctioned` から個体ごとの計数を全区間と窓の前半 / 後半で積む。HashMap なし、カーネルの外） | 実装済み（ADR-0015 5-1 / 5-2。`cz-lab-web` と `web/src/lab/` は 5-8 / 5-9 で予定） |
 | `cz-wasm-probe` | カーネルを wasm32 で動かす最小 C-ABI（`probe_init/step/hash`） | 実装済み（計測用） |
 | `multiverse` | 再生（再実行 + 台帳照合）、`Multiverse` / `Branch`（head + 台帳 + 周期スナップショット）、fork と系譜 | 実装済み（ADR-0012） |
 | `web/`（npm, 非 Cargo） | Toy 1 UI: Vite + React + TS、UI ↔ Worker プロトコル（v7）、カーネル Worker（wasm）とモック Worker、社会マーカーとインスペクタ、交渉スレッドと取引の一覧、「Compare: fixed vs learning」（fork + `SetPolicy`）と A/B の率カーブ（ADR-0013 3-9a/b/c）、制度エクスプローラ（ADR-0014 D12、4-7 / 4-8: `Frame.institution` と `institution / timeline / violations / sanctions` 要求、時系列・違反・制裁・率の 4 カード、介入パネルの Enact / Repeal / Charter、「Compare: with vs without rule」、地図の係争の輪郭と制裁のマーカー。判定はすべて cz-web 側）、4-5 の動議（時系列に `motioned / motion_closed` と `by: { motion }`、`institution` ミックス、Enforcer の色） | 実装済み（2b-1/2b-2、3-9a/b/c、4-7/4-8、4-5 は文言と色のみ） |
@@ -61,9 +61,10 @@ S(t) ──Index──▶ SpatialIndex（派生状態、保存しない。Decide
            Learner の Intent は決定した Q 表の行（Intent.state）も運ぶ。方策は表を読むだけで、更新は Apply の 5a
 Apply:
   2 Consume   在庫→エネルギー（私的、競合なし）
-  3 Gather    S(t) の位置で解決。同一セルの請求者を抽選キー順に逐次配分。nomos オン: 採集があったセルごとに先占者（arrived 最小、None が最古、同点は id 小）を求め、
-             それより後に到着した採集者を侵害と数える（台帳 encroachments、先占者の記憶 EncroachedBy。同 tick の到着は侵害でない。ADR-0014 D3）。
-             Encroach の規則があれば侵害は違反: 採集者の (agent, rule) エピソードを開くか更新（nomos.standing）、Violated（セル順・採集者 id 順。ADR-0014 D4）
+  3 Gather    S(t) の位置で解決。同一セルの請求者を抽選キー順に逐次配分。成功した採集の採集者はセル順・id 順で TickReport.gatherers に載る（ADR-0015 D4、5-2。
+             状態でもハッシュでもなく、全世界で）。nomos オン: 採集があったセルごとに先占者（arrived 最小、None が最古、同点は id 小）を求め、
+             それより後に到着した採集者を侵害と数える（台帳 encroachments、先占者の記憶 EncroachedBy、TickReport.encroachers に（採集者, 先占者）。同 tick の到着は侵害でない。ADR-0014 D3）。
+             Encroach の規則があれば侵害は違反: 採集者の (agent, rule) エピソードを開くか更新（nomos.standing）、Violated（セル順・採集者 id 順 = encroachers と同順。ADR-0014 D4）
   3b Transfer / Store / Harm / Signal   S(t) の位置で隣接判定（Manhattan ≤ 1）、行為者 id 順に逐次解決。Say の聴取者は signal_radius 内。
              Propose / Accept / Reject は signal_radius 内の宛先にだけ届く（外なら OutOfEarshot、不在なら NoSuchTarget）。Accept は宛先からの提案を
              受諾者が記憶していることが要件（なければ NoSuchOffer）。届いたものは Proposed / Accepted / Rejected として常に台帳へ（ADR-0013 D3, D5）。
@@ -137,6 +138,7 @@ UI ↔ Worker は `web/src/protocol.ts`（v7: `init / step / seek / frame / inte
 | シナリオ | `tests/actions.rs` | 競合採集・二重取得なし、壁移動、消費上限、飢餓死、再生 |
 | ライフサイクル | `tests/lifecycle.rs` | 出生の分裂と親 id 順採番、死因の優先、死者は繁殖しない、継承と突然変異、イベントの直列化 |
 | 決定論/統合 | `tests/determinism.rs` | 同一シード同一履歴、ゴールデンハッシュ（Forager。4-9 で制度世界 `0xfedc281503180c8e` も: 可決 1 件・規則 id 1・両方の種類が生存）、スナップショット往復、改竄検出、5,000 tick 不変条件、世代をまたぐ保存則、serial=parallel |
+| 個体単位の材料（Phase 5-2） | `tests/tracking.rs` | `TickReport.gatherers` が成功した採集の採集者をセル順・id 順で（手組み: 3 セル・後着 2 体・食料のないセルの失敗）、`encroachers` が `Violated` と同順で `encroachments` の和、規則なしでも同じ列、`nomos` オフでは `gatherers` だけ、制度世界 48² 300 tick で毎 tick (セル, id) の狭義昇順・方策別の計数一致・侵害者は採集者で先占者と同セル・台帳との合計一致 |
 | 社会層 | `tests/neighbors.rs`, `tests/interaction.rs`, `tests/memory.rs`, `tests/negotiation.rs` | 近傍観測、Transfer / Store / Harm、発信と記憶、交渉（提案 → 受諾 → 移転 → 返済の台帳と記憶、不履行で物理不変、届かない・不在・未受領の失敗、proptest で serial = parallel） |
 | 方策の枠 | `tests/set_policy.rs`, `multiverse/tests/fork.rs` | Reflex / Learner の表（Reflex は Forager と身体が 600 tick 一致、Learner は自分の履歴・非零の表・記録を持つ）、`SetPolicy` の All / Id / Fraction と Default / Keep、無効介入の拒否、JSON 形、Q の継承 / 白紙、形式 8 の往復と不整合の拒否、同一 tick の 2 回 fork でハッシュ一致 |
 | Reflex 方策 | `tests/reflex.rs`, `policy.rs` 単体 | Forager 等価（全個体の決定一致、1,000 tick の身体・資源・台帳一致）、特徴ベクトル、決定規則、重みが決定を変える、同点抽選の一様性と決定性、子の重みの突然変異、serial = parallel（proptest） |
@@ -149,6 +151,6 @@ UI ↔ Worker は `web/src/protocol.ts`（v7: `init / step / seek / frame / inte
 | 制度（Phase 4-2） | `tests/nomos_rules.rs`, `nomos.rs` / `nomos/index.rs` 単体, `multiverse/tests/fork.rs`, `multiverse/tests/replay.rs` | 3 述語の判定が台本どおりで、同じ intents を規則なし / `nomos` オフの世界に与えて身体・資源・物理の台帳・物理イベントが一致、`except_sanction` の免責と制裁なし規則、制裁の帰属（最古の該当エピソード、REJECT だけの規則は加害を取らない）、係争の期限・死亡・除去・廃止での閉鎖と S / S' のカウンタ、置換 = 旧規則の廃止 + 新 id、布告の JSON と `nomos` オフでの拒否、形式 10 の往復・形式 9 の拒否・不整合 14 種の拒否、Forager / Learner 世界で規則が決定を変えない、同一 tick の `Enact` 2 回 fork でハッシュ一致と `Repeal` の fork、布告・制裁・違反を挟む再生の bit 一致と改竄検出、proptest で serial = parallel = 再実行・NormIndex = 状態・イベント順・カウンタ一致・往復 |
 | プロパティ | `tests/determinism.rs` (proptest) | 任意の config（ライフサイクル ON/OFF、突然変異 ON/OFF）で毎 tick 不変条件、消費なしでエネルギー増加なし、再実行一致 |
 | ベンチ | `benches/step.rs` (criterion) | 1k/10k/100k 体の step（1,000 tick 後の定常状態）、decide 単体（Forager / Reflex 初期重み / Reflex 進化後 / Learner 32 行、4-3 で先占規範下の Reflex 進化後と Learner 128 行とそれぞれの盲目（`see_standing: false`）の変種、4-5 で制度世界 `institution/3000`、4-9 でその盲目の対照 `institution_blind/3000`）、ハッシュ、スナップショット（4-9 で `snapshot_bin_decode/{forager_1000, learner_1000, institution_3000}` = 復号だけとバイト数）、`nomos` オン（規則なし / 先占規範あり、4-3 で Learner 128 行、4-5 で `step/institution/1000` = `--policy institution --enact encroach` の 3,000 tick 後（4-9 から `WorldConfig::institution_preset()` = Enforcer 10% を保つ世界）、4-9 で規則も動議もない参照 `step/institution_norules/1000` = EXP-004 の LE0）の step、`NormIndex` 構築（1.3k 体・係争 2,000 件 / 空 / 4-9 で制度世界の実際の係争） |
-| 実験基盤（Phase 5-1） | `crates/cz-lab/tests/{columns,goldens,exp004_series,stats,design,cohort}.rs`, `cz-lab` の単体, `crates/cz-cli/tests/lab_cli.rs` | 3 ヘッダの文字列を固定し EXP-001〜004 の登録 CSV のヘッダが接頭辞、`goldens.json` からゴールデン 3 本、EXP-004 `le` / `l0` seed 0 の 2,000 tick の series 21 行が登録データと一致、`paired_stats` が `summarize.py` の 10 対比と一致（平均・d_z、CI は ±1e-4 / 幅の 4%）、同一世界の対は CI (0, 0)、絶滅シードの除外、未知の列は誤り、`Design` の往復・優先順位（institution → 128 行 + share、`--preset nomos --policy institution`、evolving → 突然変異、セルの上書きが勝つ、入れ子の merge、`null` で `None`）・拒否（未知フィールド、`seed`、予定の tick ≥ ticks、重複名、未知のセル）、`jobs()` の選択、コホートの枠が出生・死亡・制裁を台帳と一致させる、単体: ブートストラップの決定性と `below` の一様性、四分位、ISO 8601。cz-cli: `cz sweep` ≡ `cz lab run`（`--jobs 1` ≡ `--jobs 2`、seed 順、RUN.json、`summarize`、`--cells` / `--seeds` の選択）、`cz run --policy institution … --ticks 200` の `state_hash` 0x4b945b8bade819ee（4-9） |
+| 実験基盤（Phase 5-1 / 5-2） | `crates/cz-lab/tests/{columns,goldens,exp004_series,stats,design,cohort}.rs`, `cz-lab` の単体, `crates/cz-cli/tests/lab_cli.rs` | 4 ヘッダの文字列を固定し（summary 88 列 = 77 + コホート 11、`agents` 20 列）EXP-001〜004 の登録 CSV のヘッダが接頭辞（EXP-004 の summary も 5-2 から接頭辞）、`goldens.json` からゴールデン 3 本、EXP-004 `le` / `l0` seed 0 の 2,000 tick の series 21 行が登録データと一致し同じ走行の個体表（`--agents`）が series の合計（全区間・窓 (1,000, 2,000]・前半後半、方策別、出生・死因）と一致して summary のコホート 11 列が個体表どおり、`paired_stats` が `summarize.py` の 10 対比と一致（平均・d_z、CI は ±1e-4 / 幅の 4%）、同一世界の対は CI (0, 0)、絶滅シードの除外、未知の列は誤り、`Design` の往復・優先順位（institution → 128 行 + share、`--preset nomos --policy institution`、evolving → 突然変異、セルの上書きが勝つ、入れ子の merge、`null` で `None`）・拒否（未知フィールド、`seed`、予定の tick ≥ ticks、重複名、未知のセル）、`jobs()` の選択、コホート（5-2）: 台本の世界（学習者 4 体 + Enforcer 2 体、窓 tick 4〜11）で 11 列の値が定義どおり（生存 2 / 加害死 1 / 老衰 1、生存コホートの E 2/14、前半 2/6 → 後半 0/8、個体の差の平均 −0.5、除去側の E 1/1 と侵害の割合 1/3、制裁 → 死 1/1）と個体表 6 行の文字列、生成した制度世界 400 tick で個体表が台帳・レポート・生存と一致（採集・侵害の方策別、制裁の授受、窓の計数、コホート = tick 200 の生存者）、空の窓はコホートなし、単体: ブートストラップの決定性と `below` の一様性、四分位、ISO 8601、`agents` 行とコホート列の文字列。cz-cli: `cz sweep` ≡ `cz lab run`（`--jobs 1` ≡ `--jobs 2`、seed 順、RUN.json、`summarize`、`--cells` / `--seeds` の選択）、`--agents` の個体表が `--jobs` に依らず同一で sweep は書かない、`cz run --policy institution … --ticks 200` の `state_hash` 0x4b945b8bade819ee（4-9） |
 | 計測 | `cz sweep` / `cz lab run` | 複数シードの個体数帯域（docs/research/experiments/EXP-001）、EXP-003 / 004 の `design.json`、RUN.json |
 | 共通ヘルパ | `tests/common/mod.rs` | 手組みの世界と明示的 Intent |

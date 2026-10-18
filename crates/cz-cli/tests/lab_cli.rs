@@ -1,8 +1,10 @@
 //! `cz sweep` through `cz-lab` writes what it always wrote, `cz lab run`
 //! writes the same rows under a design (whatever `--jobs`), `RUN.json` and
 //! `cz lab summarize` come out, and `cz run` still builds the institution
-//! world of 4-9 (ADR-0015 5-1).
+//! world of 4-9 (ADR-0015 5-1). `cz lab run --agents` writes the per-agent
+//! table (5-2), the same whatever `--jobs`; `cz sweep` never does.
 
+use cz_lab::AGENTS_COLUMNS;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -120,14 +122,18 @@ fn sweep_lab_run_and_summarize_agree() {
         lab2.to_str().unwrap(),
         "--jobs",
         "2",
+        "--agents",
     ]);
     assert!(
-        out.contains("cz lab run cli-test: 4 worlds × 300 ticks (2 cells), jobs 2"),
+        out.contains(
+            "cz lab run cli-test: 4 worlds × 300 ticks (2 cells), jobs 2, check false, agents"
+        ),
         "{out}"
     );
     assert!(out.contains("wrote") && out.contains("RUN.json"), "{out}");
+    assert!(out.contains("_agents.csv"), "{out}");
     let lab1 = dir.join("lab1");
-    run(&[
+    let out = run(&[
         "lab",
         "run",
         design,
@@ -135,7 +141,9 @@ fn sweep_lab_run_and_summarize_agree() {
         lab1.to_str().unwrap(),
         "--jobs",
         "1",
+        "--agents",
     ]);
+    assert!(out.contains("jobs 1, check false, agents"), "{out}");
 
     // The sweep's cell is the design's `le`: same rows, bar the clock.
     for kind in ["summary", "series", "qpolicy"] {
@@ -151,6 +159,34 @@ fn sweep_lab_run_and_summarize_agree() {
             assert_ne!(b, d, "the decree changes the ruled cell's series");
         }
     }
+    // 5-2: the per-agent table, the same whatever the thread count; the
+    // sweep writes none.
+    for cell in ["le", "le0"] {
+        let a = read(&lab2.join(format!("{cell}_agents.csv")));
+        let b = read(&lab1.join(format!("{cell}_agents.csv")));
+        assert_eq!(a, b, "{cell}: agents --jobs 2 vs --jobs 1");
+        let mut lines = a.lines();
+        assert_eq!(lines.next().unwrap(), AGENTS_COLUMNS);
+        let rows: Vec<Vec<&str>> = lines.map(|l| l.split(',').collect()).collect();
+        assert!(
+            rows.len() >= 200,
+            "{cell}: 100 founders per seed and the births"
+        );
+        assert!(rows
+            .iter()
+            .all(|f| f.len() == AGENTS_COLUMNS.split(',').count()));
+        assert_eq!(
+            rows[0][..3],
+            ["0", "0", "enforcer"],
+            "{cell}: founder 0 is the mix's enforcer"
+        );
+        assert!(
+            rows.iter().any(|f| f[0] == "1"),
+            "{cell}: seed 1 follows seed 0"
+        );
+        assert!(rows.iter().filter(|f| f[0] == "0").count() >= 100);
+    }
+    assert!(!dir.join("sweep_agents.csv").exists());
     // Seeds in order whatever the thread count.
     let summary = read(&lab2.join("le_summary.csv"));
     let seeds: Vec<&str> = summary

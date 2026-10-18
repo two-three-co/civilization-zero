@@ -9,11 +9,13 @@
 //! - [`cmd_sweep`] is `cz sweep`: the design's one cell, run seed by seed,
 //!   the same console lines and the same `PREFIX_{summary,series,qpolicy}.csv`.
 //! - [`cmd_lab`] is `cz lab run DESIGN.json --out DIR [--jobs N] [--cells
-//!   a,b] [--seeds S..E] [--check]` — every (cell, seed) of the design (or
-//!   the selection) on `N` threads, the CSVs written in seed order whatever
-//!   the thread count, `RUN.json` with the environment and one record per
-//!   world — and `cz lab summarize DIR --design DESIGN.json`, which reads
-//!   the CSVs back and writes `SUMMARY.json` / `SUMMARY.md` (per-cell
+//!   a,b] [--seeds S..E] [--check] [--agents]` — every (cell, seed) of the
+//!   design (or the selection) on `N` threads, the CSVs written in seed
+//!   order whatever the thread count, `RUN.json` with the environment and
+//!   one record per world, and with `--agents` the per-agent table
+//!   `<cell>_agents.csv` (ADR-0015 D4, 5-2; meant for short runs) — and
+//!   `cz lab summarize DIR --design DESIGN.json`, which reads the CSVs
+//!   back and writes `SUMMARY.json` / `SUMMARY.md` (per-cell
 //!   distributions, the paired contrasts).
 //!
 //! Worlds run on plain scoped threads pulling from a shared index: the
@@ -24,8 +26,8 @@
 use crate::{decrees, get, parse_charter, parse_opts, Opts, R};
 use cz_lab::{
     now_iso8601, run_cell, summarize, Base, Cell, CellRun, CellTables, Design, Environment,
-    Manifest, Rows, RunOptions, Scheduled, Seeds, Selection, Table, WorldRecord, DESIGN_FORMAT,
-    LAB_RESULT_FORMAT, QPOLICY_COLUMNS, SERIES_COLUMNS, SUMMARY_COLUMNS,
+    Manifest, Rows, RunOptions, Scheduled, Seeds, Selection, Table, WorldRecord, AGENTS_COLUMNS,
+    DESIGN_FORMAT, LAB_RESULT_FORMAT, QPOLICY_COLUMNS, SERIES_COLUMNS, SUMMARY_COLUMNS,
 };
 use serde_json::{json, Map, Value};
 use simulation_core::World;
@@ -37,7 +39,11 @@ use std::time::Instant;
 
 type Res<T> = Result<T, Box<dyn std::error::Error>>;
 
-const LAB_USAGE: &str = "usage:\n  cz lab run DESIGN.json --out DIR [--jobs N] [--cells a,b] [--seeds S..E | S..=E | S] [--check]\n  cz lab summarize DIR --design DESIGN.json";
+const LAB_USAGE: &str = "usage:\n  cz lab run DESIGN.json --out DIR [--jobs N] [--cells a,b] [--seeds S..E | S..=E | S] [--check] [--agents]\n  cz lab summarize DIR --design DESIGN.json";
+
+/// Beyond this many ticks `--agents` only warns: ADR-0015 D4 means the
+/// per-agent table for short runs (a 20,000-tick arm of 30 seeds ≈ 60 MB).
+const AGENTS_TICKS_ADVISED: u64 = 5_000;
 
 /// A flag's value parsed as `T`, or `None` when the flag is absent.
 fn flag<T: std::str::FromStr>(o: &Opts, key: &str) -> Res<Option<T>> {
@@ -232,7 +238,7 @@ pub(crate) fn run_design(
     design: &Design,
     selection: &Selection,
     jobs: usize,
-    check: bool,
+    options: RunOptions,
     naming: Option<&Naming>,
     label_cells: bool,
 ) -> Res<Manifest> {
@@ -243,7 +249,7 @@ pub(crate) fn run_design(
     let mut environment = environment();
     let started = now_iso8601();
     let t0 = Instant::now();
-    let options = RunOptions { check };
+    let check = options.check;
     let label = |cell: &str| {
         if label_cells {
             format!("{cell:<12} ")
@@ -287,6 +293,7 @@ pub(crate) fn run_design(
             rows.summary.extend(r.summary);
             rows.series.extend(r.series);
             rows.qpolicy.extend(r.qpolicy);
+            rows.agents.extend(r.agents);
             runs.push(run);
             i += 1;
         }
@@ -332,6 +339,14 @@ pub(crate) fn run_design(
                 )?;
                 wrote.push_str(&format!(" and {prefix}_qpolicy.csv"));
             }
+            if !rows.agents.is_empty() {
+                write_csv(
+                    &format!("{prefix}_agents.csv"),
+                    AGENTS_COLUMNS,
+                    &rows.agents,
+                )?;
+                wrote.push_str(&format!(" and {prefix}_agents.csv"));
+            }
             println!("{}{wrote}", label(&cell.name));
         }
         worlds.extend(runs.iter().map(WorldRecord::of));
@@ -360,7 +375,10 @@ pub(crate) fn cmd_sweep(o: &Opts) -> R {
         &design,
         &Selection::default(),
         jobs,
-        o.contains_key("check"),
+        RunOptions {
+            check: o.contains_key("check"),
+            agents: false,
+        },
         naming.as_ref(),
         false,
     )?;
@@ -413,10 +431,20 @@ fn lab_run(design_path: &str, o: &Opts) -> R {
     let seeds = o.get("seeds").map(|s| parse_seed_range(s)).transpose()?;
     let selection = Selection { cells, seeds };
     let list = design.jobs(selection.cells.as_deref(), selection.seeds)?;
+    let options = RunOptions {
+        check: o.contains_key("check"),
+        agents: o.contains_key("agents"),
+    };
+    if options.agents && design.ticks > AGENTS_TICKS_ADVISED {
+        eprintln!(
+            "warning: --agents writes one row per agent ever alive; ADR-0015 D4 means it for runs of at most {AGENTS_TICKS_ADVISED} ticks (this design runs {} — expect large <cell>_agents.csv files)",
+            design.ticks
+        );
+    }
     std::fs::create_dir_all(dir)?;
     let env = environment();
     println!(
-        "cz lab run {}: {} worlds × {} ticks ({} cells{}{}), jobs {}, check {}",
+        "cz lab run {}: {} worlds × {} ticks ({} cells{}{}), jobs {}, check {}{}",
         design.name,
         list.len(),
         design.ticks,
@@ -429,7 +457,8 @@ fn lab_run(design_path: &str, o: &Opts) -> R {
             .seeds
             .map_or(String::new(), |(a, b)| format!(", seeds {a}..{b}")),
         jobs.max(1),
-        o.contains_key("check")
+        options.check,
+        if options.agents { ", agents" } else { "" }
     );
     println!(
         "commit {} ({} modified), {}, {} cores, {}, {}, binary sha256 {}, load {}",
@@ -449,7 +478,7 @@ fn lab_run(design_path: &str, o: &Opts) -> R {
         &design,
         &selection,
         jobs,
-        o.contains_key("check"),
+        options,
         Some(&Naming::Dir(dir.clone())),
         true,
     )?;

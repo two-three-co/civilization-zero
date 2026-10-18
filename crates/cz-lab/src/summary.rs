@@ -16,8 +16,9 @@ pub const SUMMARY_FORMAT: u32 = 1;
 
 /// The readings summarised for every cell (ADR-0015 completion condition
 /// 1 (b): population, E / E_L, S / S′, the share of violent deaths,
-/// consumption), all from the `summary` CSV's analysis window. A reading
-/// whose columns a CSV lacks (older experiments) is skipped.
+/// consumption, and since 5-2 the cohort readings of D4), all from the
+/// `summary` CSV's analysis window. A reading whose columns a CSV lacks
+/// (older experiments) is skipped.
 pub fn cell_metrics() -> Vec<(&'static str, Metric)> {
     let s = |c: &str| Metric::Summary(c.to_string());
     vec![
@@ -45,6 +46,18 @@ pub fn cell_metrics() -> Vec<(&'static str, Metric)> {
         ("win_harms_per_tick", s("win_harms_per_tick")),
         ("win_alive_learner_mean", s("win_alive_learner_mean")),
         ("win_alive_enforcer_mean", s("win_alive_enforcer_mean")),
+        // 5-2 (D4): learning vs removal.
+        ("win_e_learner_survivors", s("win_e_learner_survivors")),
+        ("win_e_learner_removed", s("win_e_learner_removed")),
+        (
+            "win_encroach_share_removed",
+            s("win_encroach_share_removed"),
+        ),
+        (
+            "win_e_survivors_delta_mean",
+            s("win_e_survivors_delta_mean"),
+        ),
+        ("win_cohort_died_violence", s("win_cohort_died_violence")),
     ]
 }
 

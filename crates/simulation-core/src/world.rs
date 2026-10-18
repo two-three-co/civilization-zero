@@ -11,7 +11,10 @@
 //!    `config.nomos`, each cell that saw a gather is then judged for
 //!    encroachment (ADR-0014 D3): a gatherer that arrived strictly later
 //!    than the cell's first occupant encroached on it — counted in the
-//!    ledger and remembered by the first occupant, nothing else.
+//!    ledger and remembered by the first occupant, nothing else. The
+//!    tick's report lists every successful gatherer and, with `nomos`,
+//!    every (encroacher, first occupant) pair, in cell then id order
+//!    (ADR-0015 D4): material for tallies outside the kernel, not state.
 //!    - *3b. Interact* – Transfer / Store / Harm / Signal, resolved at `S(t)`
 //!      positions in actor (id) order (ADR-0013 D3, D5). Negotiation
 //!      messages are delivered here: the addressee must be another living
@@ -229,6 +232,19 @@ pub struct TickReport {
     /// which norm was answered (4-6: whether learners sanction at all).
     /// The sums agree.
     pub sanctions_by_kind: [u32; PolicyKind::COUNT],
+    /// Per-agent material (ADR-0015 D4, 5-2): the gatherer of every
+    /// successful gather this tick, in phase 3's cell order and, within a
+    /// cell, id order — `gatherers.len()` is the sum of `gathers`. Not
+    /// state, not hashed, not an event, behind no setting: `cz-lab`
+    /// accumulates it per agent at run time and the report dies with the
+    /// tick (`Acted` would record every gather in the ledger: 220 MB per
+    /// 2,000 ticks, ADR-0013 3-2).
+    pub gatherers: Vec<AgentId>,
+    /// `(gatherer, first occupant)` of every encroachment this tick, in
+    /// the order `Violated` records them (cell order, then gatherer id) —
+    /// `encroachers.len()` is the sum of `encroachments`. Empty without
+    /// `config.nomos`. Same nature as `gatherers`.
+    pub encroachers: Vec<(AgentId, AgentId)>,
     /// Events in the order they happened (ADR-0014 D9): transfers, harms,
     /// delivered negotiation messages and signals (if recorded) in actor
     /// order; `Sanctioned` in actor order; `Violated` (if recorded:
@@ -603,7 +619,8 @@ impl World {
         let mut current_cell = usize::MAX;
         let mut cell_had_food = false;
         // (cell, gatherer index, units taken) of every successful gather,
-        // grouped by cell as `claims` is; only kept with `nomos`.
+        // grouped by cell as `claims` is: the tick's gatherers (ADR-0015
+        // D4) and, with `nomos`, the material of the encroachment judgement.
         let mut taken: Vec<(usize, usize, u32)> = Vec::new();
         for &(cell, _, i) in &claims {
             let available = self.resources.food[cell];
@@ -629,9 +646,7 @@ impl World {
                 report.food_gathered += q as u64;
                 report.gathers[a.policy.index()] += 1;
                 self.ledger.gathers += 1;
-                if cfg.nomos {
-                    taken.push((cell, i, q));
-                }
+                taken.push((cell, i, q));
                 if q < cfg.gather_amount.min(space) {
                     Outcome::Partial
                 } else {
@@ -640,22 +655,31 @@ impl World {
             };
         }
 
-        // --- Phase 3 (cont.): encroachment (ADR-0014 D3) ------------------
-        // On each cell that saw a gather, the first occupant at S(t) is the
-        // agent with the smallest `arrived` (founders first, then the
-        // smaller id); every other gatherer that arrived strictly later
-        // encroached on it. Cell order, then gatherer id order, so the
-        // first occupant's memory is deterministic. Nothing physical moves.
-        if cfg.nomos {
-            let mut start = 0;
-            while start < taken.len() {
-                let cell = taken[start].0;
-                let mut end = start;
-                while end < taken.len() && taken[end].0 == cell {
-                    end += 1;
-                }
-                let group = &mut taken[start..end];
-                group.sort_unstable_by_key(|&(_, i, _)| i);
+        // --- Phase 3 (cont.): gatherers and encroachment (ADR-0014 D3,
+        // ADR-0015 D4) ---------------------------------------------------
+        // Each cell's gatherers, in id order, go to the report (material
+        // for per-agent tallies outside the kernel; the report dies with
+        // the tick). With `nomos`, on each cell that saw a gather, the
+        // first occupant at S(t) is the agent with the smallest `arrived`
+        // (founders first, then the smaller id); every other gatherer that
+        // arrived strictly later encroached on it. Cell order, then
+        // gatherer id order, so the first occupant's memory — and the
+        // order of `encroachers` and `Violated` — is deterministic.
+        // Nothing physical moves.
+        report.gatherers.reserve_exact(taken.len());
+        let mut start = 0;
+        while start < taken.len() {
+            let cell = taken[start].0;
+            let mut end = start;
+            while end < taken.len() && taken[end].0 == cell {
+                end += 1;
+            }
+            let group = &mut taken[start..end];
+            group.sort_unstable_by_key(|&(_, i, _)| i);
+            report
+                .gatherers
+                .extend(group.iter().map(|&(_, i, _)| self.agents[i].id));
+            if cfg.nomos {
                 let here = index.cell(self.agents[group[0].1].pos);
                 let first =
                     nomos::first_occupant(&self.agents, here).expect("a gatherer stands here");
@@ -666,6 +690,7 @@ impl World {
                         self.ledger.encroachments += 1;
                         report.encroachments[self.agents[i].policy.index()] += 1;
                         let (gatherer, occupant) = (self.agents[i].id, self.agents[first].id);
+                        report.encroachers.push((gatherer, occupant));
                         notes.push((
                             first,
                             Interaction {
@@ -694,8 +719,8 @@ impl World {
                         }
                     }
                 }
-                start = end;
             }
+            start = end;
         }
 
         // --- Phase 3b: transfer / store / harm (ADR-0013 D3) -------------

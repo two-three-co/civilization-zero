@@ -9,7 +9,14 @@
 //! The headers are constants here and pinned by `tests/columns.rs`; the
 //! kernel's `dynamics_hash` of the final state is returned with the run so
 //! that a manifest can record it and a browser can match it (D3).
+//!
+//! 5-2 (ADR-0015 D4): every run also keeps a [`CohortTally`] — one entry
+//! per agent, fed by each tick's `gatherers` / `encroachers` and events —
+//! whose eleven cohort columns end the summary row (before `ticks_per_s`),
+//! and, on request (`RunOptions::agents`), writes one `agents` row per
+//! agent the run saw.
 
+use crate::cohort::{CohortMetrics, CohortTally};
 use crate::design::{Cell, Design};
 use crate::tally::{
     greedy_counts, hunger_mean, mean_q_table, opt_csv, q_abs_mean, reflex_weight_drift, Tally,
@@ -22,8 +29,9 @@ use std::fmt::Write as _;
 
 /// Header of `<cell>_summary.csv`: one row per seed. Existing columns never
 /// move; a new column goes right before `ticks_per_s` (ADR-0015
-/// completion condition 5).
-pub const SUMMARY_COLUMNS: &str = "seed,policy,final_alive,extinct_at,win_mean,win_min,win_max,win_max_over_min,births,deaths_starvation,deaths_old_age,deaths_violence,mutation,learner_states,learner_epsilon,win_ticks,win_agent_ticks,win_consumed_per_agent_tick,win_gathered_per_agent_tick,win_births_per_tick,win_transfers_per_tick,win_harms_per_tick,win_signals_per_tick,win_proposals_per_tick,win_acceptances_per_tick,win_rejections_per_tick,win_deaths_starvation,win_deaths_old_age,win_deaths_violence,win_act_move,win_act_gather,win_act_consume,win_act_rest,win_act_transfer,win_act_store,win_act_harm,win_act_signal,hunger_permille_mean,q_abs_mean,q_delta_window,reflex_weight_drift,nomos,learner_health_weight,win_gathers_per_tick,win_encroachments_per_tick,win_encroach_rate,win_encroach_rate_forager,win_encroach_rate_random,win_encroach_rate_reflex,win_encroach_rate_learner,win_promises_due_per_tick,win_promises_broken_per_tick,win_food_standing_mean,win_regrown_per_tick,rules,win_violations_per_tick,win_sanctions_per_tick,win_episodes_closed,win_episodes_sanctioned,win_s,win_s_prime,harm_cost,win_encroach_rate_enforcer,motions,motions_carried,motions_defeated,win_votes_per_tick,enforcer_share,see_standing,signal_radius,memory_slots,win_alive_learner_mean,win_alive_enforcer_mean,win_sanctions_learner_per_tick,win_sanctions_enforcer_per_tick,win_births_reassigned_per_tick,ticks_per_s";
+/// completion condition 5). 5-2 appended the eleven cohort columns of
+/// [`CohortMetrics::COLUMNS`].
+pub const SUMMARY_COLUMNS: &str = "seed,policy,final_alive,extinct_at,win_mean,win_min,win_max,win_max_over_min,births,deaths_starvation,deaths_old_age,deaths_violence,mutation,learner_states,learner_epsilon,win_ticks,win_agent_ticks,win_consumed_per_agent_tick,win_gathered_per_agent_tick,win_births_per_tick,win_transfers_per_tick,win_harms_per_tick,win_signals_per_tick,win_proposals_per_tick,win_acceptances_per_tick,win_rejections_per_tick,win_deaths_starvation,win_deaths_old_age,win_deaths_violence,win_act_move,win_act_gather,win_act_consume,win_act_rest,win_act_transfer,win_act_store,win_act_harm,win_act_signal,hunger_permille_mean,q_abs_mean,q_delta_window,reflex_weight_drift,nomos,learner_health_weight,win_gathers_per_tick,win_encroachments_per_tick,win_encroach_rate,win_encroach_rate_forager,win_encroach_rate_random,win_encroach_rate_reflex,win_encroach_rate_learner,win_promises_due_per_tick,win_promises_broken_per_tick,win_food_standing_mean,win_regrown_per_tick,rules,win_violations_per_tick,win_sanctions_per_tick,win_episodes_closed,win_episodes_sanctioned,win_s,win_s_prime,harm_cost,win_encroach_rate_enforcer,motions,motions_carried,motions_defeated,win_votes_per_tick,enforcer_share,see_standing,signal_radius,memory_slots,win_alive_learner_mean,win_alive_enforcer_mean,win_sanctions_learner_per_tick,win_sanctions_enforcer_per_tick,win_births_reassigned_per_tick,win_cohort_learners,win_cohort_survived,win_cohort_died_violence,win_e_learner_survivors,win_e_learner_removed,win_encroach_share_removed,win_e_survivors_first_half,win_e_survivors_second_half,win_e_survivors_delta_mean,win_sanctioned_learners,win_sanctioned_then_died,ticks_per_s";
 
 /// Header of `<cell>_series.csv`: `seed,tick,alive,food`, then
 /// [`Tally::COUNT_COLUMNS`], then [`Tally::ALIVE_COLUMNS`] (a unit test
@@ -37,10 +45,13 @@ pub const SERIES_COLUMNS: &str = "seed,tick,alive,food,gathered,consumed,births,
 pub const QPOLICY_COLUMNS: &str = "seed,row,hungry,has_food,food_here,food_in_sight,adjacent,occupied,violator_adjacent,accused,upper,heard,learners,move,gather,consume,rest,transfer,store,harm,signal,tie,visits,visits_window";
 
 /// Where `run_cell` writes its rows (one line each, without the newline).
+/// `agent` rows (`AGENTS_COLUMNS`) come only with `RunOptions::agents`;
+/// a sink that has no use for them keeps the default.
 pub trait Sink {
     fn summary(&mut self, row: &str);
     fn series(&mut self, row: &str);
     fn qpolicy(&mut self, row: &str);
+    fn agent(&mut self, _row: &str) {}
 }
 
 /// A sink that keeps the rows: what the CLI collects per world and writes
@@ -50,6 +61,8 @@ pub struct Rows {
     pub summary: Vec<String>,
     pub series: Vec<String>,
     pub qpolicy: Vec<String>,
+    /// One row per agent (`AGENTS_COLUMNS`); empty unless asked for.
+    pub agents: Vec<String>,
 }
 
 impl Sink for Rows {
@@ -64,6 +77,10 @@ impl Sink for Rows {
     fn qpolicy(&mut self, row: &str) {
         self.qpolicy.push(row.to_string());
     }
+
+    fn agent(&mut self, row: &str) {
+        self.agents.push(row.to_string());
+    }
 }
 
 /// Runner options that are not part of the design.
@@ -71,6 +88,10 @@ impl Sink for Rows {
 pub struct RunOptions {
     /// `check_invariants` after every tick (`cz sweep --check`).
     pub check: bool,
+    /// Write one `agents` row per agent the run saw (`cz lab run
+    /// --agents`; ADR-0015 D4 means it for short runs, ≤ 5,000 ticks: a
+    /// 20,000-tick arm of 30 seeds is ≈ 60 MB).
+    pub agents: bool,
 }
 
 /// What one world's run came to, besides its rows: the figures of `cz
@@ -104,6 +125,8 @@ pub struct CellRun {
     pub state_hash: u64,
     /// Whether `qpolicy` rows were written (a learner was alive at the end).
     pub learners_alive: bool,
+    /// The cohort columns (ADR-0015 D4) as written to the summary row.
+    pub cohort: CohortMetrics,
 }
 
 impl CellRun {
@@ -232,6 +255,9 @@ pub fn run_cell(
     // Row visits over the whole run (the window's are in `window`).
     let mut run = Tally::default();
     let mut q_at_window_start: Option<Vec<f64>> = None;
+    // 5-2: every agent's gathers, encroachments, sanctions, birth and
+    // death, over the run and over the window (ADR-0015 D4).
+    let mut cohort = CohortTally::new(&world, design.window());
     let clock = Clock::start();
     for _ in 0..ticks {
         if world.tick % sample == 0 {
@@ -265,6 +291,7 @@ pub fn run_cell(
         let regrown = world.ledger.food_regrown - regrown_before;
         let standing = world.resources.total_food();
         let by_kind = Tally::alive_by_kind(&world);
+        cohort.observe(&r, &world);
         interval.add(alive_before, &r, regrown, standing, &by_kind);
         run.add(alive_before, &r, regrown, standing, &by_kind);
         let alive = world.agents.len() as u64;
@@ -371,9 +398,10 @@ pub fn run_cell(
     // 4-6: the arm's share / perception / memory settings (so a CSV
     // describes its own arm) and the window's living by kind,
     // sanctions by the sanctioner's kind and reassigned births.
+    // 5-2: the cohort columns (ADR-0015 D4), then the clock last.
     let _ = write!(
         row,
-        ",{},{:.4},{:.4},{},{},{},{},{},{},{},{},{},{:.4},{},{},{},{},{:.1},{:.1},{:.4},{:.4},{:.4},{:.0}",
+        ",{},{:.4},{:.4},{},{},{},{},{},{},{},{},{},{:.4},{},{},{},{},{:.1},{:.1},{:.4},{:.4},{:.4}",
         world.nomos.rules.len(),
         window.per_tick(window.violations),
         window.per_tick(window.sanctions),
@@ -399,8 +427,9 @@ pub fn run_cell(
         window.per_tick(window.sanctions_by_kind[PolicyKind::Learner.index()]),
         window.per_tick(window.sanctions_by_kind[PolicyKind::Enforcer.index()]),
         window.per_tick(window.births_reassigned),
-        ticks_per_s
     );
+    let cohort_metrics = cohort.metrics(&world);
+    let _ = write!(row, ",{},{ticks_per_s:.0}", cohort_metrics.csv());
     sink.summary(&row);
     let learners_alive = world.agents.iter().any(|a| a.policy == PolicyKind::Learner);
     if learners_alive {
@@ -439,6 +468,11 @@ pub fn run_cell(
             sink.qpolicy(&line);
         }
     }
+    if options.agents {
+        for line in cohort.rows(seed) {
+            sink.agent(&line);
+        }
+    }
     Ok(CellRun {
         cell: cell.name.clone(),
         seed,
@@ -461,6 +495,7 @@ pub fn run_cell(
         dynamics_hash: world.dynamics_hash(),
         state_hash: world.state_hash(),
         learners_alive,
+        cohort: cohort_metrics,
     })
 }
 
@@ -488,6 +523,7 @@ mod tests {
     #[test]
     fn ticks_per_s_is_the_last_summary_column() {
         assert!(SUMMARY_COLUMNS.ends_with(",ticks_per_s"));
+        assert!(SUMMARY_COLUMNS.ends_with(&format!(",{},ticks_per_s", CohortMetrics::COLUMNS)));
         let cols: Vec<&str> = SUMMARY_COLUMNS.split(',').collect();
         let mut unique = cols.clone();
         unique.sort_unstable();
