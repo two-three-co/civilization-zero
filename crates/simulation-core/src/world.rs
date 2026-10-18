@@ -217,6 +217,18 @@ pub struct TickReport {
     pub votes: u32,
     pub motions_carried: u32,
     pub motions_defeated: u32,
+    /// Births by the child's `PolicyKind` (index order of
+    /// `PolicyKind::ALL`), and how many of them were born a kind other than
+    /// their parent's under `config.enforcer_share_permille` (ADR-0014
+    /// D11, 4-6). Their sum is `births`; `births_reassigned` is zero
+    /// without the share.
+    pub births_by_kind: [u32; PolicyKind::COUNT],
+    pub births_reassigned: u32,
+    /// Sanctions by the sanctioner's `PolicyKind` (index order of
+    /// `PolicyKind::ALL`): the kind that answered, where `sanctions` says
+    /// which norm was answered (4-6: whether learners sanction at all).
+    /// The sums agree.
+    pub sanctions_by_kind: [u32; PolicyKind::COUNT],
     /// Events in the order they happened (ADR-0014 D9): transfers, harms,
     /// delivered negotiation messages and signals (if recorded) in actor
     /// order; `Sanctioned` in actor order; `Violated` (if recorded:
@@ -787,6 +799,7 @@ impl World {
                                 Some((rule, kind)) => {
                                     self.ledger.sanctions[kind.index()] += 1;
                                     report.sanctions[kind.index()] += 1;
+                                    report.sanctions_by_kind[self.agents[i].policy.index()] += 1;
                                     sanctions.push(Event::Sanctioned {
                                         tick,
                                         by,
@@ -1021,6 +1034,7 @@ impl World {
                                 Some((rule, kind)) => {
                                     self.ledger.sanctions[kind.index()] += 1;
                                     report.sanctions[kind.index()] += 1;
+                                    report.sanctions_by_kind[self.agents[i].policy.index()] += 1;
                                     sanctions.push(Event::Sanctioned {
                                         tick,
                                         by: from,
@@ -1407,6 +1421,18 @@ impl World {
         // --- Phase 7: birth -----------------------------------------------
         if let Some(threshold) = cfg.birth_threshold {
             let survivors = self.agents.len();
+            // The enforcers' share of the living (ADR-0014 D11, 4-6):
+            // counted once over the tick's survivors, then kept current
+            // with every birth, so the quota is exact within the tick and
+            // a function of state alone (births go in parent-id order).
+            let mut share = cfg.enforcer_share_permille.map(|permille| {
+                let enforcers = self
+                    .agents
+                    .iter()
+                    .filter(|a| a.policy == PolicyKind::Enforcer)
+                    .count() as u64;
+                (u64::from(permille), enforcers, survivors as u64)
+            });
             for i in 0..survivors {
                 let parent = &self.agents[i];
                 if parent.energy < threshold {
@@ -1424,6 +1450,33 @@ impl World {
                 if parent.policy == PolicyKind::Learner && !cfg.learner_inherit_q {
                     params.table = PolicyTable::blank(PolicyKind::Learner, cfg);
                 }
+                // The child's kind is the parent's — unless the enforcers
+                // are held at a share (ADR-0014 D11): then a learner's or
+                // an enforcer's child is born an enforcer exactly when the
+                // enforcers would otherwise fall below the share of the
+                // living with this child counted, and a learner otherwise.
+                // A child of the other kind starts from the blank
+                // parameters of its kind (`refit`), the parent's scalars
+                // kept.
+                let mut policy = parent.policy;
+                if let Some((permille, enforcers, alive)) = share.as_mut() {
+                    if matches!(policy, PolicyKind::Learner | PolicyKind::Enforcer) {
+                        policy = if *enforcers * 1000 < *permille * (*alive + 1) {
+                            PolicyKind::Enforcer
+                        } else {
+                            PolicyKind::Learner
+                        };
+                        if policy != parent.policy {
+                            params = params.refit(policy, cfg);
+                            report.births_reassigned += 1;
+                        }
+                    }
+                    *alive += 1;
+                    if policy == PolicyKind::Enforcer {
+                        *enforcers += 1;
+                    }
+                }
+                report.births_by_kind[policy.index()] += 1;
                 let child = Agent {
                     id: child_id,
                     pos: parent.pos,
@@ -1431,7 +1484,7 @@ impl World {
                     health: cfg.max_health,
                     inventory: 0,
                     age: 0,
-                    policy: parent.policy,
+                    policy,
                     params,
                     memory: Memory::default(),
                     last_signal: None,
@@ -2208,7 +2261,9 @@ pub const SNAPSHOT_MAGIC: [u8; 4] = *b"CZS\0";
 /// / `motions_carried` / `motions_defeated`, config `motion_cost` /
 /// `enforcer_motions` / `record_votes`; the kernel now opens, counts and
 /// closes motions, so `World.nomos.motion` can be `Some` (ADR-0014 4-5).
-pub const SNAPSHOT_FORMAT: u32 = 12;
+/// 13: config `enforcer_share_permille` (ADR-0014 D11, 4-6: the birth-time
+/// quota that holds the enforcers at a share of the living).
+pub const SNAPSHOT_FORMAT: u32 = 13;
 
 /// Written form: borrows the world instead of cloning it.
 #[derive(Serialize)]

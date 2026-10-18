@@ -5,6 +5,7 @@
 //!             [--mutate | --no-mutate] [--learner-states N] [--learner-epsilon PERMILLE]
 //!             [--harm-cost COST] [--nomos] [--learner-health-weight W] [--record-violations]
 //!             [--motion-cost COST] [--no-enforcer-motions] [--record-votes]
+//!             [--enforcer-share PERMILLE] [--blind] [--signal-radius R] [--memory-slots N]
 //!             [--enact KIND[:STANDING[:SANCTION[:EXCEPT]]] [--enact-at TICK]]
 //!             [--repeal ID [--repeal-at TICK]] [--charter Q,TH,TICKS,AMENDABLE]
 //!             [--trace PATH --every K] [--snapshot PATH]
@@ -53,7 +54,14 @@
 //! keeps the enforcers from moving the first-occupancy norm themselves
 //! (EXP-004 decrees it instead, D11), and `--record-votes` writes a
 //! `Voted` event per vote (motions, closings and their effects are always
-//! logged).
+//! logged). EXP-004's arms (ADR-0014 D11, 4-6): `--enforcer-share
+//! PERMILLE` holds the enforcers at that share of the living by a
+//! birth-time quota (`WorldConfig::enforcer_share_permille`; a learner's or
+//! an enforcer's child is born whichever kind keeps the share), `--blind`
+//! switches `perception.see_standing` off (the learners' norm features read
+//! 0: the blind null model), `--signal-radius R` and `--memory-slots N` set
+//! the perception's signal radius and the memory's slots (the no-communication
+//! and no-memory null models at 0).
 //!
 //! `cz sweep --out PREFIX` writes `PREFIX_summary.csv` (one row per seed:
 //! population band of the last `--window` percent of ticks, then that
@@ -80,7 +88,7 @@ use simulation_core::policy::learner::{state, Q_UNIT};
 use simulation_core::policy::{forager_weights, REFLEX_UNIT};
 use simulation_core::{
     Action, Charter, DeathCause, Event, EventLog, Intervention, Norm, NormKind, ParamsMode,
-    PolicyKind, PolicyTable, Sanction, TickReport, Who, World, WorldConfig,
+    Perception, PolicyKind, PolicyTable, Sanction, TickReport, Who, World, WorldConfig,
 };
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -109,7 +117,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  cz run [--seed N] [--agents N] [--side N] [--ticks N] [--preset nomos]\n         [--policy forager|random|mixed|reflex|learner|mixed-learning|institution] [--mutate | --no-mutate]\n         [--learner-states N] [--learner-epsilon PERMILLE] [--harm-cost COST] [--nomos] [--learner-health-weight W]\n         [--enact KIND[:STANDING[:SANCTION[:EXCEPT]]] [--enact-at TICK]] [--repeal ID [--repeal-at TICK]]\n         [--charter Q,TH,TICKS,AMENDABLE] [--record-violations] [--motion-cost COST] [--no-enforcer-motions] [--record-votes]\n         [--check] [--trace PATH --every K] [--snapshot PATH]\n         [--drought-at TICK [--drought-amount N] [--drought-interval N]]\n         [--set-policy KIND [--set-policy-at TICK]] [--log PATH] [--record-actions]\n  cz log --path PATH [--from TICK] [--to TICK] [--limit N]\n  cz resume --snapshot PATH [--ticks N] [--check]\n  cz replay --snapshot PATH --log PATH [--to TICK]\n  cz fork [--seed N] [--agents N] [--side N] [--ticks N] [--at TICK] [--every K]\n          [--scale-food PERMILLE] [--drought-amount N --drought-interval N] [--set-policy KIND]\n          [--enact SPEC] [--repeal ID]\n  cz sweep [--seeds N] [--seed-start S] [--ticks N] [--policy ...] [--window PCT]\n           [--sample K] [--out PREFIX] [--check]\n  (run, fork and sweep also take --preset nomos, --harm-cost COST, --nomos, --learner-health-weight W, --charter, --record-violations,\n   --motion-cost, --no-enforcer-motions, --record-votes; --policy institution = learners (128 rows) + every tenth founder an enforcer on --preset nomos;\n   --enact KIND is encroach | broken_promise | harm, SANCTION is harm | reject | harm+reject | none)"
+        "usage:\n  cz run [--seed N] [--agents N] [--side N] [--ticks N] [--preset nomos]\n         [--policy forager|random|mixed|reflex|learner|mixed-learning|institution] [--mutate | --no-mutate]\n         [--learner-states N] [--learner-epsilon PERMILLE] [--harm-cost COST] [--nomos] [--learner-health-weight W]\n         [--enact KIND[:STANDING[:SANCTION[:EXCEPT]]] [--enact-at TICK]] [--repeal ID [--repeal-at TICK]]\n         [--charter Q,TH,TICKS,AMENDABLE] [--record-violations] [--motion-cost COST] [--no-enforcer-motions] [--record-votes]\n         [--enforcer-share PERMILLE] [--blind] [--signal-radius R] [--memory-slots N]\n         [--check] [--trace PATH --every K] [--snapshot PATH]\n         [--drought-at TICK [--drought-amount N] [--drought-interval N]]\n         [--set-policy KIND [--set-policy-at TICK]] [--log PATH] [--record-actions]\n  cz log --path PATH [--from TICK] [--to TICK] [--limit N]\n  cz resume --snapshot PATH [--ticks N] [--check]\n  cz replay --snapshot PATH --log PATH [--to TICK]\n  cz fork [--seed N] [--agents N] [--side N] [--ticks N] [--at TICK] [--every K]\n          [--scale-food PERMILLE] [--drought-amount N --drought-interval N] [--set-policy KIND]\n          [--enact SPEC] [--repeal ID]\n  cz sweep [--seeds N] [--seed-start S] [--ticks N] [--policy ...] [--window PCT]\n           [--sample K] [--out PREFIX] [--check]\n  (run, fork and sweep also take --preset nomos, --harm-cost COST, --nomos, --learner-health-weight W, --charter, --record-violations,\n   --motion-cost, --no-enforcer-motions, --record-votes, --enforcer-share, --blind, --signal-radius, --memory-slots;\n   --policy institution = learners (128 rows) + every tenth founder an enforcer on --preset nomos;\n   --enact KIND is encroach | broken_promise | harm, SANCTION is harm | reject | harm+reject | none)"
     );
     std::process::exit(2)
 }
@@ -182,6 +190,21 @@ fn build_world(seed: u64, o: &Opts) -> Result<World, Box<dyn std::error::Error>>
         charter: match o.get("charter") {
             Some(spec) => parse_charter(spec)?,
             None => base.charter,
+        },
+        // EXP-004's arms (ADR-0014 D11, 4-6): the enforcers' share, the
+        // blind / no-communication / no-memory null models.
+        enforcer_share_permille: match o.get("enforcer-share") {
+            Some(v) => Some(
+                v.parse()
+                    .map_err(|_| format!("bad value for --enforcer-share: {v}"))?,
+            ),
+            None => base.enforcer_share_permille,
+        },
+        memory_slots: get(o, "memory-slots", base.memory_slots)?,
+        perception: Perception {
+            signal_radius: get(o, "signal-radius", base.perception.signal_radius)?,
+            see_standing: base.perception.see_standing && !o.contains_key("blind"),
+            ..base.perception
         },
         ..base
     };
@@ -860,6 +883,14 @@ struct Tally {
     votes: u64,
     motions_carried: u64,
     motions_defeated: u64,
+    /// 4-6: births by the child's kind and how many were born a kind other
+    /// than the parent's (`enforcer_share_permille`), sanctions by the
+    /// sanctioner's kind, and the living by kind after each tick, summed
+    /// (mean = `/ ticks`).
+    births_by_kind: [u64; PolicyKind::COUNT],
+    births_reassigned: u64,
+    sanctions_by_kind: [u64; PolicyKind::COUNT],
+    alive_by_kind: [u64; PolicyKind::COUNT],
 }
 
 /// The policy kinds of Phase 3, whose per-kind columns the EXP-002 / 4-1
@@ -877,11 +908,41 @@ impl Tally {
     /// in name, order and meaning), then the 4-1 counts, then the 4-2
     /// counts, then (4-5) the enforcer's gathers / encroachments and the
     /// assembly's counts.
-    const COUNT_COLUMNS: &'static str = "gathered,consumed,births,transfers,harms,signals,proposals,acceptances,rejections,deaths_starvation,deaths_old_age,deaths_violence,gathers,encroachments,promises_due,promises_broken,regrown,gathers_forager,encroachments_forager,gathers_random,encroachments_random,gathers_reflex,encroachments_reflex,gathers_learner,encroachments_learner,violations,sanctions,episodes_closed,episodes_sanctioned,gathers_enforcer,encroachments_enforcer,motions,votes,motions_carried,motions_defeated";
+    const COUNT_COLUMNS: &'static str = "gathered,consumed,births,transfers,harms,signals,proposals,acceptances,rejections,deaths_starvation,deaths_old_age,deaths_violence,gathers,encroachments,promises_due,promises_broken,regrown,gathers_forager,encroachments_forager,gathers_random,encroachments_random,gathers_reflex,encroachments_reflex,gathers_learner,encroachments_learner,violations,sanctions,episodes_closed,episodes_sanctioned,gathers_enforcer,encroachments_enforcer,motions,votes,motions_carried,motions_defeated,births_forager,births_random,births_reflex,births_learner,births_enforcer,births_reassigned,sanctions_forager,sanctions_random,sanctions_reflex,sanctions_learner,sanctions_enforcer";
+
+    /// Column names of `alive_by_kind_csv`: the living by kind, a state
+    /// (not a count) read where the row is written.
+    const ALIVE_COLUMNS: &'static str =
+        "alive_forager,alive_random,alive_reflex,alive_learner,alive_enforcer";
+
+    /// The living by `PolicyKind` (index order of `PolicyKind::ALL`).
+    fn alive_by_kind(world: &World) -> [u64; PolicyKind::COUNT] {
+        let mut out = [0u64; PolicyKind::COUNT];
+        for a in &world.agents {
+            out[a.policy.index()] += 1;
+        }
+        out
+    }
+
+    fn alive_by_kind_csv(world: &World) -> String {
+        Self::alive_by_kind(world)
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    }
 
     /// Adds one tick: `alive_before` agents decided, `regrown` food units
-    /// grew, `standing` is the food on the ground afterwards.
-    fn add(&mut self, alive_before: usize, r: &TickReport, regrown: u64, standing: u64) {
+    /// grew, `standing` is the food on the ground afterwards, `alive_after`
+    /// the living by kind afterwards.
+    fn add(
+        &mut self,
+        alive_before: usize,
+        r: &TickReport,
+        regrown: u64,
+        standing: u64,
+        alive_after: &[u64; PolicyKind::COUNT],
+    ) {
         self.ticks += 1;
         self.agent_ticks += alive_before as u64;
         self.gathered += r.food_gathered;
@@ -919,6 +980,12 @@ impl Tally {
         self.votes += u64::from(r.votes);
         self.motions_carried += u64::from(r.motions_carried);
         self.motions_defeated += u64::from(r.motions_defeated);
+        for (k, &alive) in alive_after.iter().enumerate() {
+            self.births_by_kind[k] += u64::from(r.births_by_kind[k]);
+            self.sanctions_by_kind[k] += u64::from(r.sanctions_by_kind[k]);
+            self.alive_by_kind[k] += alive;
+        }
+        self.births_reassigned += u64::from(r.births_reassigned);
         if !r.learner_rows.is_empty() {
             if self.rows.len() < r.learner_rows.len() {
                 self.rows.resize(r.learner_rows.len(), 0);
@@ -993,6 +1060,14 @@ impl Tally {
             self.motions_carried,
             self.motions_defeated
         );
+        // 4-6: births and sanctions by kind, appended so no column moves.
+        for b in self.births_by_kind {
+            let _ = write!(s, ",{b}");
+        }
+        let _ = write!(s, ",{}", self.births_reassigned);
+        for n in self.sanctions_by_kind {
+            let _ = write!(s, ",{n}");
+        }
         s
     }
 
@@ -1127,10 +1202,14 @@ fn cmd_sweep(o: &Opts) -> R {
     let win_start = ticks - ticks * window_pct / 100;
 
     let mut summary = String::from(
-        "seed,policy,final_alive,extinct_at,win_mean,win_min,win_max,win_max_over_min,births,deaths_starvation,deaths_old_age,deaths_violence,mutation,learner_states,learner_epsilon,win_ticks,win_agent_ticks,win_consumed_per_agent_tick,win_gathered_per_agent_tick,win_births_per_tick,win_transfers_per_tick,win_harms_per_tick,win_signals_per_tick,win_proposals_per_tick,win_acceptances_per_tick,win_rejections_per_tick,win_deaths_starvation,win_deaths_old_age,win_deaths_violence,win_act_move,win_act_gather,win_act_consume,win_act_rest,win_act_transfer,win_act_store,win_act_harm,win_act_signal,hunger_permille_mean,q_abs_mean,q_delta_window,reflex_weight_drift,nomos,learner_health_weight,win_gathers_per_tick,win_encroachments_per_tick,win_encroach_rate,win_encroach_rate_forager,win_encroach_rate_random,win_encroach_rate_reflex,win_encroach_rate_learner,win_promises_due_per_tick,win_promises_broken_per_tick,win_food_standing_mean,win_regrown_per_tick,rules,win_violations_per_tick,win_sanctions_per_tick,win_episodes_closed,win_episodes_sanctioned,win_s,win_s_prime,harm_cost,win_encroach_rate_enforcer,motions,motions_carried,motions_defeated,win_votes_per_tick,ticks_per_s\n",
+        "seed,policy,final_alive,extinct_at,win_mean,win_min,win_max,win_max_over_min,births,deaths_starvation,deaths_old_age,deaths_violence,mutation,learner_states,learner_epsilon,win_ticks,win_agent_ticks,win_consumed_per_agent_tick,win_gathered_per_agent_tick,win_births_per_tick,win_transfers_per_tick,win_harms_per_tick,win_signals_per_tick,win_proposals_per_tick,win_acceptances_per_tick,win_rejections_per_tick,win_deaths_starvation,win_deaths_old_age,win_deaths_violence,win_act_move,win_act_gather,win_act_consume,win_act_rest,win_act_transfer,win_act_store,win_act_harm,win_act_signal,hunger_permille_mean,q_abs_mean,q_delta_window,reflex_weight_drift,nomos,learner_health_weight,win_gathers_per_tick,win_encroachments_per_tick,win_encroach_rate,win_encroach_rate_forager,win_encroach_rate_random,win_encroach_rate_reflex,win_encroach_rate_learner,win_promises_due_per_tick,win_promises_broken_per_tick,win_food_standing_mean,win_regrown_per_tick,rules,win_violations_per_tick,win_sanctions_per_tick,win_episodes_closed,win_episodes_sanctioned,win_s,win_s_prime,harm_cost,win_encroach_rate_enforcer,motions,motions_carried,motions_defeated,win_votes_per_tick,enforcer_share,see_standing,signal_radius,memory_slots,win_alive_learner_mean,win_alive_enforcer_mean,win_sanctions_learner_per_tick,win_sanctions_enforcer_per_tick,win_births_reassigned_per_tick,ticks_per_s\n",
     );
     let decrees = decrees(o)?;
-    let mut series = format!("seed,tick,alive,food,{}\n", Tally::COUNT_COLUMNS);
+    let mut series = format!(
+        "seed,tick,alive,food,{},{}\n",
+        Tally::COUNT_COLUMNS,
+        Tally::ALIVE_COLUMNS
+    );
     let mut qpolicy = String::from(
         "seed,row,hungry,has_food,food_here,food_in_sight,adjacent,occupied,violator_adjacent,accused,upper,heard,learners,move,gather,consume,rest,transfer,store,harm,signal,tie,visits,visits_window\n",
     );
@@ -1179,11 +1258,12 @@ fn cmd_sweep(o: &Opts) -> R {
             if world.tick % sample == 0 {
                 let _ = writeln!(
                     series,
-                    "{seed},{},{},{},{}",
+                    "{seed},{},{},{},{},{}",
                     world.tick,
                     world.agents.len(),
                     world.resources.total_food(),
-                    interval.counts_csv()
+                    interval.counts_csv(),
+                    Tally::alive_by_kind_csv(&world)
                 );
                 interval = Tally::default();
             }
@@ -1203,11 +1283,12 @@ fn cmd_sweep(o: &Opts) -> R {
             }
             let regrown = world.ledger.food_regrown - regrown_before;
             let standing = world.resources.total_food();
-            interval.add(alive_before, &r, regrown, standing);
-            run.add(alive_before, &r, regrown, standing);
+            let by_kind = Tally::alive_by_kind(&world);
+            interval.add(alive_before, &r, regrown, standing, &by_kind);
+            run.add(alive_before, &r, regrown, standing, &by_kind);
             let alive = world.agents.len() as u64;
             if world.tick > win_start {
-                window.add(alive_before, &r, regrown, standing);
+                window.add(alive_before, &r, regrown, standing, &by_kind);
                 sum += alive;
                 min = min.min(alive);
                 max = max.max(alive);
@@ -1220,11 +1301,12 @@ fn cmd_sweep(o: &Opts) -> R {
         let secs = t0.elapsed().as_secs_f64();
         let _ = writeln!(
             series,
-            "{seed},{},{},{},{}",
+            "{seed},{},{},{},{},{}",
             world.tick,
             world.agents.len(),
             world.resources.total_food(),
-            interval.counts_csv()
+            interval.counts_csv(),
+            Tally::alive_by_kind_csv(&world)
         );
         let mean = sum as f64 / count.max(1) as f64;
         let ratio = if min > 0 {
@@ -1334,9 +1416,12 @@ fn cmd_sweep(o: &Opts) -> R {
         // 4-5: the enforcer's encroachment rate and the assembly over the
         // whole run (motions moved, carried, defeated; votes per tick in
         // the window), appended so no earlier column moves.
+        // 4-6: the arm's share / perception / memory settings (so a CSV
+        // describes its own arm) and the window's living by kind,
+        // sanctions by the sanctioner's kind and reassigned births.
         let _ = writeln!(
             row,
-            ",{},{:.4},{:.4},{},{},{},{},{},{},{},{},{},{:.4},{:.0}",
+            ",{},{:.4},{:.4},{},{},{},{},{},{},{},{},{},{:.4},{},{},{},{},{:.1},{:.1},{:.4},{:.4},{:.4},{:.0}",
             world.nomos.rules.len(),
             window.per_tick(window.violations),
             window.per_tick(window.sanctions),
@@ -1350,6 +1435,18 @@ fn cmd_sweep(o: &Opts) -> R {
             l.motions_carried,
             l.motions_defeated,
             window.per_tick(window.votes),
+            world
+                .config
+                .enforcer_share_permille
+                .map_or(String::new(), |p| p.to_string()),
+            u8::from(world.config.perception.see_standing),
+            world.config.perception.signal_radius,
+            world.config.memory_slots,
+            window.per_tick(window.alive_by_kind[PolicyKind::Learner.index()]),
+            window.per_tick(window.alive_by_kind[PolicyKind::Enforcer.index()]),
+            window.per_tick(window.sanctions_by_kind[PolicyKind::Learner.index()]),
+            window.per_tick(window.sanctions_by_kind[PolicyKind::Enforcer.index()]),
+            window.per_tick(window.births_reassigned),
             ticks as f64 / secs
         );
         summary.push_str(&row);

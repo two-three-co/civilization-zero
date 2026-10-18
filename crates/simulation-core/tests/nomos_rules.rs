@@ -1066,7 +1066,7 @@ fn snapshots_carry_the_institutions_and_inconsistent_states_are_rejected() {
     assert_eq!(World::from_snapshot(&json).unwrap(), w);
     let v: serde_json::Value = serde_json::from_slice(&json).unwrap();
     assert_eq!(v["format"], SNAPSHOT_FORMAT);
-    assert_eq!(SNAPSHOT_FORMAT, 12);
+    assert_eq!(SNAPSHOT_FORMAT, 13);
     assert_eq!(v["world"]["nomos"]["rules"].as_array().unwrap().len(), 2);
     assert_eq!(v["world"]["nomos"]["rules"][1]["norm"]["kind"], "harm");
     assert_eq!(v["world"]["nomos"]["standing"][0]["agent"], 1);
@@ -1080,10 +1080,10 @@ fn snapshots_carry_the_institutions_and_inconsistent_states_are_rejected() {
         "memory kinds render in snake case"
     );
     let mut old = v.clone();
-    old["format"] = serde_json::json!(11);
+    old["format"] = serde_json::json!(12);
     assert_eq!(
         World::from_snapshot(&serde_json::to_vec(&old).unwrap()).err(),
-        Some(SnapshotError::Format(11))
+        Some(SnapshotError::Format(12))
     );
 
     // Rules, episodes and the charter are state: the hash sees them.

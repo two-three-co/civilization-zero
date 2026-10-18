@@ -1,0 +1,19 @@
+# EXP-004 smoke (before the spec commit, seeds 100-102 = outside the registered seeds 0-29): does `--enforcer-share 100` hold the institution world's composition, and does the rule arm survive?
+date: 2026-10-18 JST (M1, 8 cores, 16 GB, macOS 26.6.2, rustc 1.99.1, release build of the working tree that added enforcer_share_permille / --blind / --signal-radius / --memory-slots and the sweep's 4-6 columns)
+note: the first attempt at the `le` arm (not shown) passed "--enact encroach" as one zsh word and so ran without the rule; this is the corrected run from a sh script. The composition and E_L readings of both arms were seen before the predictions of EXP-004 were fixed (disclosed in the spec).
+## le0: cz sweep --policy institution --no-enforcer-motions --enforcer-share 100 --seeds 3 --seed-start 100 --ticks 20000 --window 50 --sample 100 
+ seed   final  extinct  win_mean     min     max max/min   births  d.starv   d.age  d.viol  cons/at  xfer/t  harm/t   sig/t  encr/g  ticks/s
+  100    1708        -    1712.4    1657    1767    1.066    40345    28922     507   10208   0.1631    0.60    4.11   90.76  0.0774     1993
+  101    1766        -    1756.8    1703    1805    1.060    40536    29488     546    9736   0.1625    0.58    4.03   93.38  0.0712     2098
+  102    1715        -    1680.2    1615    1730    1.071    41910    30886     371    9938   0.1638    0.54    4.09   78.87  0.0692     2204
+window = last 50% of 20000 ticks; across 3 seeds: mean of window means 1716.5, sd 31.4, cv 0.018, extinct 0/3
+wrote out/EXP-004-smoke/le0_summary.csv and out/EXP-004-smoke/le0_series.csv and out/EXP-004-smoke/le0_qpolicy.csv
+wall time: 29 s
+## le: cz sweep --policy institution --no-enforcer-motions --enforcer-share 100 --seeds 3 --seed-start 100 --ticks 20000 --window 50 --sample 100 --enact encroach
+ seed   final  extinct  win_mean     min     max max/min   births  d.starv   d.age  d.viol  cons/at  xfer/t  harm/t   sig/t  encr/g  ticks/s
+  100    1300        -    1288.5    1225    1346    1.099    43566    11992     135   31139   0.1754    0.51    9.99   66.52  0.0131     2726
+  101    1215        -    1199.3    1135    1263    1.113    44706    20518      53   23920   0.1754    0.48    8.20   45.56  0.0098     3002
+  102    1230        -    1227.6    1163    1302    1.120    46558    18504      76   27748   0.1772    0.47    9.19   46.12  0.0116     3112
+window = last 50% of 20000 ticks; across 3 seeds: mean of window means 1238.5, sd 37.2, cv 0.030, extinct 0/3
+wrote out/EXP-004-smoke/le_summary.csv and out/EXP-004-smoke/le_series.csv and out/EXP-004-smoke/le_qpolicy.csv
+wall time: 20 s

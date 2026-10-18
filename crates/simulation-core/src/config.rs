@@ -139,6 +139,23 @@ pub struct WorldConfig {
     /// their effects are always recorded. Not part of `dynamics_hash`.
     #[serde(default)]
     pub record_votes: bool,
+    /// Hold the enforcers at a share of the living (ADR-0014 D11, 4-6).
+    /// At every birth whose parent is a `Learner` or an `Enforcer`, the
+    /// child is born an `Enforcer` when the enforcers would otherwise fall
+    /// below this permille of the living — counting the survivors of the
+    /// tick and its births so far — and a `Learner` otherwise, whatever
+    /// the parent's kind. A child whose kind differs from its parent's
+    /// starts from the blank parameters of its kind (a learner born of an
+    /// enforcer has a blank Q table; an enforcer born of a learner carries
+    /// no table) and the parent's scalar parameters. Children of the other
+    /// kinds inherit as always. `None` (the default) is Phase 3's rule:
+    /// the child's kind is the parent's. EXP-004's institution arms set
+    /// 100‰ so that the share founded by `--policy institution` survives
+    /// the learners' founding valley, which the forager-equivalent
+    /// enforcers would otherwise fill (4-5's measurement). Not part of
+    /// `dynamics_hash`; `default` so older configs still load.
+    #[serde(default)]
+    pub enforcer_share_permille: Option<u16>,
 
     /// What agents can perceive about each other (ADR-0013 D2). `default`
     /// so configs written before the field existed still load; it is always
@@ -256,6 +273,7 @@ impl Default for WorldConfig {
             motion_cost: default_motion_cost(),
             enforcer_motions: true,
             record_votes: false,
+            enforcer_share_permille: None,
             perception: Perception::default(),
         }
     }
@@ -301,7 +319,7 @@ impl WorldConfig {
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
-        let checks: [(bool, &'static str); 20] = [
+        let checks: [(bool, &'static str); 21] = [
             (
                 self.width > 0 && self.height > 0,
                 "width/height must be > 0",
@@ -370,6 +388,11 @@ impl WorldConfig {
                 "learner_epsilon_permille must be <= 1000",
             ),
             (self.charter.is_valid(), "charter permilles must be <= 1000"),
+            (
+                self.enforcer_share_permille
+                    .is_none_or(|p| p <= PolicyParams::PERMILLE_MAX),
+                "enforcer_share_permille must be <= 1000",
+            ),
         ];
         for (ok, msg) in checks {
             if !ok {

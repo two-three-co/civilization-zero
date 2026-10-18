@@ -1386,16 +1386,16 @@ fn random_worlds_legislate_and_round_trip_through_both_snapshot_forms() {
     assert_eq!(World::from_snapshot(&json).unwrap(), w);
     let v: serde_json::Value = serde_json::from_slice(&json).unwrap();
     assert_eq!(v["format"], SNAPSHOT_FORMAT);
-    assert_eq!(SNAPSHOT_FORMAT, 12);
+    assert_eq!(SNAPSHOT_FORMAT, 13);
     assert!(v["world"]["ledger"]["motions"].as_u64().unwrap() > 0);
     assert_eq!(v["world"]["config"]["motion_cost"], 2000);
     assert_eq!(v["world"]["config"]["record_votes"], true);
     assert_eq!(v["world"]["config"]["enforcer_motions"], true);
     let mut old = v.clone();
-    old["format"] = serde_json::json!(11);
+    old["format"] = serde_json::json!(12);
     assert_eq!(
         World::from_snapshot(&serde_json::to_vec(&old).unwrap()).err(),
-        Some(SnapshotError::Format(11))
+        Some(SnapshotError::Format(12))
     );
     // The floor is state: a world with an open motion hashes differently
     // from the same world with the floor cleared.
