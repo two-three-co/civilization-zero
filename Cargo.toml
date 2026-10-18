@@ -20,6 +20,15 @@ criterion = { version = "0.5", default-features = false, features = ["cargo_benc
 [profile.release]
 debug = 1
 
+# The kernel stays at full optimisation when the browser build lowers the
+# profile's opt-level for size (web/package.json's build:wasm sets
+# CARGO_PROFILE_RELEASE_OPT_LEVEL=z; a package override outranks the
+# profile's level): the published wasm then runs the kernel at opt-level 3
+# speed inside a 397 KB binary (ADR-0014 D12, 4-9; measured in STATUS).
+# A no-op for native release builds, whose opt-level is 3 anyway.
+[profile.release.package.simulation-core]
+opt-level = 3
+
 [profile.bench]
 debug = 1
 

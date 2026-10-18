@@ -50,12 +50,13 @@ cd web && npm install && npm run build:wasm && npm run dev
 - 巻き戻し: 249 tick 再実行（間隔 250 の最悪）45〜56 ms、スナップショット上 0 ms。
 - 介入: UI で tick 300 に干ばつ → tick 600 / 900 の state hash が `cz run --drought-at 300 --drought-amount 0 --drought-interval 10` と一致。
 - 分岐: fork 21 ms、2 世界の同期再生 1,800 tick/s・60 fps。tick 400 で A / B のハッシュが native（無介入 / 干ばつ）と一致、Verify = MATCH（90 ms）。
+- 制度（4-9、2026-10-18、公開ビルドのプロファイル = カーネル `opt-level 3` / 残り `z` / `wasm-opt -Oz`、397,333 B）: `scripts/rates-sampler.js`（コンソールに貼る。rAF ≥ 57 Hz の秒だけ採る）で前面: forager 単独 30 tick/フレーム 1,800 tick/s・60 fps・0.27 ms/tick（`s` ビルド）、学習世界単独 900 tick/s・30 fps・0.59 ms/tick、制度世界単独（`?policy=institution`、tick 3,000 から）807 tick/s・27 fps・0.42 ms/tick、fixed vs learning 15 tick/フレーム 898 tick/s・60 fps（fork 直後。tick 60,000 では 593・40 fps）、制度世界の with vs without rule 435 tick/s・29 fps・A 0.47 ms/tick（主スレッドが律速）。巻き戻しの最悪（学習世界、249 tick 再実行）171〜177 ms、fork 51 ms（forager → learner）/ 94〜103 ms（制度世界 1.05 MB）。node（V8）: `scripts/bench-wasm.mjs` forager 0.206 / mixed-learning 0.393 ms/tick、`scripts/bench-seek.mjs` 学習世界 0.458 ms/tick・巻き戻し最悪 115 ms、制度世界（`?policy=institution`、tick 4,500、1,130 体）0.396 ms/tick・98 ms・スナップショット 1,203,213 B（STATUS）。
 - 固定 vs 学習（3-9c、A forager ≈ 1,330 体 + B learner ≈ 1,600 体の同期再生、前面）: 15 tick/フレームで 899 tick/s・60 fps（B のワーカー 0.55〜0.57 ms/tick）、30 tick/フレームで 1,008〜1,043 tick/s・34〜35 fps（B が律速）。fork 18〜23 ms、Verify = MATCH（143 ms、tick 600）。A / B の tick 600 のハッシュが `cz run --seed 42 --ticks 600`（`--set-policy learner --set-policy-at 300`）と一致。学習世界単独（`?policy=learner`、約 1,570〜1,600 体）は 30 tick/フレームで 1,100〜1,248 tick/s・37〜42 fps・0.49〜0.59 ms/tick（STATUS）。
 
 ## 検証
 
 - `cargo test -p cz-web`: ラッパーがカーネルと同一の状態・ハッシュを出す、seek → step が head に合流する、介入は head のみ、6 つの方策構成が `cz run --policy` と同じ割当（evolving mix の突然変異含む）で policy 列が 4 種を数える、`set_policy` の JSON が通り compare の fork が再現可能で `Multiverse::fork` と一致、Learner 世界のゴールデン、`social()` がカーネルの `TickReport` から組んだ期待値と一致（seek 後・fork 後も）、`agent_json` がカーネルの `Agent` そのもの、`agent_events_json` の絞り込みと半開区間。スレッド（`threads::*`）: 手組みの台帳で履行・不履行・拒否の紐付け・重なる取引の判定、Random 世界で `agent_events_json` との整合とビュー依存、seed 23 の #909 ↔ #363 の取引（TUTORIAL が名指しするもの）と seed 42 に順序どおりの取引が無いこと。
-- `wasm-pack test --node crates/cz-web --release`: **wasm 上で native のゴールデンハッシュに到達する**（Forager と Learner の両方、CI）。
+- `wasm-pack test --node crates/cz-web --release`: **wasm 上で native のゴールデンハッシュに到達する**（Forager・Learner・制度世界（`institution` ミックス、tick 100 の布告、tick 200。ADR-0014 4-9）の 3 本、CI）。
 
 ## 配信
 
@@ -71,4 +72,4 @@ cd web && npm install && npm run build:wasm && npm run dev
 
 ## 次
 
-Toy 1 は機能完了・配信中。Phase 3 の UI は 3-9a（社会マーカー・インスペクタ）、3-9b（交渉スレッド、`?seed=`）、3-9c（fixed vs learning の比較、学習世界の選択）まで入り、Phase 4 の制度エクスプローラ（4-7 の読み手 + 4-8 の画面）が入った。残りは `institution` の方策構成と動議の表示（4-5 の後）、制度世界の前面でのブラウザ計測（4-9）、B 側のインスペクタと介入履歴（任意）。
+Toy 1 は機能完了・配信中。Phase 3 の UI は 3-9a（社会マーカー・インスペクタ）、3-9b（交渉スレッド、`?seed=`）、3-9c（fixed vs learning の比較、学習世界の選択）まで入り、Phase 4 の制度エクスプローラ（4-7 の読み手 + 4-8 の画面）が入った。`institution` の方策構成（4-5、4-9 から Enforcer 10% を保つ `WorldConfig::institution_preset()`）も入った。残りは動議の表示の磨き込み、主スレッドの描画コスト（制度世界の 2 世界同期で 29 fps、長時間再生で fps が落ちる。4-9 の計測、docs/TODO.md）、B 側のインスペクタと介入履歴（任意）。

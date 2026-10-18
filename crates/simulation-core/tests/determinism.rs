@@ -1,7 +1,9 @@
 //! Reproducibility, snapshot/restore and long-run invariant tests.
 
 use proptest::prelude::*;
-use simulation_core::{AgentId, DeathCause, PolicyKind, World, WorldConfig};
+use simulation_core::{
+    AgentId, DeathCause, Intervention, Norm, NormKind, PolicyKind, Sanction, World, WorldConfig,
+};
 use std::collections::BTreeMap;
 
 fn small_cfg(seed: u64) -> WorldConfig {
@@ -65,6 +67,65 @@ fn golden_hash_is_stable() {
     assert_eq!(h, GOLDEN_200);
 }
 const GOLDEN_200: u64 = 0x658e_e873_d186_6501;
+
+/// The institution world's golden (ADR-0014 D9 / completion condition 4,
+/// task 4-9): `WorldConfig::institution_preset()` — `nomos_preset`, 128-row
+/// learners, the enforcers held at 100‰ — with every tenth founder an
+/// `Enforcer`, the first-occupancy norm decreed at tick 100 (standing 32,
+/// sanction harm), `dynamics_hash` at tick 200. With `enforcer_motions` on
+/// (the default) the enforcers move the same norm at tick 19 and the
+/// assembly carries it at tick 51, so the decree replaces rule 0 with rule
+/// 1 and closes its episodes: the fingerprint covers motion, vote, closing,
+/// enactment, replacement, sanctions and the quota's births.
+/// `crates/cz-web/tests/{native,wasm}.rs` pin the same value through the
+/// `institution` mix (`cz run --policy institution --seed 42 --patches 24
+/// --enact encroach --enact-at 100 --ticks 200` reaches it too). If the
+/// institution's rule changes on purpose, update all three and STATUS's
+/// golden table.
+#[test]
+fn institution_golden_hash_is_stable() {
+    let mut w = World::generate(
+        WorldConfig {
+            seed: 42,
+            ..WorldConfig::institution_preset()
+        },
+        |i| {
+            if i % 10 == 0 {
+                PolicyKind::Enforcer
+            } else {
+                PolicyKind::Learner
+            }
+        },
+    )
+    .unwrap();
+    w.run(100);
+    w.intervene(Intervention::Enact {
+        norm: Norm {
+            kind: NormKind::Encroach,
+            standing_ticks: 32,
+            sanction: Sanction::HARM,
+            except_sanction: false,
+        },
+    })
+    .unwrap();
+    w.run(100);
+    let h = w.dynamics_hash();
+    println!("institution golden dynamics hash after 200 ticks: {h:#018x}");
+    assert_eq!(h, INSTITUTION_GOLDEN_200);
+    assert_ne!(h, GOLDEN_200);
+    assert_eq!(w.ledger.motions_carried, 1, "the assembly legislated first");
+    assert_eq!(w.nomos.rules.len(), 1);
+    assert_eq!(
+        w.nomos.rules[0].id, 1,
+        "the decree replaced the assembly's rule 0"
+    );
+    assert!(
+        w.agents.iter().any(|a| a.policy == PolicyKind::Enforcer)
+            && w.agents.iter().any(|a| a.policy == PolicyKind::Learner),
+        "both kinds survive the founding valley"
+    );
+}
+const INSTITUTION_GOLDEN_200: u64 = 0xfedc_2815_0318_0c8e;
 
 #[test]
 fn snapshot_roundtrip_then_continue_is_identical() {

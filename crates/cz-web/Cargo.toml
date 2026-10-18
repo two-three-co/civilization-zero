@@ -19,5 +19,9 @@ wasm-bindgen = "0.2"
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
 
+# The published build (web/package.json's build:wasm): the profile at
+# opt-level z with the kernel crate pinned at 3 (the workspace Cargo.toml),
+# then wasm-opt for size — 397 KB at the kernel's full speed under V8
+# (ADR-0014 D12, 4-9). `wasm-pack test` does not run wasm-opt.
 [package.metadata.wasm-pack.profile.release]
-wasm-opt = ["-O3"]
+wasm-opt = ["-Oz"]

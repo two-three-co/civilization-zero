@@ -5,7 +5,7 @@
 //!             [--mutate | --no-mutate] [--learner-states N] [--learner-epsilon PERMILLE]
 //!             [--harm-cost COST] [--nomos] [--learner-health-weight W] [--record-violations]
 //!             [--motion-cost COST] [--no-enforcer-motions] [--record-votes]
-//!             [--enforcer-share PERMILLE] [--blind] [--signal-radius R] [--memory-slots N]
+//!             [--enforcer-share PERMILLE|none] [--blind] [--signal-radius R] [--memory-slots N]
 //!             [--enact KIND[:STANDING[:SANCTION[:EXCEPT]]] [--enact-at TICK]]
 //!             [--repeal ID [--repeal-at TICK]] [--charter Q,TH,TICKS,AMENDABLE]
 //!             [--trace PATH --every K] [--snapshot PATH]
@@ -48,8 +48,11 @@
 //! compared (ADR-0014 D8). All three commands that build worlds (`run`,
 //! `sweep`, `fork`) take all of these. The assembly (ADR-0014 D7, 4-5):
 //! `--policy institution` is the institution world — learners (128 rows)
-//! with every tenth founder an `Enforcer`, on `--preset nomos` unless a
-//! preset or `--learner-states` says otherwise — `--motion-cost COST` is
+//! with every tenth founder an `Enforcer`, on `--preset nomos`, the
+//! enforcers held at 100‰ of the living by the birth-time quota
+//! (`WorldConfig::institution_preset()`, ADR-0014 completion condition 2;
+//! 4-9) unless a preset, `--learner-states` or `--enforcer-share` says
+//! otherwise — `--motion-cost COST` is
 //! what a motion attempt costs (default 2,000), `--no-enforcer-motions`
 //! keeps the enforcers from moving the first-occupancy norm themselves
 //! (EXP-004 decrees it instead, D11), and `--record-votes` writes a
@@ -57,7 +60,8 @@
 //! logged). EXP-004's arms (ADR-0014 D11, 4-6): `--enforcer-share
 //! PERMILLE` holds the enforcers at that share of the living by a
 //! birth-time quota (`WorldConfig::enforcer_share_permille`; a learner's or
-//! an enforcer's child is born whichever kind keeps the share), `--blind`
+//! an enforcer's child is born whichever kind keeps the share; `none` is
+//! Phase 3's rule, every child its parent's kind), `--blind`
 //! switches `perception.see_standing` off (the learners' norm features read
 //! 0: the blind null model), `--signal-radius R` and `--memory-slots N` set
 //! the perception's signal radius and the memory's slots (the no-communication
@@ -117,7 +121,7 @@ fn main() {
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  cz run [--seed N] [--agents N] [--side N] [--ticks N] [--preset nomos]\n         [--policy forager|random|mixed|reflex|learner|mixed-learning|institution] [--mutate | --no-mutate]\n         [--learner-states N] [--learner-epsilon PERMILLE] [--harm-cost COST] [--nomos] [--learner-health-weight W]\n         [--enact KIND[:STANDING[:SANCTION[:EXCEPT]]] [--enact-at TICK]] [--repeal ID [--repeal-at TICK]]\n         [--charter Q,TH,TICKS,AMENDABLE] [--record-violations] [--motion-cost COST] [--no-enforcer-motions] [--record-votes]\n         [--enforcer-share PERMILLE] [--blind] [--signal-radius R] [--memory-slots N]\n         [--check] [--trace PATH --every K] [--snapshot PATH]\n         [--drought-at TICK [--drought-amount N] [--drought-interval N]]\n         [--set-policy KIND [--set-policy-at TICK]] [--log PATH] [--record-actions]\n  cz log --path PATH [--from TICK] [--to TICK] [--limit N]\n  cz resume --snapshot PATH [--ticks N] [--check]\n  cz replay --snapshot PATH --log PATH [--to TICK]\n  cz fork [--seed N] [--agents N] [--side N] [--ticks N] [--at TICK] [--every K]\n          [--scale-food PERMILLE] [--drought-amount N --drought-interval N] [--set-policy KIND]\n          [--enact SPEC] [--repeal ID]\n  cz sweep [--seeds N] [--seed-start S] [--ticks N] [--policy ...] [--window PCT]\n           [--sample K] [--out PREFIX] [--check]\n  (run, fork and sweep also take --preset nomos, --harm-cost COST, --nomos, --learner-health-weight W, --charter, --record-violations,\n   --motion-cost, --no-enforcer-motions, --record-votes, --enforcer-share, --blind, --signal-radius, --memory-slots;\n   --policy institution = learners (128 rows) + every tenth founder an enforcer on --preset nomos;\n   --enact KIND is encroach | broken_promise | harm, SANCTION is harm | reject | harm+reject | none)"
+        "usage:\n  cz run [--seed N] [--agents N] [--side N] [--ticks N] [--preset nomos]\n         [--policy forager|random|mixed|reflex|learner|mixed-learning|institution] [--mutate | --no-mutate]\n         [--learner-states N] [--learner-epsilon PERMILLE] [--harm-cost COST] [--nomos] [--learner-health-weight W]\n         [--enact KIND[:STANDING[:SANCTION[:EXCEPT]]] [--enact-at TICK]] [--repeal ID [--repeal-at TICK]]\n         [--charter Q,TH,TICKS,AMENDABLE] [--record-violations] [--motion-cost COST] [--no-enforcer-motions] [--record-votes]\n         [--enforcer-share PERMILLE|none] [--blind] [--signal-radius R] [--memory-slots N]\n         [--check] [--trace PATH --every K] [--snapshot PATH]\n         [--drought-at TICK [--drought-amount N] [--drought-interval N]]\n         [--set-policy KIND [--set-policy-at TICK]] [--log PATH] [--record-actions]\n  cz log --path PATH [--from TICK] [--to TICK] [--limit N]\n  cz resume --snapshot PATH [--ticks N] [--check]\n  cz replay --snapshot PATH --log PATH [--to TICK]\n  cz fork [--seed N] [--agents N] [--side N] [--ticks N] [--at TICK] [--every K]\n          [--scale-food PERMILLE] [--drought-amount N --drought-interval N] [--set-policy KIND]\n          [--enact SPEC] [--repeal ID]\n  cz sweep [--seeds N] [--seed-start S] [--ticks N] [--policy ...] [--window PCT]\n           [--sample K] [--out PREFIX] [--check]\n  (run, fork and sweep also take --preset nomos, --harm-cost COST, --nomos, --learner-health-weight W, --charter, --record-violations,\n   --motion-cost, --no-enforcer-motions, --record-votes, --enforcer-share, --blind, --signal-radius, --memory-slots;\n   --policy institution = learners (128 rows) + every tenth founder an enforcer on --preset nomos, enforcers held at 100‰ (--enforcer-share overrides);\n   --enact KIND is encroach | broken_promise | harm, SANCTION is harm | reject | harm+reject | none)"
     );
     std::process::exit(2)
 }
@@ -162,13 +166,17 @@ fn build_world(seed: u64, o: &Opts) -> Result<World, Box<dyn std::error::Error>>
     // explicitly overrides it and one left out keeps it. `--preset nomos`
     // is the institution world's baseline (ADR-0014 D10, EXP-003).
     let mut base = match o.get("preset").map(String::as_str) {
-        None if institution => WorldConfig::nomos_preset(),
+        None if institution => WorldConfig::institution_preset(),
         None => WorldConfig::default(),
         Some("nomos") => WorldConfig::nomos_preset(),
         Some(other) => return Err(format!("unknown preset {other:?}: expected nomos").into()),
     };
     if institution {
-        base.learner_states = 128;
+        // `--preset nomos --policy institution` is the institution world too:
+        // 128 rows and the enforcers' share (4-9), each overridable below.
+        let preset = WorldConfig::institution_preset();
+        base.learner_states = preset.learner_states;
+        base.enforcer_share_permille = preset.enforcer_share_permille;
     }
     let cfg = WorldConfig {
         seed,
@@ -193,7 +201,10 @@ fn build_world(seed: u64, o: &Opts) -> Result<World, Box<dyn std::error::Error>>
         },
         // EXP-004's arms (ADR-0014 D11, 4-6): the enforcers' share, the
         // blind / no-communication / no-memory null models.
-        enforcer_share_permille: match o.get("enforcer-share") {
+        enforcer_share_permille: match o.get("enforcer-share").map(String::as_str) {
+            // `none`: every child its parent's kind (Phase 3's rule), which
+            // the institution world no longer defaults to (4-9).
+            Some("none") => None,
             Some(v) => Some(
                 v.parse()
                     .map_err(|_| format!("bad value for --enforcer-share: {v}"))?,

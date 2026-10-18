@@ -211,54 +211,83 @@ fn bench_step(c: &mut Criterion) {
             )
         });
     }
-    // The institution world of ADR-0014's completion condition 2 (4-5):
-    // `nomos_preset`, 128-row learners with every tenth founder an
-    // enforcer, the first-occupancy rule decreed at tick 0, warmed 3,000
-    // ticks like the 128-row learner. Enforcers sanction the accused and
-    // vote on what the random-free assembly is moved (nothing, with the
-    // rule already in force); the gate is native ≥ 1,800 tick/s.
-    let w = institution_world(1_000, 128, 3_000);
-    eprintln!(
-        "step/institution: {} agents, {} open episodes, {} sanctions, {} motions so far",
-        w.agents.len(),
-        w.nomos.standing.len(),
-        w.ledger.sanctions.iter().sum::<u64>(),
-        w.ledger.motions
-    );
-    g.throughput(Throughput::Elements(w.agents.len() as u64 * 10));
-    g.bench_with_input(BenchmarkId::new("institution", 1_000), &w, |b, base| {
-        b.iter_batched_ref(
-            || base.clone(),
-            |w| w.run(10),
-            criterion::BatchSize::LargeInput,
-        )
-    });
+    // The institution world of ADR-0014's completion condition 2 (4-5,
+    // 4-9): `WorldConfig::institution_preset()` — `nomos_preset`, 128-row
+    // learners, the enforcers held at a tenth of the living — with every
+    // tenth founder an enforcer, the first-occupancy rule decreed at tick
+    // 0, warmed 3,000 ticks (the valley the sanctions dig is at tick 300,
+    // the population is back near 1,100 by 2,500). Enforcers sanction the
+    // accused; the assembly has nothing to move with the rule in force.
+    // The gate is native ≥ 1,800 tick/s. `institution_norules` is the
+    // same world with no rule and no motions (EXP-004's LE0): a reference
+    // for what the rule costs per agent-step, over its own population.
+    for (name, w) in [
+        ("institution", institution_world(1_000, 128, 3_000)),
+        (
+            "institution_norules",
+            institution_world_without_rules(1_000, 128, 3_000),
+        ),
+    ] {
+        eprintln!(
+            "step/{name}: {} agents ({} enforcers), {} open episodes, {} sanctions, {} motions so far",
+            w.agents.len(),
+            w.agents
+                .iter()
+                .filter(|a| a.policy == PolicyKind::Enforcer)
+                .count(),
+            w.nomos.standing.len(),
+            w.ledger.sanctions.iter().sum::<u64>(),
+            w.ledger.motions
+        );
+        g.throughput(Throughput::Elements(w.agents.len() as u64 * 10));
+        g.bench_with_input(BenchmarkId::new(name, 1_000), &w, |b, base| {
+            b.iter_batched_ref(
+                || base.clone(),
+                |w| w.run(10),
+                criterion::BatchSize::LargeInput,
+            )
+        });
+    }
     g.finish();
 }
 
 /// `cz run --policy institution --enact encroach` after `warm` ticks
-/// (ADR-0014 D8 / completion condition 2).
+/// (ADR-0014 D8 / completion condition 2; `WorldConfig::institution_preset()`
+/// since 4-9, so the enforcers stay a tenth of the living).
 fn institution_world(agents: u32, side: u16, warm: u64) -> World {
+    let mut w = institution_founded(agents, side, true);
+    w.intervene(first_occupant_rule()).unwrap();
+    w.run(warm);
+    w
+}
+
+/// The same world with no rule ever in force: `enforcer_motions` off (so
+/// the enforcers do not legislate it themselves) and no decree — EXP-004's
+/// LE0 (`cz run --policy institution --no-enforcer-motions`).
+fn institution_world_without_rules(agents: u32, side: u16, warm: u64) -> World {
+    let mut w = institution_founded(agents, side, false);
+    w.run(warm);
+    w
+}
+
+fn institution_founded(agents: u32, side: u16, enforcer_motions: bool) -> World {
     let cfg = WorldConfig {
         seed: 42,
         width: side,
         height: side,
         initial_agents: agents,
         patch_count: (side as u32 * side as u32) / 700,
-        learner_states: 128,
-        ..WorldConfig::nomos_preset()
+        enforcer_motions,
+        ..WorldConfig::institution_preset()
     };
-    let mut w = World::generate(cfg, |i| {
+    World::generate(cfg, |i| {
         if i % 10 == 0 {
             PolicyKind::Enforcer
         } else {
             PolicyKind::Learner
         }
     })
-    .unwrap();
-    w.intervene(first_occupant_rule()).unwrap();
-    w.run(warm);
-    w
+    .unwrap()
 }
 
 /// Building the per-tick `NormIndex` (ADR-0014 D2; 4-2 acceptance: ≤ 30 µs
@@ -309,6 +338,18 @@ fn bench_norm_index(c: &mut Criterion) {
     g.bench_function(format!("{n}_agents_empty"), |b| {
         b.iter(|| NormIndex::build(&empty.agents, &empty.nomos, empty.bounds()))
     });
+    // The index the institution world of completion condition 2 actually
+    // builds every tick (4-9): its own episodes, its enforcers' HARMABLE
+    // cells counted (4-9a).
+    let inst = institution_world(1_000, 128, 3_000);
+    g.bench_function(
+        format!(
+            "institution_{}_agents_{}_episodes",
+            inst.agents.len(),
+            inst.nomos.standing.len()
+        ),
+        |b| b.iter(|| NormIndex::build(&inst.agents, &inst.nomos, inst.bounds())),
+    );
     g.finish();
 }
 
@@ -324,12 +365,16 @@ fn bench_norm_index(c: &mut Criterion) {
 /// tick 0, agents standing accused (and, among learners, sanctioning), 21
 /// features / 128 rows reading the norm index — ≤ 250 ns per agent-step
 /// (the 2026-10-18 revision, D6). `institution/3000` is the world of
-/// completion condition 2 (4-5): the same with every tenth founder an
-/// enforcer, whose script reads the index directly.
+/// completion condition 2 (4-5, held at the founding composition since
+/// 4-9): the same with every tenth founder an enforcer, whose script reads
+/// the index directly; `institution_blind/3000` decides over the same
+/// states with the learners' norm queries answering "no" (the enforcers
+/// read the index whatever `see_standing` says), the control the 4-9 gate
+/// is read against.
 fn bench_decide(c: &mut Criterion) {
     let mut g = c.benchmark_group("decide");
     type Build = fn() -> World;
-    let worlds: [(&str, Build); 9] = [
+    let worlds: [(&str, Build); 10] = [
         ("serial/1000", || {
             warmed_world_of(1_000, 128, PolicyKind::Forager, false)
         }),
@@ -362,6 +407,9 @@ fn bench_decide(c: &mut Criterion) {
             ))
         }),
         ("institution/3000", || institution_world(1_000, 128, 3_000)),
+        ("institution_blind/3000", || {
+            blinded(institution_world(1_000, 128, 3_000))
+        }),
     ];
     for (name, build) in worlds {
         let mut w = build();
@@ -404,6 +452,29 @@ fn bench_hash(c: &mut Criterion) {
     c.bench_function("snapshot_bin_roundtrip/1000", |b| {
         b.iter(|| World::from_bytes(&w.to_bytes()).unwrap())
     });
+    // The decode alone — what a seek pays before re-executing up to
+    // `snapshot_every − 1` ticks (ADR-0010 2b-4, RISKS R11) — and the
+    // binary snapshot's size, for the three worlds the gates name (ADR-0013
+    // / ADR-0014 completion condition 2: ≤ 1 MB for the default learner
+    // world, ≤ 2 MB for the institution world).
+    for (name, w) in [
+        ("forager_1000", w),
+        (
+            "learner_1000",
+            warmed_world_of(1_000, 128, PolicyKind::Learner, false),
+        ),
+        ("institution_3000", institution_world(1_000, 128, 3_000)),
+    ] {
+        let bytes = w.to_bytes();
+        eprintln!(
+            "snapshot_bin_decode/{name}: {} agents, {} bytes",
+            w.agents.len(),
+            bytes.len()
+        );
+        c.bench_function(&format!("snapshot_bin_decode/{name}"), |b| {
+            b.iter(|| World::from_bytes(&bytes).unwrap())
+        });
+    }
 }
 
 criterion_group!(

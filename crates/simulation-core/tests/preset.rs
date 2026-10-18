@@ -54,6 +54,26 @@ fn the_preset_is_the_cell_exp_003_chose() {
     assert!(p.nomos);
 }
 
+/// `WorldConfig::institution_preset()` (ADR-0014 completion condition 2,
+/// 4-9): the preset with 128-row learners and the enforcers' share held at
+/// 100‰ (EXP-004's quota, 4-6), and nothing else moved. The preset itself
+/// holds no share: EXP-004's arms say it per arm.
+#[test]
+fn the_institution_preset_is_the_nomos_preset_with_128_rows_and_the_share_held() {
+    let i = WorldConfig::institution_preset();
+    i.validate().unwrap();
+    assert_eq!(i.learner_states, 128);
+    assert_eq!(i.enforcer_share_permille, Some(100));
+    let p = WorldConfig::nomos_preset();
+    assert_eq!(p.enforcer_share_permille, None);
+    let back = WorldConfig {
+        learner_states: p.learner_states,
+        enforcer_share_permille: p.enforcer_share_permille,
+        ..i.clone()
+    };
+    assert_eq!(back, p);
+}
+
 #[test]
 fn the_default_config_is_the_exp_002_world() {
     let d = WorldConfig::default();

@@ -33,8 +33,10 @@
 //! The assembly (ADR-0014 D7, 4-5) needs nothing new at the boundary:
 //! motions, votes and closings are ledger events the timeline reads, the
 //! open motion is in `institution_json`, and the `institution` mix (every
-//! tenth founder an `Enforcer` among 128-row learners, on `nomos_preset`)
-//! is the world of completion condition 2.
+//! tenth founder an `Enforcer` among 128-row learners, on
+//! `WorldConfig::institution_preset()`: `nomos_preset` with the enforcers
+//! held at 100‰ of the living by EXP-004's birth-time quota, 4-9) is the
+//! world of completion condition 2 and of the third golden.
 //!
 //! Numbers cross the boundary as `u32` so JavaScript never needs `BigInt`;
 //! the state hash is a 16-hex-digit string. Errors are `String`s (wasm-bindgen
@@ -134,7 +136,9 @@ pub const POLICY_MIXES: [&str; 7] = [
 /// the same mix reach the same hashes: `mixed` alternates Forager / Random
 /// by founding index, `mixed-learning` cycles Forager / Reflex / Learner
 /// (3-5), `institution` makes every tenth founder an Enforcer among
-/// Learners (ADR-0014 D8, 4-5). A forager-only world has no social
+/// Learners (ADR-0014 D8, 4-5; the config is then
+/// `WorldConfig::institution_preset()`, see [`institutional`]). A
+/// forager-only world has no social
 /// behaviour at all (foragers never transfer, harm or signal), so the UI
 /// offers `mixed` and `random` to see the social layer at work, the
 /// learning mixes (3-9c) to watch a world that learns from the start, and
@@ -172,8 +176,9 @@ pub fn policy_mix(name: &str) -> Result<fn(u32) -> PolicyKind, String> {
 }
 
 /// Whether a founding mix is the institution world (ADR-0014 D8, 4-5):
-/// then the config is `WorldConfig::nomos_preset()` with 128-row learners
-/// whatever `options.nomos` says, as `cz run --policy institution`.
+/// then the config is `WorldConfig::institution_preset()` — `nomos_preset`,
+/// 128-row learners, the enforcers held at 100‰ by the birth-time quota
+/// (4-9) — whatever `options.nomos` says, as `cz run --policy institution`.
 pub fn institutional(name: &str) -> bool {
     name == "institution"
 }
@@ -245,8 +250,9 @@ impl WasmWorld {
     /// The rest of the config is the kernel default, as `cz run` without
     /// options: `cz run --seed S --policy P` reaches the same hashes, and
     /// `cz run --preset nomos --seed S --policy P` those of `{"nomos":true}`.
-    /// The `institution` mix is `cz run --policy institution`: `nomos_preset`
-    /// and 128-row learners whatever `options.nomos` says ([`institutional`]).
+    /// The `institution` mix is `cz run --policy institution`:
+    /// `WorldConfig::institution_preset()` whatever `options.nomos` says
+    /// ([`institutional`]).
     // A wasm-bindgen constructor is positional on the JS side; anything
     // further goes into `options` rather than a ninth parameter.
     #[allow(clippy::too_many_arguments)]
@@ -262,7 +268,9 @@ impl WasmWorld {
         options: &str,
     ) -> Result<WasmWorld, String> {
         let options = WorldOptions::parse(options)?;
-        let base = if options.nomos || institutional(policy) {
+        let base = if institutional(policy) {
+            WorldConfig::institution_preset()
+        } else if options.nomos {
             WorldConfig::nomos_preset()
         } else {
             WorldConfig::default()
@@ -275,11 +283,6 @@ impl WasmWorld {
             patch_count: patches,
             mutation_enabled: evolves(policy),
             record_violations: options.record_violations,
-            learner_states: if institutional(policy) {
-                128
-            } else {
-                base.learner_states
-            },
             ..base
         };
         let world = World::generate(config, policy_mix(policy)?).map_err(js)?;

@@ -244,8 +244,10 @@ fn the_policy_mix_is_the_cli_rule_and_foragers_alone_are_socially_inert() {
             },
             true,
         ),
-        // The institution world (ADR-0014 D8, 4-5): `nomos_preset`, 128
-        // rows, every tenth founder an enforcer — whatever `options` says.
+        // The institution world (ADR-0014 D8, 4-5; 4-9):
+        // `WorldConfig::institution_preset()` — `nomos_preset`, 128 rows,
+        // the enforcers held at 100‰ — with every tenth founder an
+        // enforcer, whatever `options` says.
         (
             "institution",
             |i| {
@@ -265,15 +267,12 @@ fn the_policy_mix_is_the_cli_rule_and_foragers_alone_are_socially_inert() {
         ww.step(60).unwrap();
         let cfg = if name == "institution" {
             WorldConfig {
-                learner_states: 128,
-                ..WorldConfig {
-                    seed: 9,
-                    width: 32,
-                    height: 32,
-                    initial_agents: 200,
-                    patch_count: 3,
-                    ..WorldConfig::nomos_preset()
-                }
+                seed: 9,
+                width: 32,
+                height: 32,
+                initial_agents: 200,
+                patch_count: 3,
+                ..WorldConfig::institution_preset()
             }
         } else {
             WorldConfig {
@@ -2323,6 +2322,78 @@ mod institutions {
             "the config differs"
         );
     }
+
+    /// The institution world's golden (ADR-0014 D9 / completion condition
+    /// 4, task 4-9), computed natively, which
+    /// `tests/wasm.rs::the_institution_world_reaches_the_native_golden_under_wasm`
+    /// must reach under wasm: the `institution` mix on the default-sized
+    /// world (seed 42, 128², 1,000 founders, 24 patches = `WorldConfig`'s
+    /// default, as the two other goldens), the first-occupancy norm decreed
+    /// at tick 100, `dynamics_hash` at tick 200. The same value as
+    /// `simulation-core/tests/determinism.rs::INSTITUTION_GOLDEN_200`, so
+    /// the mix is `WorldConfig::institution_preset()` with every tenth
+    /// founder an enforcer and nothing else. The enforcers move the same
+    /// norm at tick 19 and the assembly carries it at tick 51, so the
+    /// decree replaces rule 0 with rule 1; the quota keeps both kinds
+    /// through the founding valley. If the institution's rule changes on
+    /// purpose, update all three constants and STATUS's golden table.
+    #[test]
+    fn the_institution_world_golden_is_pinned_for_the_wasm_check() {
+        use simulation_core::PolicyKind;
+        let mut ww = WasmWorld::new(42, 128, 128, 1000, 24, 100, "institution", "").unwrap();
+        ww.step(100).unwrap();
+        ww.intervene(ENCROACH_JSON).unwrap();
+        ww.step(100).unwrap();
+        assert_eq!(ww.dynamics_hash_hex(), INSTITUTION_GOLDEN_200_HEX);
+        let mut d = World::generate(
+            WorldConfig {
+                seed: 42,
+                ..WorldConfig::institution_preset()
+            },
+            |i| {
+                if i % 10 == 0 {
+                    PolicyKind::Enforcer
+                } else {
+                    PolicyKind::Learner
+                }
+            },
+        )
+        .unwrap();
+        d.run(100);
+        d.intervene(Intervention::Enact { norm: ENCROACH }).unwrap();
+        d.run(100);
+        assert_eq!(ww.state_hash_hex(), super::hex(&d), "the same config too");
+        assert_eq!(
+            format!("{:016x}", d.dynamics_hash()),
+            INSTITUTION_GOLDEN_200_HEX
+        );
+        let codes: Vec<i32> = ww.agents().chunks(AGENT_FIELDS).map(|a| a[5]).collect();
+        assert!(codes.contains(&3) && codes.contains(&4), "{codes:?}");
+        assert!(codes.iter().all(|&c| c == 3 || c == 4));
+        let ledger = value(&ww.ledger_json().unwrap());
+        assert_eq!(ledger["motions_carried"], 1);
+        let inst = value(&ww.institution_json().unwrap());
+        assert_eq!(inst["rules"].as_array().unwrap().len(), 1);
+        assert_eq!(inst["rules"][0]["id"], 1);
+        assert_eq!(inst["rules"][0]["enacted"], 100);
+        let t = value(&ww.timeline_json(0, 200).unwrap());
+        let entries = t["entries"].as_array().unwrap();
+        assert!(entries
+            .iter()
+            .any(|e| e["kind"] == "motion_closed" && e["tick"] == 51 && e["carried"] == true));
+        assert!(entries
+            .iter()
+            .any(|e| e["kind"] == "enacted" && e["rule"] == 0 && e["by"]["motion"]["id"] == 0));
+        assert!(entries.iter().any(|e| e["kind"] == "enacted"
+            && e["rule"] == 1
+            && e["by"] == "decree"
+            && e["replaced"] == 0));
+    }
+
+    /// Pinned by `the_institution_world_golden_is_pinned_for_the_wasm_check`
+    /// and `simulation-core/tests/determinism.rs`; `tests/wasm.rs` holds
+    /// the same constant.
+    const INSTITUTION_GOLDEN_200_HEX: &str = "fedc281503180c8e";
 
     /// Pinned by the test above; `tests/wasm.rs` holds the same constants.
     const RULED_HASH_40: &str = "1e2a77fc40cf7156";

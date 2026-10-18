@@ -318,6 +318,25 @@ impl WorldConfig {
         }
     }
 
+    /// The institution world of ADR-0014's completion condition 2 (`cz run
+    /// --policy institution`, cz-web's `institution` mix, the third golden;
+    /// 4-9): `nomos_preset()` with 128-row learners — the rows that see
+    /// the norm bits (D6) — and the enforcers held at 100‰ of the living
+    /// by EXP-004's birth-time quota (D11, 4-6). Without the quota the
+    /// forager-equivalent enforcers fill the learners' founding valley and
+    /// are 97% of the living by tick 300 (4-5), so "learners 90% + enforcers
+    /// 10%" would hold at the founding only. The founding mix itself —
+    /// every tenth founder an `Enforcer`, the rest `Learner` — is the
+    /// caller's (`World::generate`'s closure). `nomos_preset()` and
+    /// `default()` are untouched.
+    pub fn institution_preset() -> Self {
+        Self {
+            learner_states: 128,
+            enforcer_share_permille: Some(100),
+            ..Self::nomos_preset()
+        }
+    }
+
     pub fn validate(&self) -> Result<(), ConfigError> {
         let checks: [(bool, &'static str); 21] = [
             (

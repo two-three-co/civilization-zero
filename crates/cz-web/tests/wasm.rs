@@ -214,6 +214,52 @@ const RULED_ACCUSED_40: u64 = 3;
 
 const ENCROACH_JSON: &str = r#"{"op":"enact","norm":{"kind":"encroach","standing_ticks":32,"sanction":1,"except_sanction":false}}"#;
 
+/// The institution world's golden (ADR-0014 D9 / completion condition 4,
+/// task 4-9), computed natively
+/// (`simulation-core/tests/determinism.rs::INSTITUTION_GOLDEN_200`,
+/// `tests/native.rs::institutions::the_institution_world_golden_is_pinned_for_the_wasm_check`):
+/// the `institution` mix — `WorldConfig::institution_preset()`, every tenth
+/// founder an enforcer — on the default-sized world (24 patches, as the
+/// other goldens), the first-occupancy norm decreed at tick 100 over the
+/// one the assembly carried at tick 51, 200 ticks. If the institution's
+/// rule changes on purpose, update all three.
+const INSTITUTION_GOLDEN_200_HEX: &str = "fedc281503180c8e";
+
+#[wasm_bindgen_test]
+fn the_institution_world_reaches_the_native_golden_under_wasm() {
+    let value = |s: String| -> serde_json::Value { serde_json::from_str(&s).unwrap() };
+    let build = || {
+        let mut w = WasmWorld::new(42, 128, 128, 1000, 24, 100, "institution", "").unwrap();
+        w.step(100).unwrap();
+        w.intervene(ENCROACH_JSON).unwrap();
+        w.step(100).unwrap();
+        w
+    };
+    let w = build();
+    assert_eq!(w.dynamics_hash_hex(), INSTITUTION_GOLDEN_200_HEX);
+    assert_eq!((w.tick(), w.frontier()), (200, 200));
+    let codes: Vec<i32> = w.agents().chunks(AGENT_FIELDS).map(|a| a[5]).collect();
+    assert!(
+        codes.contains(&3) && codes.contains(&4),
+        "learners and enforcers"
+    );
+    assert!(codes.iter().all(|&c| c == 3 || c == 4));
+    let ledger = value(w.ledger_json().unwrap());
+    assert_eq!(
+        ledger["motions_carried"], 1,
+        "the assembly legislated at tick 51"
+    );
+    let inst = value(w.institution_json().unwrap());
+    assert_eq!(inst["rules"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        inst["rules"][0]["id"], 1,
+        "the decree replaced the assembly's rule 0"
+    );
+    assert_eq!(inst["rules"][0]["enacted"], 100);
+    // Built again it reads the same: the quota's births are a function of the state.
+    assert_eq!(build().state_hash_hex(), w.state_hash_hex());
+}
+
 /// Institutions (ADR-0014 D12, 4-7) under wasm: a decreed world reaches
 /// the native hash and counts, the readers come out well-formed and agree
 /// with each other and with the ledger, a seek reads at the view, and a
