@@ -1354,6 +1354,15 @@ proptest! {
         for _ in 0..ticks {
             // The view at the tick's start agrees with the state.
             let ix = a.norm_index();
+            // The rules in force at the tick's start are what the tick
+            // judges by. Since 4-5 the random walkers move and vote, so an
+            // assembly can enact a norm the test never decreed; read the
+            // index instead of the test's own arguments.
+            let in_force = [
+                ix.rule(NormKind::Encroach).is_some(),
+                ix.rule(NormKind::BrokenPromise).is_some(),
+                ix.rule(NormKind::Harm).is_some(),
+            ];
             for (i, ag) in a.agents.iter().enumerate() {
                 let eps = a.nomos.standing_of(ag.id);
                 prop_assert_eq!(ix.accused(i), !eps.is_empty());
@@ -1384,15 +1393,15 @@ proptest! {
                 ra.sanctions.iter().sum::<u32>()
             );
             prop_assert!(ra.sanctions.iter().sum::<u32>() <= ra.harms + ra.rejections);
-            if encroach.is_some() {
+            if in_force[0] {
                 prop_assert_eq!(ra.violations[ENCROACH], ra.encroachments.iter().sum::<u32>());
             } else {
                 prop_assert_eq!(ra.violations[ENCROACH], 0);
             }
-            if promise.is_none() {
+            if !in_force[1] {
                 prop_assert_eq!(ra.violations[PROMISE], 0);
             }
-            if harm_norm.is_none() {
+            if !in_force[2] {
                 prop_assert_eq!(ra.violations[HARM], 0);
             }
         }
