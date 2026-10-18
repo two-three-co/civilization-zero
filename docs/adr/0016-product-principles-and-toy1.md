@@ -59,7 +59,7 @@ ADR-0015 の 5-3〜5-14（信用割当、H2 の軸、適応的立法者、EXP-00
 ### D7. リポジトリの公開設定（製品オーナーの判断待ち。push は保留）
 
 2026-10-18 の調査結果（詳細は STATUS「配信」）: リポジトリは User アカウント `two-three-co` の public リポジトリで、GitHub Pages（workflow 方式、public）と Actions（ubuntu、ci ≈ 3〜4 分 / run、pages ≈ 1 分 / run。直近 2 日で ci 41 回・pages 33 回）で動いている。
-private に切り替えた場合: GitHub Free では Pages が使えず公開デモは停止する（Pro / Team なら継続するが、Pages の URL は private リポジトリでも**公開のまま**。アクセス制限は Enterprise のみ）。Actions は動くが private リポジトリでは月の無料枠（Free 2,000 分、Pro 3,000 分）を消費し、現在の頻度（≈ 85 分/日）では Free の枠を超える。代替: (1) ソースを private にし、ビルド成果物だけを別の public リポジトリの Pages に配信、(2) Cloudflare Pages / Netlify / Vercel に `dist/` を配信（Cloudflare Access なら無料でメール認証のかかった非公開デモにできる）、(3) public のまま。判断までは push を保留し、切り替えも行わない。
+private に切り替えた場合: GitHub Free では Pages が使えず公開デモは停止する（Pro / Team なら継続するが、Pages の URL は private リポジトリでも**公開のまま**。アクセス制限は Enterprise のみ）。Actions は動くが private リポジトリでは月の無料枠（Free 2,000 分、Pro 3,000 分）を消費し、現在の頻度（≈ 85 分/日）では Free の枠を超える。代替: (1) ソースを private にし、ビルド成果物だけを別の public リポジトリの Pages に配信、(2) Cloudflare Pages / Netlify / Vercel に `dist/` を配信（Cloudflare Access なら無料でメール認証のかかった非公開デモにできる）、(3) public のまま。判断までは push を保留し、切り替えも行わない。**決定（2026-10-18、製品オーナー）: public のまま進める。** ソースを隠したい時点で (1)、デモも閉じたい時点で (2) を選ぶ。push を再開した。
 
 ## 却下した / 先送りした案
 

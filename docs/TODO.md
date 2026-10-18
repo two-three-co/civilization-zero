@@ -56,7 +56,7 @@ Phase 2 の計画は ADR-0010（Toy 1）に従う。
 - [ ] T3 歴史の共有可能な単位 `History { config, interventions, annotations }` の Export / Import、`cz replay` を config から
 - [ ] T5 体験の磨き込み（主スレッド律速 29 fps、長い再生の fps、制度カードの memo 化 = 旧 5-10）
 - [ ] T6 Toy 1 の完了判定（オーナーが説明なしで 5 操作を行い、分岐の違いを自分の言葉で説明できる）
-- [ ] リポジトリの公開設定の判断（ADR-0016 D7。判断まで push 保留）
+- [x] リポジトリの公開設定の判断（済 2026-10-18: public のまま。ADR-0016 D7）
 
 ## Phase 5: Research Platform — [ADR-0015](adr/0015-phase5-research-platform.md) のタスク表に従う（設計 ADR 済 2026-10-18、5-1 / 5-2 済 2026-10-18、**5-3 以降は Toy 1 完成まで保留 = ADR-0016 D4**）
 
