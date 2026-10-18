@@ -1,4 +1,4 @@
-# Architecture（Phase 4 完了時点、2026-10-18）
+# Architecture（Phase 4 完了 + Phase 5-1 時点、2026-10-18）
 
 > 実装と一致している内容のみを書く。未実装の層は「予定」と明記する。製品ゴールは docs/PRODUCT.md。
 
@@ -8,7 +8,9 @@
 viewer/ (static HTML)      ← trace JSON / wasm を読むだけ。カーネルに依存しない
 web/ (Vite + React + TS)   ← Toy 1 UI。Worker 経由で cz-web の wasm を駆動。カーネルの型には依存しない
 crates/cz-web  (cdylib)    ← wasm-bindgen 境界。multiverse と simulation-core に依存。数値は u32、ハッシュは hex 文字列
-crates/cz-cli  (bin: cz)   ← 実験ランナー。simulation-core と multiverse に依存
+crates/cz-cli  (bin: cz)   ← 実験ランナー（run / resume / log / replay / fork / sweep / lab）。cz-lab、multiverse、simulation-core に依存
+crates/cz-lab              ← Research Platform の native 層（ADR-0015 D2）: 実験の設計 `Design`（JSON）、1 世界の走行と `cz sweep` の列、
+                              対比の統計（ブートストラップ）、結果のマニフェスト RUN.json、コホートの枠。simulation-core にのみ依存（浮動小数点は統計だけ）
 crates/multiverse          ← Multiverse Runtime: 再生・分岐・系譜（ADR-0012）。simulation-core にのみ依存
 crates/cz-wasm-probe       ← wasm32 可否の計測用 C-ABI（ADR-0009）。製品 API ではない
 crates/simulation-core     ← Deterministic World Kernel。外部依存は serde / serde_json / postcard のみ
@@ -22,7 +24,8 @@ crates/simulation-core     ← Deterministic World Kernel。外部依存は serd
 | クレート | 役割 | 状態 |
 |---|---|---|
 | `simulation-core` | 空間・資源・身体・行動解決・ライフサイクル・乱数・スナップショット | 実装済み |
-| `cz-cli` | `cz run` / `cz resume` / `cz sweep`、計測、trace 出力 | 実装済み |
+| `cz-cli` | `cz run` / `cz resume` / `cz log` / `cz replay` / `cz fork` / `cz sweep` / `cz lab run` / `cz lab summarize`、計測、trace 出力。世界の構築と sweep の集計は `cz-lab` に委譲（5-1） | 実装済み |
+| `cz-lab` | 実験の設計 `Design`（`format: 1`、base / cells / schedule / contrasts）、`run_cell`（1 世界 → summary / series / qpolicy 行、`Tally`、列の契約）、`paired_stats`（同じ seed の対、95% ブートストラップ CI、d_z）、`summarize`、`Manifest`（RUN.json）、`cohort`（D4 の枠） | 実装済み（ADR-0015 5-1。`cz-lab-web` と `web/src/lab/` は 5-8 / 5-9 で予定） |
 | `cz-wasm-probe` | カーネルを wasm32 で動かす最小 C-ABI（`probe_init/step/hash`） | 実装済み（計測用） |
 | `multiverse` | 再生（再実行 + 台帳照合）、`Multiverse` / `Branch`（head + 台帳 + 周期スナップショット）、fork と系譜 | 実装済み（ADR-0012） |
 | `web/`（npm, 非 Cargo） | Toy 1 UI: Vite + React + TS、UI ↔ Worker プロトコル（v7）、カーネル Worker（wasm）とモック Worker、社会マーカーとインスペクタ、交渉スレッドと取引の一覧、「Compare: fixed vs learning」（fork + `SetPolicy`）と A/B の率カーブ（ADR-0013 3-9a/b/c）、制度エクスプローラ（ADR-0014 D12、4-7 / 4-8: `Frame.institution` と `institution / timeline / violations / sanctions` 要求、時系列・違反・制裁・率の 4 カード、介入パネルの Enact / Repeal / Charter、「Compare: with vs without rule」、地図の係争の輪郭と制裁のマーカー。判定はすべて cz-web 側）、4-5 の動議（時系列に `motioned / motion_closed` と `by: { motion }`、`institution` ミックス、Enforcer の色） | 実装済み（2b-1/2b-2、3-9a/b/c、4-7/4-8、4-5 は文言と色のみ） |
@@ -146,5 +149,6 @@ UI ↔ Worker は `web/src/protocol.ts`（v7: `init / step / seek / frame / inte
 | 制度（Phase 4-2） | `tests/nomos_rules.rs`, `nomos.rs` / `nomos/index.rs` 単体, `multiverse/tests/fork.rs`, `multiverse/tests/replay.rs` | 3 述語の判定が台本どおりで、同じ intents を規則なし / `nomos` オフの世界に与えて身体・資源・物理の台帳・物理イベントが一致、`except_sanction` の免責と制裁なし規則、制裁の帰属（最古の該当エピソード、REJECT だけの規則は加害を取らない）、係争の期限・死亡・除去・廃止での閉鎖と S / S' のカウンタ、置換 = 旧規則の廃止 + 新 id、布告の JSON と `nomos` オフでの拒否、形式 10 の往復・形式 9 の拒否・不整合 14 種の拒否、Forager / Learner 世界で規則が決定を変えない、同一 tick の `Enact` 2 回 fork でハッシュ一致と `Repeal` の fork、布告・制裁・違反を挟む再生の bit 一致と改竄検出、proptest で serial = parallel = 再実行・NormIndex = 状態・イベント順・カウンタ一致・往復 |
 | プロパティ | `tests/determinism.rs` (proptest) | 任意の config（ライフサイクル ON/OFF、突然変異 ON/OFF）で毎 tick 不変条件、消費なしでエネルギー増加なし、再実行一致 |
 | ベンチ | `benches/step.rs` (criterion) | 1k/10k/100k 体の step（1,000 tick 後の定常状態）、decide 単体（Forager / Reflex 初期重み / Reflex 進化後 / Learner 32 行、4-3 で先占規範下の Reflex 進化後と Learner 128 行とそれぞれの盲目（`see_standing: false`）の変種、4-5 で制度世界 `institution/3000`、4-9 でその盲目の対照 `institution_blind/3000`）、ハッシュ、スナップショット（4-9 で `snapshot_bin_decode/{forager_1000, learner_1000, institution_3000}` = 復号だけとバイト数）、`nomos` オン（規則なし / 先占規範あり、4-3 で Learner 128 行、4-5 で `step/institution/1000` = `--policy institution --enact encroach` の 3,000 tick 後（4-9 から `WorldConfig::institution_preset()` = Enforcer 10% を保つ世界）、4-9 で規則も動議もない参照 `step/institution_norules/1000` = EXP-004 の LE0）の step、`NormIndex` 構築（1.3k 体・係争 2,000 件 / 空 / 4-9 で制度世界の実際の係争） |
-| 計測 | `cz sweep` | 複数シードの個体数帯域（docs/research/experiments/EXP-001） |
+| 実験基盤（Phase 5-1） | `crates/cz-lab/tests/{columns,goldens,exp004_series,stats,design,cohort}.rs`, `cz-lab` の単体, `crates/cz-cli/tests/lab_cli.rs` | 3 ヘッダの文字列を固定し EXP-001〜004 の登録 CSV のヘッダが接頭辞、`goldens.json` からゴールデン 3 本、EXP-004 `le` / `l0` seed 0 の 2,000 tick の series 21 行が登録データと一致、`paired_stats` が `summarize.py` の 10 対比と一致（平均・d_z、CI は ±1e-4 / 幅の 4%）、同一世界の対は CI (0, 0)、絶滅シードの除外、未知の列は誤り、`Design` の往復・優先順位（institution → 128 行 + share、`--preset nomos --policy institution`、evolving → 突然変異、セルの上書きが勝つ、入れ子の merge、`null` で `None`）・拒否（未知フィールド、`seed`、予定の tick ≥ ticks、重複名、未知のセル）、`jobs()` の選択、コホートの枠が出生・死亡・制裁を台帳と一致させる、単体: ブートストラップの決定性と `below` の一様性、四分位、ISO 8601。cz-cli: `cz sweep` ≡ `cz lab run`（`--jobs 1` ≡ `--jobs 2`、seed 順、RUN.json、`summarize`、`--cells` / `--seeds` の選択）、`cz run --policy institution … --ticks 200` の `state_hash` 0x4b945b8bade819ee（4-9） |
+| 計測 | `cz sweep` / `cz lab run` | 複数シードの個体数帯域（docs/research/experiments/EXP-001）、EXP-003 / 004 の `design.json`、RUN.json |
 | 共通ヘルパ | `tests/common/mod.rs` | 手組みの世界と明示的 Intent |

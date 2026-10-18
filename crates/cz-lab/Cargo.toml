@@ -1,0 +1,12 @@
+[package]
+name = "cz-lab"
+description = "Civilization Zero research platform (ADR-0015 D2): experiment designs, one-world runs with the sweep's columns, paired statistics and result manifests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+simulation-core = { path = "../simulation-core" }
+serde.workspace = true
+serde_json.workspace = true

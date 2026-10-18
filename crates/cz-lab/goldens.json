@@ -1,0 +1,33 @@
+{
+  "format": 1,
+  "name": "goldens",
+  "notes": "The three golden worlds (CLAUDE.md; simulation-core/tests/determinism.rs; cz-web/tests/native.rs and wasm.rs) as a design: `dynamics_hash` after 200 ticks must be Forager 0x658ee873d1866501, Learner (32 rows) 0xcb8bc0a9772c09a4, institution world 0xfedc281503180c8e. The institution world is `institution_preset` (nomos_preset, 128-row learners, enforcers held at 100 permille), every tenth founder an Enforcer, the first-occupancy norm Encroach { standing 32, sanction HARM = 1 } decreed at tick 100 (the assembly carried the same norm at tick 51, so the decree replaces rule 0). The expected values are pinned in crates/cz-lab/tests/goldens.rs; cz-lab-web (5-8) reads this file for the same check under wasm.",
+  "base": {
+    "policy": "forager",
+    "width": 128,
+    "height": 128,
+    "agents": 1000,
+    "patches": 24
+  },
+  "ticks": 200,
+  "window_pct": 50,
+  "sample": 100,
+  "seeds": { "start": 42, "count": 1 },
+  "cells": [
+    { "name": "forager" },
+    { "name": "learner", "policy": "learner" },
+    {
+      "name": "institution",
+      "policy": "institution",
+      "schedule": [
+        {
+          "tick": 100,
+          "intervention": {
+            "op": "enact",
+            "norm": { "kind": "encroach", "standing_ticks": 32, "sanction": 1, "except_sanction": false }
+          }
+        }
+      ]
+    }
+  ]
+}

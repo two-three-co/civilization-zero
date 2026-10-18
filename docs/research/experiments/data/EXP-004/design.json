@@ -1,0 +1,120 @@
+{
+  "format": 1,
+  "name": "EXP-004",
+  "notes": "First-occupancy norm and sanctions, the pre-registered H1 experiment (specification: docs/research/experiments/EXP-004-first-occupant-norm.md; ADR-0014 D11). This design records the eleven arms exactly as data/EXP-004/run.sh ran them with `cz sweep` on 2026-10-18 (spec commit 89c48ef, binary of afb3e26); it was written for the record in ADR-0015 5-1 and reproduces the CSVs here column for column except ticks_per_s. Rule R = Encroach { standing_ticks 32, sanction HARM (1) } is decreed at tick 0; n_nosanction decrees sanction NONE (0). The institution cells (`--policy institution --no-enforcer-motions --enforcer-share 100`) are institution_preset with the enforcers' motions off; l0 / l1 are 128-row learners on nomos_preset; n_rand is the random policy on nomos_preset sampled every 10 ticks (extinct by tick 2,000). Main arms run seeds 0-29, the rest 0-9. Contrasts are the paired readings of summarize.py (E_L = encroachments_learner / gathers_learner over the late window (10000, 20000] or the early window (2000, 4000]; learner population; the share of violent deaths; S' = sanctions / violations; S = episodes sanctioned / closed; the summary's decision share of Rest).",
+  "base": {
+    "policy": "institution",
+    "width": 128,
+    "height": 128,
+    "agents": 1000,
+    "patches": 23
+  },
+  "ticks": 20000,
+  "window_pct": 50,
+  "sample": 100,
+  "seeds": { "start": 0, "count": 30 },
+  "cells": [
+    {
+      "name": "le0",
+      "config": { "enforcer_motions": false, "enforcer_share_permille": 100 }
+    },
+    {
+      "name": "le",
+      "config": { "enforcer_motions": false, "enforcer_share_permille": 100 },
+      "schedule": [
+        { "tick": 0, "intervention": { "op": "enact", "norm": { "kind": "encroach", "standing_ticks": 32, "sanction": 1, "except_sanction": false } } }
+      ]
+    },
+    {
+      "name": "l0",
+      "policy": "learner",
+      "preset": "nomos",
+      "config": { "learner_states": 128 }
+    },
+    {
+      "name": "l1",
+      "policy": "learner",
+      "preset": "nomos",
+      "config": { "learner_states": 128 },
+      "schedule": [
+        { "tick": 0, "intervention": { "op": "enact", "norm": { "kind": "encroach", "standing_ticks": 32, "sanction": 1, "except_sanction": false } } }
+      ],
+      "seeds": { "start": 0, "count": 10 }
+    },
+    {
+      "name": "n_rand",
+      "policy": "random",
+      "preset": "nomos",
+      "schedule": [
+        { "tick": 0, "intervention": { "op": "enact", "norm": { "kind": "encroach", "standing_ticks": 32, "sanction": 1, "except_sanction": false } } }
+      ],
+      "seeds": { "start": 0, "count": 10 },
+      "sample": 10
+    },
+    {
+      "name": "n_blind",
+      "config": { "enforcer_motions": false, "enforcer_share_permille": 100, "perception": { "see_standing": false } },
+      "schedule": [
+        { "tick": 0, "intervention": { "op": "enact", "norm": { "kind": "encroach", "standing_ticks": 32, "sanction": 1, "except_sanction": false } } }
+      ],
+      "seeds": { "start": 0, "count": 10 }
+    },
+    {
+      "name": "n_nosanction",
+      "config": { "enforcer_motions": false, "enforcer_share_permille": 100 },
+      "schedule": [
+        { "tick": 0, "intervention": { "op": "enact", "norm": { "kind": "encroach", "standing_ticks": 32, "sanction": 0, "except_sanction": false } } }
+      ],
+      "seeds": { "start": 0, "count": 10 }
+    },
+    {
+      "name": "n_nocomm",
+      "config": { "enforcer_motions": false, "enforcer_share_permille": 100, "perception": { "signal_radius": 0 } },
+      "schedule": [
+        { "tick": 0, "intervention": { "op": "enact", "norm": { "kind": "encroach", "standing_ticks": 32, "sanction": 1, "except_sanction": false } } }
+      ],
+      "seeds": { "start": 0, "count": 10 }
+    },
+    {
+      "name": "n_nomem",
+      "config": { "enforcer_motions": false, "enforcer_share_permille": 100, "memory_slots": 0 },
+      "schedule": [
+        { "tick": 0, "intervention": { "op": "enact", "norm": { "kind": "encroach", "standing_ticks": 32, "sanction": 1, "except_sanction": false } } }
+      ],
+      "seeds": { "start": 0, "count": 10 }
+    },
+    {
+      "name": "w0",
+      "config": { "enforcer_motions": false, "enforcer_share_permille": 100, "learner_health_weight": 2 },
+      "seeds": { "start": 0, "count": 10 }
+    },
+    {
+      "name": "w1",
+      "config": { "enforcer_motions": false, "enforcer_share_permille": 100, "learner_health_weight": 2 },
+      "schedule": [
+        { "tick": 0, "intervention": { "op": "enact", "norm": { "kind": "encroach", "standing_ticks": 32, "sanction": 1, "except_sanction": false } } }
+      ],
+      "seeds": { "start": 0, "count": 10 }
+    }
+  ],
+  "contrasts": [
+    { "name": "LE − LE0 · E_L late", "treat": "le", "control": "le0", "metric": { "ratio": { "num": "encroachments_learner", "den": "gathers_learner" } }, "window": [10000, 20000] },
+    { "name": "LE − LE0 · E_L early", "treat": "le", "control": "le0", "metric": { "ratio": { "num": "encroachments_learner", "den": "gathers_learner" } }, "window": [2000, 4000] },
+    { "name": "LE − LE0 · learners late", "treat": "le", "control": "le0", "metric": { "mean": "alive_learner" }, "window": [10000, 20000] },
+    { "name": "LE − LE0 · violent deaths late", "treat": "le", "control": "le0", "metric": { "ratio": { "num": "deaths_violence", "den": ["deaths_violence", "deaths_starvation", "deaths_old_age"] } }, "window": [10000, 20000] },
+    { "name": "LE0 − L0 · E_L late", "treat": "le0", "control": "l0", "metric": { "ratio": { "num": "encroachments_learner", "den": "gathers_learner" } }, "window": [10000, 20000] },
+    { "name": "LE − L0 · E_L late", "treat": "le", "control": "l0", "metric": { "ratio": { "num": "encroachments_learner", "den": "gathers_learner" } }, "window": [10000, 20000] },
+    { "name": "L1 − L0 · E_L late", "treat": "l1", "control": "l0", "metric": { "ratio": { "num": "encroachments_learner", "den": "gathers_learner" } }, "window": [10000, 20000] },
+    { "name": "N-blind − LE · E_L late", "treat": "n_blind", "control": "le", "metric": { "ratio": { "num": "encroachments_learner", "den": "gathers_learner" } }, "window": [10000, 20000] },
+    { "name": "N-blind − LE · S′ late", "treat": "n_blind", "control": "le", "metric": { "ratio": { "num": "sanctions", "den": "violations" } }, "window": [10000, 20000] },
+    { "name": "N-blind − LE0 · E_L late", "treat": "n_blind", "control": "le0", "metric": { "ratio": { "num": "encroachments_learner", "den": "gathers_learner" } }, "window": [10000, 20000] },
+    { "name": "N-nosanction − LE0 · E_L late", "treat": "n_nosanction", "control": "le0", "metric": { "ratio": { "num": "encroachments_learner", "den": "gathers_learner" } }, "window": [10000, 20000] },
+    { "name": "N-nosanction − LE · E_L late", "treat": "n_nosanction", "control": "le", "metric": { "ratio": { "num": "encroachments_learner", "den": "gathers_learner" } }, "window": [10000, 20000] },
+    { "name": "N-nocomm − LE · E_L late", "treat": "n_nocomm", "control": "le", "metric": { "ratio": { "num": "encroachments_learner", "den": "gathers_learner" } }, "window": [10000, 20000] },
+    { "name": "N-nomem − LE · E_L late", "treat": "n_nomem", "control": "le", "metric": { "ratio": { "num": "encroachments_learner", "den": "gathers_learner" } }, "window": [10000, 20000] },
+    { "name": "N-nomem − LE · S late", "treat": "n_nomem", "control": "le", "metric": { "ratio": { "num": "episodes_sanctioned", "den": "episodes_closed" } }, "window": [10000, 20000] },
+    { "name": "W1 − W0 · E_L late", "treat": "w1", "control": "w0", "metric": { "ratio": { "num": "encroachments_learner", "den": "gathers_learner" } }, "window": [10000, 20000] },
+    { "name": "W1 − LE · E_L late", "treat": "w1", "control": "le", "metric": { "ratio": { "num": "encroachments_learner", "den": "gathers_learner" } }, "window": [10000, 20000] },
+    { "name": "W0 − LE0 · decision share of Rest", "treat": "w0", "control": "le0", "metric": { "summary": "win_act_rest" } }
+  ]
+}

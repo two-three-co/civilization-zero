@@ -6,6 +6,9 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+# build.rs records the compiler for `RUN.json` (`CZ_RUSTC_VERSION`).
+build = "build.rs"
+
 [[bin]]
 name = "cz"
 path = "src/main.rs"
@@ -17,5 +20,6 @@ parallel = ["simulation-core/parallel"]
 [dependencies]
 simulation-core = { path = "../simulation-core" }
 multiverse = { path = "../multiverse" }
+cz-lab = { path = "../cz-lab" }
 serde.workspace = true
 serde_json.workspace = true

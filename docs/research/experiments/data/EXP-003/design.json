@@ -1,0 +1,43 @@
+{
+  "format": 1,
+  "name": "EXP-003",
+  "notes": "Baseline grid without institutions: epsilon × harm_cost × learner_health_weight for nomos_preset (specification: docs/research/experiments/EXP-003-baseline-grid.md; ADR-0014 D10). This design records the fourteen arms exactly as data/EXP-003/run.sh ran them with `cz sweep` on 2026-10-17 (spec commit 5778ea1, binary of 06333b9); it was written for the record in ADR-0015 5-1 and reproduces the CSVs here column for column — the registered files predate the 4-5 / 4-6 columns, which are appended after theirs — except ticks_per_s. Every arm is `nomos` on (tracking only, no rule), 32-row learners unless named otherwise, WorldConfig::default() elsewhere. The contrasts are the paired readings of the document (E_0 of the fixed policy against the default cell, the share of violent deaths along epsilon and harm_cost, the health term's effect on Rest).",
+  "base": {
+    "policy": "learner",
+    "width": 128,
+    "height": 128,
+    "agents": 1000,
+    "patches": 23,
+    "config": { "nomos": true }
+  },
+  "ticks": 20000,
+  "window_pct": 50,
+  "sample": 100,
+  "seeds": { "start": 0, "count": 10 },
+  "cells": [
+    { "name": "grid_e0_h2000_w0", "config": { "learner_epsilon_permille": 0, "harm_cost": 2000, "learner_health_weight": 0 } },
+    { "name": "grid_e0_h2000_w2", "config": { "learner_epsilon_permille": 0, "harm_cost": 2000, "learner_health_weight": 2 } },
+    { "name": "grid_e0_h8000_w0", "config": { "learner_epsilon_permille": 0, "harm_cost": 8000, "learner_health_weight": 0 } },
+    { "name": "grid_e0_h8000_w2", "config": { "learner_epsilon_permille": 0, "harm_cost": 8000, "learner_health_weight": 2 } },
+    { "name": "grid_e10_h2000_w0", "config": { "learner_epsilon_permille": 10, "harm_cost": 2000, "learner_health_weight": 0 } },
+    { "name": "grid_e10_h2000_w2", "config": { "learner_epsilon_permille": 10, "harm_cost": 2000, "learner_health_weight": 2 } },
+    { "name": "grid_e10_h8000_w0", "config": { "learner_epsilon_permille": 10, "harm_cost": 8000, "learner_health_weight": 0 } },
+    { "name": "grid_e10_h8000_w2", "config": { "learner_epsilon_permille": 10, "harm_cost": 8000, "learner_health_weight": 2 } },
+    { "name": "grid_e50_h2000_w0", "config": { "learner_epsilon_permille": 50, "harm_cost": 2000, "learner_health_weight": 0 } },
+    { "name": "grid_e50_h2000_w2", "config": { "learner_epsilon_permille": 50, "harm_cost": 2000, "learner_health_weight": 2 } },
+    { "name": "grid_e50_h8000_w0", "config": { "learner_epsilon_permille": 50, "harm_cost": 8000, "learner_health_weight": 0 } },
+    { "name": "grid_e50_h8000_w2", "config": { "learner_epsilon_permille": 50, "harm_cost": 8000, "learner_health_weight": 2 } },
+    { "name": "forager", "policy": "forager" },
+    { "name": "learner128", "config": { "learner_states": 128 } }
+  ],
+  "contrasts": [
+    { "name": "F − L(50, 2000, 0) · E_0", "treat": "forager", "control": "grid_e50_h2000_w0", "metric": { "summary": "win_encroach_rate" } },
+    { "name": "L128 − L(50, 2000, 0) · E_0", "treat": "learner128", "control": "grid_e50_h2000_w0", "metric": { "summary": "win_encroach_rate" } },
+    { "name": "L(10, 2000, 0) − L(50, 2000, 0) · violent deaths", "treat": "grid_e10_h2000_w0", "control": "grid_e50_h2000_w0", "metric": { "summary_ratio": { "num": "win_deaths_violence", "den": ["win_deaths_violence", "win_deaths_starvation", "win_deaths_old_age"] } } },
+    { "name": "L(0, 2000, 0) − L(10, 2000, 0) · violent deaths", "treat": "grid_e0_h2000_w0", "control": "grid_e10_h2000_w0", "metric": { "summary_ratio": { "num": "win_deaths_violence", "den": ["win_deaths_violence", "win_deaths_starvation", "win_deaths_old_age"] } } },
+    { "name": "L(50, 8000, 0) − L(50, 2000, 0) · violent deaths", "treat": "grid_e50_h8000_w0", "control": "grid_e50_h2000_w0", "metric": { "summary_ratio": { "num": "win_deaths_violence", "den": ["win_deaths_violence", "win_deaths_starvation", "win_deaths_old_age"] } } },
+    { "name": "L(0, 8000, 0) − L(0, 2000, 0) · violent deaths", "treat": "grid_e0_h8000_w0", "control": "grid_e0_h2000_w0", "metric": { "summary_ratio": { "num": "win_deaths_violence", "den": ["win_deaths_violence", "win_deaths_starvation", "win_deaths_old_age"] } } },
+    { "name": "L(50, 2000, 2) − L(50, 2000, 0) · decision share of Rest", "treat": "grid_e50_h2000_w2", "control": "grid_e50_h2000_w0", "metric": { "summary": "win_act_rest" } },
+    { "name": "L(50, 2000, 2) − L(50, 2000, 0) · window mean", "treat": "grid_e50_h2000_w2", "control": "grid_e50_h2000_w0", "metric": { "summary": "win_mean" } }
+  ]
+}
