@@ -185,7 +185,7 @@ export function drawFrame(canvas: HTMLCanvasElement, frame: Frame, selected: num
   ctx.drawImage(scratch.canvas, 0, 0, w * SCALE, h * SCALE);
 
   // One colour per policy kind, indexed by the agent's policy code (POLICY_KINDS order).
-  const colours = [css("--forager"), css("--random"), css("--reflex"), css("--learner")];
+  const colours = [css("--forager"), css("--random"), css("--reflex"), css("--learner"), css("--enforcer")];
   const A = frame.agents;
   let anyAccused = false;
   for (let k = 0; k < A.length; k += AGENT_FIELDS) {

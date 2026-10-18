@@ -13,14 +13,21 @@
 //! | Signal(Propose)   | `to` alive, not self, within `signal_radius` at S(t)      | `signal_cost` (paid on attempt)    | `to` remembers `ProposalFrom`; `Event::Proposed`                   | `NoSuchTarget`, `OutOfEarshot` (cost paid)                   |
 //! | Signal(Accept)    | as Propose, and the actor remembers `ProposalFrom` from `to` at `offer_tick` | `signal_cost` (paid on attempt) | both remember `Promised`, `to` also `Accepted`; `Event::Accepted` | `NoSuchTarget`, `OutOfEarshot`, `NoSuchOffer` (cost paid)   |
 //! | Signal(Reject)    | as Propose                                                | `signal_cost` (paid on attempt)    | `to` remembers `Rejected`; `Event::Rejected`                       | `NoSuchTarget`, `OutOfEarshot` (cost paid)                   |
+//! | Signal(Motion)    | `config.nomos`, the floor free, the motion admissible under the charter (ADR-0014 D7) | `motion_cost` (paid on attempt) | the assembly's one floor holds the motion until `vote_ticks` later; `Event::Motioned` | `FloorTaken`, `NotAmendable`, `NoSuchRule` (cost paid) |
+//! | Signal(Vote)      | a motion is open and the actor has not voted on it        | `signal_cost` (paid on attempt)    | the vote is counted (`Event::Voted` with `record_votes`)           | `NoMotion`, `AlreadyVoted` (cost paid)                       |
 //!
 //! `metabolism_cost` is paid every tick regardless of action. Failures here
-//! are *physical* infeasibility; rule violations (Phase 4) are a different
-//! concept and will never be represented by `Failure`. The social actions
-//! (ADR-0013 D3) are deliberately generic primitives: nothing here is named
-//! after an institution. Negotiation messages (ADR-0013 D5, 3-4) are
-//! delivered and recorded, never enforced: a broken promise is not a
-//! `Failure` of anything, it is a fact the ledger shows.
+//! are *physical or procedural* infeasibility (ADR-0014 D4: the kernel could
+//! not carry the act out — a target out of reach, a floor already taken);
+//! rule violations are a different concept and are never represented by
+//! `Failure`. The social actions (ADR-0013 D3) are deliberately generic
+//! primitives: nothing here is named after an institution. Negotiation
+//! messages (ADR-0013 D5, 3-4) are delivered and recorded, never enforced:
+//! a broken promise is not a `Failure` of anything, it is a fact the ledger
+//! shows. Motions and votes (ADR-0014 D7, 4-5) are the assembly's
+//! procedure: a motion opens the one floor, votes are counted on it, and
+//! the kernel closes it and puts a carried motion into effect — no agent
+//! is ever made to do anything by a rule.
 
 use crate::agent::AgentId;
 use crate::memory::Message;
@@ -91,10 +98,29 @@ pub enum Failure {
     /// accept what one does not hold, as one cannot give what one does not
     /// carry (`EmptyInventory`).
     NoSuchOffer,
+    /// The assembly's one floor is not free for a `Motion` (ADR-0014 D7):
+    /// a motion is already open — or there is no floor at all, in a world
+    /// with `config.nomos` off (or whose motion ids are exhausted).
+    FloorTaken,
+    /// A `Vote` with no motion open to vote on.
+    NoMotion,
+    /// A `Vote` by an agent that has already voted on the open motion;
+    /// one living agent, one vote, and no changing sides.
+    AlreadyVoted,
+    /// The charter's `amendable` is off and the motion would amend: repeal
+    /// a rule, replace the charter, or enact a kind already in force
+    /// (replacement). Enacting a kind not yet in force is not an amendment.
+    /// Decrees are never bound by this (ADR-0014 D8).
+    NotAmendable,
+    /// A `Motion` whose content cannot become a rule or a charter: a
+    /// `Repeal` of a rule id not in force, an `Enact` of a norm with
+    /// unknown sanction bits, or a `Charter` with a permille above 1,000.
+    /// Nothing the kernel's own policies move is ever rejected this way.
+    NoSuchRule,
 }
 
 impl Failure {
-    pub const COUNT: usize = 11;
+    pub const COUNT: usize = 16;
 
     pub fn index(self) -> usize {
         self as usize

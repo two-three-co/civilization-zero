@@ -51,7 +51,7 @@ const OPS: { op: Op; label: string; hint: string }[] = [
   {
     op: "charter",
     label: "Charter",
-    hint: "replace the assembly's charter: quorum and threshold in permille, ticks a motion stays open, whether motions may amend. Read by motions from 4-5; decrees are never bound by it",
+    hint: "replace the assembly's charter: quorum and threshold in permille, ticks a motion stays open, whether motions may amend (ADR-0014 D7). Decrees are never bound by it",
   },
 ];
 

@@ -11,14 +11,18 @@
 //! the kernel writes it (ADR-0005 stays intact).
 
 use crate::agent::AgentId;
+use crate::nomos::MotionKind;
 use serde::{Deserialize, Serialize};
 
 /// What a signal carries. `Say` is a symbol with no built-in meaning (R1:
-/// the vocabulary's meaning is left to learning). The other three are
+/// the vocabulary's meaning is left to learning). The negotiation three are
 /// addressed to `to`, which must be another living agent within
 /// `signal_radius` at the tick's start positions or the message fails
 /// (`Failure::NoSuchTarget` / `Failure::OutOfEarshot`). They never touch
 /// `Agent.last_signal`: a proposal is private correspondence, not speech.
+/// `Motion` and `Vote` (ADR-0014 D7) address the assembly as a whole and
+/// touch no memory and no `last_signal` either: the floor is read from
+/// `Observation::open_motion` / `i_voted`, the ledger records the rest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Message {
@@ -47,23 +51,44 @@ pub enum Message {
     Reject {
         to: AgentId,
     },
+    /// Moves a motion before the assembly (ADR-0014 D7, 4-5): enact a
+    /// norm, repeal a rule or replace the charter. The world has one floor
+    /// (`World.nomos.motion`): the motion opens it if it is free and the
+    /// charter admits the motion, else `Failure::FloorTaken` /
+    /// `NotAmendable` / `NoSuchRule`. Addressed to nobody and heard by
+    /// nobody: the floor is world-wide, whatever `signal_radius` says, and
+    /// `Observation::open_motion` shows it from the next tick. Costs
+    /// `motion_cost` on the attempt. Recorded as `Event::Motioned`.
+    Motion(MotionKind),
+    /// A vote on the open motion: `aye` for it, else against. One living
+    /// agent, one vote (`Failure::AlreadyVoted`); none without a motion
+    /// (`Failure::NoMotion`). The kernel counts it and closes the motion
+    /// `vote_ticks` after it was moved (ADR-0014 D7); `Event::Voted` only
+    /// with `record_votes`.
+    Vote {
+        aye: bool,
+    },
 }
 
 impl Message {
     /// The payload as a memory `value`: the symbol for `Say`, the packed
-    /// `Terms` for `Propose`, the offer tick for `Accept`, 0 for `Reject`.
+    /// `Terms` for `Propose`, the offer tick for `Accept`, 0 for `Reject`,
+    /// the motion's `hash_code` for `Motion`, 1 / 0 for a `Vote`.
     pub fn value(self) -> i64 {
         match self {
             Message::Say(symbol) => symbol as i64,
             Message::Propose { give, want, by, .. } => Terms { give, want, by }.pack(),
             Message::Accept { offer_tick, .. } => offer_tick as i64,
             Message::Reject { .. } => 0,
+            Message::Motion(kind) => kind.hash_code() as i64,
+            Message::Vote { aye } => aye as i64,
         }
     }
 
     /// Stable encoding for `dynamics_hash`. `Say` keeps its 3-3 encoding (the
     /// bare symbol); the addressed messages fold a variant tag, the
-    /// addressee and the payload into one word.
+    /// addressee and the payload into one word; a motion folds its kind's
+    /// code, a vote its side.
     pub fn hash_code(self) -> u64 {
         match self {
             Message::Say(symbol) => symbol as u64,
@@ -74,14 +99,17 @@ impl Message {
                 (2 << 60) ^ (to.0 << 32) ^ offer_tick.wrapping_mul(0x9e37_79b9_7f4a_7c15)
             }
             Message::Reject { to } => (3 << 60) ^ to.0,
+            Message::Motion(kind) => (4 << 60) ^ kind.hash_code(),
+            Message::Vote { aye } => (5 << 60) ^ aye as u64,
         }
     }
 
     /// The agent a message is addressed to; `None` for `Say`, which is heard
-    /// by everyone in earshot.
+    /// by everyone in earshot, and for the assembly's `Motion` / `Vote`,
+    /// which address the world.
     pub fn addressee(self) -> Option<AgentId> {
         match self {
-            Message::Say(_) => None,
+            Message::Say(_) | Message::Motion(_) | Message::Vote { .. } => None,
             Message::Propose { to, .. } | Message::Accept { to, .. } | Message::Reject { to } => {
                 Some(to)
             }
@@ -273,6 +301,10 @@ mod tests {
             Message::Accept { to, offer_tick: 1 }.hash_code(),
             Message::Reject { to }.hash_code(),
             Message::Reject { to: AgentId(4) }.hash_code(),
+            Message::Motion(MotionKind::Repeal { rule: 0 }).hash_code(),
+            Message::Motion(MotionKind::Repeal { rule: 1 }).hash_code(),
+            Message::Vote { aye: true }.hash_code(),
+            Message::Vote { aye: false }.hash_code(),
         ];
         for (i, a) in codes.iter().enumerate() {
             for b in &codes[i + 1..] {
@@ -280,5 +312,12 @@ mod tests {
             }
         }
         assert_eq!(Message::Say(5).hash_code(), 5, "3-3 encoding kept");
+        assert_eq!(Message::Vote { aye: true }.addressee(), None);
+        assert_eq!(
+            Message::Motion(MotionKind::Repeal { rule: 3 }).addressee(),
+            None
+        );
+        assert_eq!(Message::Vote { aye: true }.value(), 1);
+        assert_eq!(Message::Vote { aye: false }.value(), 0);
     }
 }

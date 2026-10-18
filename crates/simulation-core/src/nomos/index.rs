@@ -18,10 +18,13 @@
 //! `HARMABLE` (`harmable_on`), so that a policy can tell whether an
 //! accused agent stands within reach by reading five counts instead of
 //! walking five cells (4-9: `Observation::violator_adjacent`, behind the
-//! reflex feature `VIOLATOR_ADJACENT` and the learner bit of that name).
-//! The counts are allocated the first time an agent turns out harmable:
-//! a world with no rule, or none whose sanction set allows a harm, or no
-//! open episode under such a rule, pays nothing for them.
+//! reflex feature `VIOLATOR_ADJACENT` and the learner bit of that name),
+//! and, per harmable agent, the `since` of the episode a harm would be
+//! attributed to (`harmable_since`, 4-5: what the `Enforcer` reads to
+//! sanction each episode once). Both are allocated the first time an
+//! agent turns out harmable: a world with no rule, or none whose sanction
+//! set allows a harm, or no open episode under such a rule, pays nothing
+//! for them.
 //!
 //! Construction is one merge walk over `nomos.standing` (ascending by
 //! agent id) and `agents` (ascending by id): O(agents + episodes), no hash
@@ -38,6 +41,10 @@ pub struct NormIndex {
     /// How many agents of each cell (index = `Bounds::index`) carry
     /// `HARMABLE`, saturating at `u16::MAX`; empty until the first one.
     harmable: Vec<u16>,
+    /// Per agent index, the `since` of the oldest open episode under a
+    /// rule that lets a harm answer it (`u64::MAX` for an agent that is
+    /// not harmable); empty until the first harmable agent.
+    since: Vec<u64>,
     /// The grid `harmable` is laid out over.
     bounds: Bounds,
     /// The rule in force per kind (index = `NormKind::index`).
@@ -61,6 +68,7 @@ impl NormIndex {
         Self {
             flags: Vec::new(),
             harmable: Vec::new(),
+            since: Vec::new(),
             bounds: Bounds {
                 width: 0,
                 height: 0,
@@ -82,6 +90,7 @@ impl NormIndex {
             return Self {
                 flags: Vec::new(),
                 harmable: Vec::new(),
+                since: Vec::new(),
                 bounds,
                 rules,
                 motion,
@@ -89,6 +98,7 @@ impl NormIndex {
         }
         let mut flags = vec![0u8; agents.len()];
         let mut harmable: Vec<u16> = Vec::new();
+        let mut since: Vec<u64> = Vec::new();
         // Merge walk: both sequences ascend by agent id.
         let mut i = 0usize;
         for s in &nomos.standing {
@@ -116,13 +126,19 @@ impl NormIndex {
                     0
                 };
             // An agent counts once in its cell, however many of its
-            // episodes allow a harm.
-            if bits & Self::HARMABLE != 0 && flags[i] & Self::HARMABLE == 0 {
-                if harmable.is_empty() {
-                    harmable = vec![0u16; bounds.cell_count()];
+            // episodes allow a harm; the episode a harm would answer is
+            // the oldest of those (`Nomos::sanction`: smallest `since`,
+            // ties to the smaller rule id — the first met in this walk).
+            if bits & Self::HARMABLE != 0 {
+                if flags[i] & Self::HARMABLE == 0 {
+                    if harmable.is_empty() {
+                        harmable = vec![0u16; bounds.cell_count()];
+                        since = vec![u64::MAX; agents.len()];
+                    }
+                    let c = &mut harmable[bounds.index(agents[i].pos)];
+                    *c = c.saturating_add(1);
                 }
-                let c = &mut harmable[bounds.index(agents[i].pos)];
-                *c = c.saturating_add(1);
+                since[i] = since[i].min(s.since);
             }
             flags[i] |= bits;
         }
@@ -145,6 +161,7 @@ impl NormIndex {
         Self {
             flags,
             harmable,
+            since,
             bounds,
             rules,
             motion,
@@ -203,6 +220,13 @@ impl NormIndex {
             .unwrap_or(0)
     }
 
+    /// The tick the episode a harm on agent `i` would answer was opened
+    /// (`Standing.since` of its oldest harm-answerable episode); `None`
+    /// when `i` is not `harmable`.
+    pub fn harmable_since(&self, i: usize) -> Option<u64> {
+        self.since.get(i).copied().filter(|&t| t != u64::MAX)
+    }
+
     pub fn rejectable(&self, i: usize) -> bool {
         self.flags(i) & Self::REJECTABLE != 0
     }
@@ -256,11 +280,15 @@ mod tests {
     }
 
     fn standing(agent: u64, rule: u16) -> Standing {
+        standing_since(agent, rule, 1)
+    }
+
+    fn standing_since(agent: u64, rule: u16, since: u64) -> Standing {
         Standing {
             agent: AgentId(agent),
             rule,
-            since: 1,
-            last: 1,
+            since,
+            last: since,
             against: AgentId(0),
             violations: 1,
             sanctions: 0,
@@ -409,6 +437,68 @@ mod tests {
                 assert_eq!(ix.harmable_on(Pos::new(x, y)), 0);
             }
         }
+        assert!((0..5).all(|i| ix.harmable_since(i).is_none()));
+    }
+
+    #[test]
+    fn harmable_since_is_the_episode_a_harm_would_answer() {
+        let agents: Vec<Agent> = [1u64, 4, 6].into_iter().map(agent).collect();
+        let mut n = Nomos::default();
+        n.enact(
+            Norm {
+                kind: NormKind::Encroach,
+                standing_ticks: 8,
+                sanction: Sanction::HARM,
+                except_sanction: false,
+            },
+            0,
+        );
+        n.enact(
+            Norm {
+                kind: NormKind::BrokenPromise,
+                standing_ticks: 8,
+                sanction: Sanction::REJECT,
+                except_sanction: false,
+            },
+            0,
+        );
+        n.enact(
+            Norm {
+                kind: NormKind::Harm,
+                standing_ticks: 8,
+                sanction: Sanction::ALL,
+                except_sanction: true,
+            },
+            0,
+        );
+        // 4: harmable under rules 0 (since 5) and 2 (since 3): the harm
+        // rule's older episode is the one a harm answers. 6: accused only
+        // under the reject-only rule 1, so not harmable. 1: nothing.
+        n.standing = vec![
+            standing_since(4, 0, 5),
+            standing_since(4, 2, 3),
+            standing_since(6, 1, 2),
+        ];
+        let ix = NormIndex::build(&agents, &n, GRID);
+        assert_eq!(ix.harmable_since(0), None);
+        assert_eq!(ix.harmable_since(1), Some(3));
+        assert_eq!(ix.harmable_since(2), None, "rejectable is not harmable");
+        assert_eq!(ix.harmable_since(7), None, "out of range");
+        assert_eq!(
+            n.sanction(AgentId(4), 6, Via::Harm),
+            Some((2, NormKind::Harm)),
+            "the kernel attributes the harm to the same episode"
+        );
+        // Same `since` under two harm-answerable rules: the smaller rule
+        // id wins in the kernel, and the index reports that tick.
+        n.standing = vec![standing_since(4, 0, 5), standing_since(4, 2, 5)];
+        let ix = NormIndex::build(&agents, &n, GRID);
+        assert_eq!(ix.harmable_since(1), Some(5));
+        assert_eq!(
+            n.sanction(AgentId(4), 6, Via::Harm),
+            Some((0, NormKind::Encroach))
+        );
+        assert!(NormIndex::empty().harmable_since(0).is_none());
     }
 
     #[test]

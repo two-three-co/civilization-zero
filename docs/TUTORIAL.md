@@ -79,21 +79,21 @@ frontier（到達した最大 tick）にいるとき、「Intervene」カード�
 
 ランダム歩行者は取引も持ちかける: 「今 give 渡すから、期限までに want 返せ」（`Propose`）に相手が `Accept` / `Reject` で答え、受諾されれば両者の記憶に「約束」が書かれる。**約束の履行は強制されない**。渡すも返すも普通の `Transfer` で、守られたかどうかは台帳を読んで初めて分かる（ADR-0013 D5）。それを読むのがスレッドである。
 
-1. **https://two-three-co.github.io/civilization-zero/?policy=mixed&seed=23** を開く（`?seed=` は世界のシード。既定の 42 には提案 → 受諾 → 移転 → 返済の 4 手順がそろった取引が歩行者の絶滅までに 1 つもないので、ここでは 23 を使う。`cz run --seed 23 --policy mixed` と同じ世界で、state hash も一致する）。
-2. `tick` 欄に 40 と入れて **Go**。右列の「Deals · ledger」で **Find deals** を押す。直近 2,000 tick の受諾された提案がすべて出て、それぞれ **KEPT**（両側が期限内に渡した）/ **OPEN**（期限前で未完）/ **BROKEN**（期限を過ぎて不足）と判定されている。判定はページではなくカーネル側（wasm の Rust）が台帳から行う。
-3. いちばん上の `#909 → #363 · 2 for 1 by tick 33 · KEPT` の **read** を押す。「Agent」カードの下の **Thread · with #363** に、2 個体の間で起きたことが「tick · 誰が → 誰に · 何を」で古い順に並ぶ:
+1. **https://two-three-co.github.io/civilization-zero/?policy=random** を開く（`?seed=` は世界のシード、既定は 42。`cz run --seed 42 --policy random` と同じ世界で、state hash も一致する。`mixed` の seed 42 には提案 → 受諾 → 移転 → 返済の 4 手順がそろった取引が歩行者の絶滅までに 1 つもないので、ここでは `random` を使う。4-5 でランダム歩行者が動議と投票も引くようになり、以前の例（seed 23 の #909 ↔ #363）は消えた）。
+2. `tick` 欄に 50 と入れて **Go**。右列の「Deals · ledger」で **Find deals** を押す。直近 2,000 tick の受諾された提案がすべて出て、それぞれ **KEPT**（両側が期限内に渡した）/ **OPEN**（期限前で未完）/ **BROKEN**（期限を過ぎて不足）と判定されている。判定はページではなくカーネル側（wasm の Rust）が台帳から行う。
+3. 一覧の `#852 → #569 · 1 for 1 by tick 47 · KEPT` の **read** を押す。「Agent」カードの下の **Thread · with #569** に、2 個体の間で起きたことが「tick · 誰が → 誰に · 何を」で古い順に並ぶ:
 
    ```
-   tick 17  #909 → #363  proposed: give 2 now, want 1 back by tick 33 · accepted · deal 4
-   tick 18  #909 → #363  gave 1 food · repayment · deal 3
-   tick 19  #363 → #909  accepted the offer of tick 17: #909 gives 2 now, #363 returns 1 by tick 33 · deal 4
-   tick 19  #909 → #363  gave 1 food · the give · deal 4
-   tick 20  #363 → #909  gave 1 food · repayment · deal 4
+   tick 32  #852 → #569  proposed: give 1 now, want 1 back by tick 47 · accepted · deal 2
+   tick 33  #569 → #852  accepted the offer of tick 32: #852 gives 1 now, #569 returns 1 by tick 47 · deal 2
+   tick 34  #852 → #569  gave 1 food · the give · deal 2
+   tick 36  #569 → #852  rejected the offer of tick 32
+   tick 39  #569 → #852  gave 1 food · repayment · deal 2
    ```
 
-   その下の **deal 4** が判定: `#909 gives 2 (given 2), #363 returns 1 (repaid 1) · kept at tick 20`。同じ 2 個体の tick 1〜14 の取引 1〜3 は BROKEN で、誰が何を渡さなかったか（`broken by #363: deadline tick 13 passed`）まで読める。tick 22 の `rejected the offer of tick 17` は、受諾した相手が同じ提案を後から拒否したもの（カーネルは何も検査しない）。
+   その下の **deal 2** が判定: `#852 gives 1 (given 3), #569 returns 1 (repaid 1) · kept at tick 39`（提案者は約束の後も渡し続けたので given は 3）。同じ 2 個体の tick 7 の取引 1 は BROKEN で、誰が何を渡さなかったか（`broken by #569: deadline tick 8 passed`）まで読める。tick 36 の `rejected the offer of tick 32` は、受諾した相手が同じ提案を後から拒否したもの（カーネルは何も検査しない）。
 4. 相手を替えるには、Thread の見出しの下に並ぶ `#id` ボタン（選択個体の記憶と台帳に出てくる相手。交渉相手が先）か、id を入れて **read**。地図で個体をクリックしても同じ。
-5. タイムラインで tick 19 まで戻すと deal 4 は **OPEN**（期限 33 まで待っている）に、tick 14 まで戻すとまだ存在しない。スレッドは「その tick のビューで読んだ台帳」で、ページは何も覚えていない。再生すると取引が増えていき、歩行者が死んだ後もスレッドは残る（台帳は個体より長生きする）。
+5. タイムラインで tick 35 まで戻すと deal 2 は **OPEN**（期限 47 まで待っている）に、tick 30 まで戻すとまだ存在しない。スレッドは「その tick のビューで読んだ台帳」で、ページは何も覚えていない。再生すると取引が増えていき、歩行者が死んだ後もスレッドは残る（台帳は個体より長生きする）。
 
 読み方の規則（ADR-0013 D5 の 3-9b での確定）: 取引の窓は提案の tick から期限（提案 tick + by）まで。窓の中で提案者が渡した合計が give 以上、受諾者が返した合計が want 以上になれば kept。期限を過ぎてどちらかが不足なら broken。移転と約束の対応はカーネルが記録しないので、窓が重なる取引は同じ移転を両方で数える。
 
@@ -125,22 +125,22 @@ frontier（到達した最大 tick）にいるとき、「Intervene」カード�
 Phase 4（ADR-0014）では、世界の中に**規則**（先占の侵害・約束の不履行・加害のどれを違反とし、違反者を何 tick 係争中にし、どの応答を制裁と数えるか）を置ける。規則は物理を変えない: 違反は禁止されず、制裁は普通の加害や拒否で、「係争中の個体に届いた」ときにカーネルが制裁と**読む**だけである（D1 / D4）。画面はカーネルと cz-web の読み手が書いた事実を並べるだけで、ページは何も判定しない（D12）。
 
 1. **https://two-three-co.github.io/civilization-zero/?nomos=1&policy=learner&seed=3** を開く（`?nomos=1` で世界は `WorldConfig::nomos_preset()`（EXP-003 の決定: 制度オン・ε 10‰・加害コスト 2,000）で建てられ、`cz run --preset nomos --seed 3 --policy learner` と同じ hash になる。ヘッダの **institutions** チェックでも同じ。既定の URL では制度が無く、布告はカーネルに拒否される）。ヘッダに `institution · 0 rules · 0 accused` のバッジが出る。
-2. `tick` 欄に 300 と入れて **Go**。「Intervene」で **Enact** を選ぶ: norm = encroachment（先占の侵害）、standing ticks = 32、sanction: harm（CLI `--enact encroach` の既定）。**Apply** を押すと「Ledger · interventions」に `tick 300 enact encroachment · accused 32 ticks after each violation · sanction: harm`、その下の「Institution · ledger」の **Timeline · decrees** に `tick 300 rule #0 enacted by decree: …` が出る。規則 id `#0` はカーネルが付けたもので、読み手が台帳の布告を原点から辿って復元している（4-7）。同じカードの上段は状態そのもの: 施行中の規則、係争中の件数（種別）、憲章（動議は 4-5 まで無い）。
+2. `tick` 欄に 300 と入れて **Go**。「Intervene」で **Enact** を選ぶ: norm = encroachment（先占の侵害）、standing ticks = 32、sanction: harm（CLI `--enact encroach` の既定）。**Apply** を押すと「Ledger · interventions」に `tick 300 enact encroachment · accused 32 ticks after each violation · sanction: harm`、その下の「Institution · ledger」の **Timeline · decrees** に `tick 300 rule #0 enacted by decree: …` が出る。規則 id `#0` はカーネルが付けたもので、読み手が台帳の布告を原点から辿って復元している（4-7）。同じカードの上段は状態そのもの: 施行中の規則、係争中の件数（種別）、憲章、開いている動議（4-5。ランダム歩行者と `Enforcer` が動議を出し、投票する。`?policy=random` や `?policy=institution` の世界では **Timeline** に `motion #k moved by #a: enact …` → `motion #k carried: ayes … · nays … · n alive` → `rule #r enacted by motion #k` と並ぶ）。
 3. `30 tick/frame` で **Play**。バッジが `institution · 1 rule · 500 accused` 前後になり、地図の係争中の個体に輪郭が付く（琥珀 = 係争中、紫 = 係争中でいま殴ると制裁になる）。赤い ✕ の加害のうちカーネルが制裁と読んだものには紫の大きな ✕ が重なる。右列:
    - **Norms · rates**: 直近 100 tick の台帳差分。E（侵害/採集）≈ 0.14、違反 ≈ 23/tick、制裁 ≈ 3〜4/tick、S′（制裁/違反）≈ 0.15、S（制裁された係争/閉じた係争）≈ 0.2、係争中 ≈ 520。`cz sweep` の窓の列と同じ定義で、速度を変えても読みは同じ。
    - **Violations · recent**: 既定では違反は台帳に記録されない（約 21 件/tick、D9）ので、いま開いている係争が `#6324 → #7027 accused under rule #0 (encroachment) since tick 2567 (violations 4, sanctions 1) · until tick 2599` のように並ぶ。**record violations**（`&violations=1`）で開き直すと、直近 100 tick の違反が「誰が・どの規則を・誰に・いつ・根拠（`gathered 2 on cell (40, 119) where the other arrived first`）」で並ぶ（tick 2,580 で約 2,350 件）。
    - **Sanctions**: 直近 100 tick の制裁が「`#7286 → #5139 sanctioned by a harm under rule #0 (encroachment) · answering the episode open since tick 2560 (violations 3, sanctions 1, still open)`」のように、**答えた係争**付きで並ぶ。係争が閉じた後は、違反が記録されていれば `closed · rebuilt from the recorded violations`、無ければ `episode unknown`。
-   - 一覧の `#id` を押すか地図をクリックすると「Agent」カードに **arrived**（先占の到着 tick）、**standing**（`Accused under rule #0 (encroachment) since tick 56 (violations 1, sanctions 1), until tick 88 · against #527`）、**voted**（動議が無いので `no motion open`）が出て、記憶と台帳に `sanctioned by #527 (−20 health)` / `sanctioned by #527 (harm, rule #0)` が読める。
+   - 一覧の `#id` を押すか地図をクリックすると「Agent」カードに **arrived**（先占の到着 tick）、**standing**（`Accused under rule #0 (encroachment) since tick 56 (violations 1, sanctions 1), until tick 88 · against #527`）、**voted**（開いている動議に投票済みか。動議が無ければ `no motion open`）が出て、記憶と台帳に `sanctioned by #527 (−20 health)` / `sanctioned by #527 (harm, rule #0)` が読める。
 4. 「Branches」の **Compare: with vs without rule** を押す（隣の選択は規則の種類。既定は encroachment）。A にその種類の規則が有れば B はそれを **repeal** し、無ければ B に CLI 既定の norm を **enact** する。ここでは B が `repeal rule #0` の世界になる。`15 tick/frame` で **Play** すると、Norms · rates の表に `A · B` の 2 列が出て B は違反・制裁とも 0/tick（規則が無いので何も違反にならない）、E は A も B も ≈ 0.14（侵害という**事実**は規則が無くても数える）。比較表には規則数・係争・侵害・違反・制裁の行が加わる（tick 2,715 で違反 55,712 / 52,582、制裁 15,642 / 15,183、alive +3）。
 5. **Verify: fork again** → **MATCH**。布告も介入なので、2b-6 / 3-9c と同じ契約（同じスナップショット + 同じ介入 = 同じ歴史）がそのまま成り立つ。
 6. 比較の読み方の注意: **Random の世界では規則の有無で物理が変わらない**（`?nomos=1&policy=random&seed=3` で tick 40 に布告し tick 80 で比べると、A / B の alive・食料・加害・発信は同一で、違反 23 / 18・制裁 13 / 5 だけが違う）。ランダム歩行者は規範を読まないので、制裁は「たまたま係争中の個体に届いた加害」である。学習者（Reflex / Learner）は観測の規範情報（`ACCUSED` / `VIOLATOR_ADJACENT` など、4-3）を読み、Harm のアクチュエータが係争中の隣人を優先するので、規則の有無で決定が分かれる。どちらの世界でも「制度が何を変えたか」は事前登録した指標（EXP-004、4-6）でしか言えない。
-7. **Repeal** は施行中の規則を id で選んで外す（開いている係争は閉じ、台帳の `episodes_closed` に数えられる）。**Charter** は定足数・閾値・期限・改正可否の 4 欄で、動議（4-5）が読む。どちらも台帳に `Intervened` として載り、Timeline · decrees に `rule #0 repealed by decree (…)` / `charter replaced by decree: …` と出る。
+7. **Repeal** は施行中の規則を id で選んで外す（開いている係争は閉じ、台帳の `episodes_closed` に数えられる）。**Charter** は定足数・閾値・期限・改正可否の 4 欄で、動議の閉会がこれを読む（可決 = 投票数 ≥ 定足数 × 生存数、賛成 ≥ 閾値 × 投票数、賛成 1 票以上。`amendable` を外すと動議による改正（廃止・憲章・置換）が `NotAmendable` で止まり、布告は止まらない）。どちらも台帳に `Intervened` として載り、Timeline · decrees に `rule #0 repealed by decree (…)` / `charter replaced by decree: …` と出る。
 
 ## 分かっている制限
 
 - 分岐は A と B の 1 組だけ。B をさらに分岐することはまだできない。
 - B の介入履歴と個体インスペクタは未対応（B の地図にもマーカーは出る）。
 - 世界の設定は seed（`?seed=`、既定 42）、方策構成（forager / mixed / random / reflex / learner / mixed-learning）、制度の有無（`?nomos=1`。オンなら `nomos_preset` = ε 10‰・加害コスト 2,000）と違反の記録（`?violations=1`）だけ変えられる。128×128、1,000 体、学習者の表の行数（32）は固定。
-- 制度は布告（Enact / Repeal / Charter）でしか変わらない。動議・投票・`Enforcer`（議場で規則を提案し守らせる台本の方策）と `institution` の方策構成は 4-5 で入る。規則は物理を変えず、制裁は普通の加害・拒否をカーネルが「制裁」と読んだもの（ADR-0014 D1 / D4）。率のカーブの E は方策別ではなく世界全体（方策別は `cz sweep`）。学習者の報酬は自分のエネルギーだけなので、分かち合いは出なくて当然（ADR-0013 D6）。
+- 制度は布告（Enact / Repeal / Charter）と、議場の動議（4-5）で変わる。動議を出し投票するのはランダム歩行者（帰無モデル: 16 行動を一様に引く）と `Enforcer`（議場で先占の規範を提案し、賛成し、係争中の隣人を制裁し、約束を守り、他人の先に着いたセルでは採らない台本の方策。設計者の知識そのもので何の証拠にもならない）だけで、学習方策は Phase 4 では立法しない（ADR-0014 D7）。ヘッダの world の **institution**（Learner 128 行 90% + Enforcer 10%、`nomos_preset`）がその世界。規則は物理を変えず、制裁は普通の加害・拒否をカーネルが「制裁」と読んだもの（ADR-0014 D1 / D4）。率のカーブの E は方策別ではなく世界全体（方策別は `cz sweep`）。学習者の報酬は自分のエネルギーだけなので、分かち合いは出なくて当然（ADR-0013 D6）。
 - 発信（`Say`）は既定では台帳に載らない（`record_signals` で ON）。地図の輪は各個体の「最後の発信」から描いているので、巻き戻した tick では消える。移転・加害・提案・受諾・拒否は常に台帳にある。
 - 学習者の ε と加害のコストは固定（既定世界 5% / 制度の世界 10‰、加害コストは `nomos_preset` で 2,000）。既定世界の暴力水準はこの 2 つの帰結で、学習の結果ではない（docs/research/RISKS.md R8）。

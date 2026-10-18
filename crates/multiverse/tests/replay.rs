@@ -358,6 +358,147 @@ fn institution_worlds_replay_bit_exactly_from_snapshot_and_ledger() {
     }
 }
 
+/// ADR-0014 4-5 acceptance: a world whose assembly legislates replays
+/// bit-exactly. The open motion and its voters are state; motions, votes
+/// (recorded here), closings and their effects are ledger events the
+/// kernel must reproduce; a decree landing while a motion is open is
+/// replayed from the ledger at its tick.
+#[test]
+fn motion_worlds_replay_bit_exactly_from_snapshot_and_ledger() {
+    let base = World::generate(
+        WorldConfig {
+            seed: 23,
+            width: 48,
+            height: 48,
+            initial_agents: 150,
+            patch_count: 6,
+            record_votes: true,
+            charter: Charter {
+                quorum_permille: 50,
+                threshold_permille: 500,
+                vote_ticks: 8,
+                amendable: true,
+            },
+            ..WorldConfig::nomos_preset()
+        },
+        |i| match i % 3 {
+            0 => PolicyKind::Random,
+            1 => PolicyKind::Enforcer,
+            _ => PolicyKind::Learner,
+        },
+    )
+    .unwrap();
+    // A decree in the middle of the run (whatever the floor holds then)
+    // and a new charter later on.
+    let schedule = [
+        (
+            200u64,
+            Intervention::Enact {
+                norm: Norm {
+                    kind: NormKind::Harm,
+                    standing_ticks: 16,
+                    sanction: Sanction::ALL,
+                    except_sanction: true,
+                },
+            },
+        ),
+        (
+            400,
+            Intervention::Charter {
+                charter: Charter {
+                    quorum_permille: 100,
+                    threshold_permille: 667,
+                    vote_ticks: 4,
+                    amendable: false,
+                },
+            },
+        ),
+    ];
+    let keep = [0u64, 50, 99, 100, 199, 200, 201, 300, 399, 400, 401, 600];
+    let mut mv = Multiverse::new(base.clone(), 100);
+    let r = BranchId(0);
+    let mut direct = base.clone();
+    let mut kept = Vec::new();
+    for tick in 0..600u64 {
+        if keep.contains(&tick) {
+            kept.push((tick, direct.clone()));
+        }
+        for (t, iv) in schedule {
+            if t == tick {
+                mv.intervene(r, iv).unwrap();
+                direct.intervene(iv).unwrap();
+            }
+        }
+        mv.step(r, 1).unwrap();
+        direct.step();
+    }
+    kept.push((600, direct.clone()));
+    let head = mv.branch(r).unwrap().head();
+    assert_eq!(head, &direct);
+    head.check_invariants().unwrap();
+    let l = &head.ledger;
+    assert!(l.motions > 0 && l.votes > 0, "{l:?}");
+    assert!(
+        l.motions_carried + l.motions_defeated > 0,
+        "motions closed: {} carried, {} defeated",
+        l.motions_carried,
+        l.motions_defeated
+    );
+    let log = mv.branch(r).unwrap().log();
+    let count = |f: fn(&Event) -> bool| log.events().iter().filter(|e| f(e)).count() as u64;
+    assert_eq!(count(|e| matches!(e, Event::Motioned { .. })), l.motions);
+    assert_eq!(count(|e| matches!(e, Event::Voted { .. })), l.votes);
+    assert_eq!(
+        count(|e| matches!(e, Event::MotionClosed { .. })),
+        l.motions_carried + l.motions_defeated
+    );
+    assert_eq!(
+        count(|e| matches!(e, Event::MotionClosed { carried: true, .. })),
+        l.motions_carried
+    );
+    assert_eq!(head.nomos.charter.vote_ticks, 4);
+    for (t, expected) in kept {
+        let restored = mv.state_at(r, t).unwrap();
+        assert_eq!(restored, expected, "tick {t}");
+    }
+    // From the tick-300 snapshot through the new charter to the head,
+    // every event verified — motions, votes, closings and effects included.
+    let mut w = mv.state_at(r, 300).unwrap();
+    let stats = replay(&mut w, log, 600).unwrap();
+    assert_eq!((stats.from, stats.to, stats.interventions), (300, 600, 1));
+    assert_eq!(&w, head);
+    assert_eq!(
+        stats.events_checked,
+        log.range(300..600)
+            .iter()
+            .filter(|e| !matches!(e, Event::Intervened { .. }))
+            .count()
+    );
+    // The same world built again from bytes replays the same.
+    let mut w = World::from_bytes(&mv.state_at(r, 100).unwrap().to_bytes()).unwrap();
+    replay(&mut w, log, 600).unwrap();
+    assert_eq!(w.state_hash(), head.state_hash());
+    // A closing with another tally is a different history.
+    let mut tampered = EventLog::new();
+    let mut victim_tick = None;
+    for e in log.events() {
+        let mut e = *e;
+        if victim_tick.is_none() && e.tick() > 100 {
+            if let Event::MotionClosed { ayes, tick, .. } = &mut e {
+                *ayes += 1;
+                victim_tick = Some(*tick);
+            }
+        }
+        tampered.push(e).unwrap();
+    }
+    let victim_tick = victim_tick.expect("a motion closed after tick 100");
+    let mut w = mv.state_at(r, 100).unwrap();
+    match replay(&mut w, &tampered, 600) {
+        Err(ReplayError::Diverged { tick, .. }) => assert_eq!(tick, victim_tick),
+        other => panic!("expected divergence, got {other:?}"),
+    }
+}
+
 #[test]
 fn replay_detects_a_tampered_or_foreign_ledger() {
     let mv = driven(300, 100);

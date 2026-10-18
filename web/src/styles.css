@@ -9,6 +9,7 @@
   --random: #1d4ed8;
   --reflex: #ca8a04;
   --learner: #db2777;
+  --enforcer: #0f766e;
   --sel: #000;
   --warn: #b45309;
 }
@@ -24,6 +25,7 @@
     --random: #60a5fa;
     --reflex: #facc15;
     --learner: #f472b6;
+    --enforcer: #2dd4bf;
     --sel: #fff;
     --warn: #fbbf24;
   }

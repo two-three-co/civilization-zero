@@ -10,11 +10,13 @@ import {
   SANCTION_HARM,
   SANCTION_REJECT,
   type Accused,
+  type By,
   type Charter,
   type Episode,
   type Grounds,
   type Institution,
   type Intervention,
+  type MotionKind,
   type Norm,
   type NormKind,
   type OpenMotion,
@@ -69,15 +71,23 @@ export function describeCharter(c: Charter): string {
   return `quorum ${c.quorum_permille}‰ of the living · threshold ${c.threshold_permille}‰ of the votes · ${c.vote_ticks} ticks per motion · ${c.amendable ? "amendable" : "not amendable"} by motion`;
 }
 
-/** The open motion in one line (none before 4-5). */
+/** What a motion asks for (`MotionKind`), as a verb phrase. */
+export function describeMotionKind(kind: MotionKind): string {
+  return "enact" in kind
+    ? `enact ${describeNorm(kind.enact.norm)}`
+    : "repeal" in kind
+      ? `repeal rule #${kind.repeal.rule}`
+      : `charter: ${describeCharter(kind.charter.charter)}`;
+}
+
+/** The open motion in one line. */
 export function describeMotion(m: OpenMotion): string {
-  const what =
-    "enact" in m.kind
-      ? `enact ${describeNorm(m.kind.enact.norm)}`
-      : "repeal" in m.kind
-        ? `repeal rule #${m.kind.repeal.rule}`
-        : `charter: ${describeCharter(m.kind.charter.charter)}`;
-  return `motion #${m.id} by #${m.by}, opened tick ${m.opened}: ${what} · ayes ${m.ayes} · nays ${m.nays}`;
+  return `motion #${m.id} by #${m.by}, opened tick ${m.opened}: ${describeMotionKind(m.kind)} · ayes ${m.ayes} · nays ${m.nays}`;
+}
+
+/** `decree` or `motion #k`: who put a rule or charter in place (`By`). */
+export function describeBy(by: By): string {
+  return by === "decree" ? "decree" : `motion #${by.motion.id}`;
 }
 
 /** The decree wording the intervention history and the Branches caption share. */
@@ -92,15 +102,19 @@ export function describeDecree(iv: Extract<Intervention, { op: "enact" | "repeal
   }
 }
 
-/** One timeline entry as the reader wrote it (the rule id is the one the kernel assigned, recovered by the reader). */
+/** One timeline entry as the reader wrote it (a decree's rule id is the one the kernel assigned, recovered by the reader; a motion's events carry theirs). */
 export function describeTimelineEntry(e: TimelineEntry): string {
   switch (e.kind) {
     case "enacted":
-      return `rule #${e.rule} enacted by ${e.by}: ${describeNorm(e.norm)}${e.replaced !== null ? ` · replaced rule #${e.replaced}` : ""}`;
+      return `rule #${e.rule} enacted by ${describeBy(e.by)}: ${describeNorm(e.norm)}${e.replaced !== null ? ` · replaced rule #${e.replaced}` : ""}`;
     case "repealed":
-      return `rule #${e.rule} repealed by ${e.by}${e.norm ? ` (${describeNorm(e.norm)})` : ""}`;
+      return `rule #${e.rule} repealed by ${describeBy(e.by)}${e.norm ? ` (${describeNorm(e.norm)})` : ""}`;
     case "chartered":
-      return `charter replaced by ${e.by}: ${describeCharter(e.charter)}`;
+      return `charter replaced by ${describeBy(e.by)}: ${describeCharter(e.charter)}`;
+    case "motioned":
+      return `motion #${e.motion} moved by #${e.by}: ${describeMotionKind(e.asks)}`;
+    case "motion_closed":
+      return `motion #${e.motion} ${e.carried ? "carried" : "defeated"}: ayes ${e.ayes} · nays ${e.nays} · ${e.alive} alive${e.carried ? "" : " (quorum, threshold or no aye)"}`;
   }
 }
 

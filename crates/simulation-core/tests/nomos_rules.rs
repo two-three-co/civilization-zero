@@ -234,7 +234,7 @@ fn an_encroachment_is_a_violation_under_a_rule_and_a_harm_on_the_accused_is_a_sa
 
     // Tick 1: the encroachment of 4-1 is now a violation of rule 0 —
     // recorded, counted, and C stands accused from the next tick.
-    assert_eq!(r[1].encroachments, [1, 0, 0, 0]);
+    assert_eq!(r[1].encroachments, [1, 0, 0, 0, 0]);
     assert_eq!(r[1].violations, by_kind(ENCROACH, 1));
     assert_eq!(
         r[1].events,
@@ -1066,7 +1066,7 @@ fn snapshots_carry_the_institutions_and_inconsistent_states_are_rejected() {
     assert_eq!(World::from_snapshot(&json).unwrap(), w);
     let v: serde_json::Value = serde_json::from_slice(&json).unwrap();
     assert_eq!(v["format"], SNAPSHOT_FORMAT);
-    assert_eq!(SNAPSHOT_FORMAT, 11);
+    assert_eq!(SNAPSHOT_FORMAT, 12);
     assert_eq!(v["world"]["nomos"]["rules"].as_array().unwrap().len(), 2);
     assert_eq!(v["world"]["nomos"]["rules"][1]["norm"]["kind"], "harm");
     assert_eq!(v["world"]["nomos"]["standing"][0]["agent"], 1);
@@ -1080,10 +1080,10 @@ fn snapshots_carry_the_institutions_and_inconsistent_states_are_rejected() {
         "memory kinds render in snake case"
     );
     let mut old = v.clone();
-    old["format"] = serde_json::json!(10);
+    old["format"] = serde_json::json!(11);
     assert_eq!(
         World::from_snapshot(&serde_json::to_vec(&old).unwrap()).err(),
-        Some(SnapshotError::Format(10))
+        Some(SnapshotError::Format(11))
     );
 
     // Rules, episodes and the charter are state: the hash sees them.
@@ -1276,7 +1276,8 @@ fn rules_change_no_decision_of_forager_or_learner_worlds_only_their_readings() {
 }
 
 /// Where each event must sit within a tick (ADR-0014 D9): physical social
-/// events, sanctions, violations, actions, deaths, births.
+/// events, sanctions, violations, the assembly (motions, votes, the
+/// closing and its effects), actions, deaths, births.
 fn rank(e: &Event) -> u8 {
     match e {
         Event::Transferred { .. }
@@ -1287,10 +1288,14 @@ fn rank(e: &Event) -> u8 {
         | Event::Signaled { .. } => 0,
         Event::Sanctioned { .. } => 1,
         Event::Violated { .. } => 2,
-        Event::Acted { .. } => 3,
-        Event::Died { .. } => 4,
-        Event::Born { .. } => 5,
-        Event::Intervened { .. } => 6,
+        Event::Motioned { .. } => 3,
+        Event::Voted { .. } => 4,
+        Event::MotionClosed { .. } => 5,
+        Event::Enacted { .. } | Event::Repealed { .. } | Event::Chartered { .. } => 6,
+        Event::Acted { .. } => 7,
+        Event::Died { .. } => 8,
+        Event::Born { .. } => 9,
+        Event::Intervened { .. } => 10,
     }
 }
 

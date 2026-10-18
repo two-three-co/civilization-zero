@@ -17,10 +17,18 @@
 //!      messages are delivered here: the addressee must be another living
 //!      agent within `signal_radius`, an `Accept` must name a proposal the
 //!      acceptor remembers, and every delivered message becomes a ledger
-//!      event. Nothing enforces what was promised (3-4).
+//!      event. Nothing enforces what was promised (3-4). Motions and votes
+//!      (ADR-0014 D7) are taken here too, in actor order: a motion opens
+//!      the assembly's one floor if it is free and admissible, a vote is
+//!      counted on the open motion — one per living agent.
 //!    - *3c. Audit* – with `config.nomos`, this tick's transfers are booked
 //!      against the open deals and the deals whose deadline is this tick
 //!      are settled as kept or broken (ADR-0014 D3). Counted, not enforced.
+//!      Then the episodes whose accusation has lapsed close, and a motion
+//!      whose `vote_ticks` have passed is closed: quorum and threshold met
+//!      (and one aye) it carries, and a norm is enacted (replacing its
+//!      kind's rule), a rule repealed or the charter replaced, in force
+//!      from the next tick (ADR-0014 D7).
 //! 4. **Move**    – all moves applied simultaneously (cells are unbounded,
 //!    so moves never conflict). With `config.nomos` a mover's `arrived`
 //!    becomes `tick + 1`.
@@ -54,7 +62,7 @@ use crate::config::{ConfigError, WorldConfig};
 use crate::event::{DeathCause, Event};
 use crate::intervention::{Intervention, InterventionError, ParamsMode, Who};
 use crate::memory::{remember, Interaction, InteractionKind, Message, Signal, Terms};
-use crate::nomos::{self, Closed, Grounds, Nomos, NormIndex, NormKind, OpenDeal, Via};
+use crate::nomos::{self, Closed, Effect, Grounds, Nomos, NormIndex, NormKind, OpenDeal, Via};
 use crate::policy::learner::{self, LearnerStep};
 use crate::policy::{decide, Intent, Observation, PolicyKind, PolicyParams, PolicyTable};
 use crate::resources::ResourceGrid;
@@ -124,6 +132,18 @@ pub struct Ledger {
     pub episodes_closed: [u64; NormKind::COUNT],
     #[serde(default)]
     pub episodes_sanctioned: [u64; NormKind::COUNT],
+    /// The assembly (ADR-0014 D7, 4-5): motions moved (the floor taken),
+    /// votes counted, motions that carried and motions defeated at
+    /// closing. `motions == motions_carried + motions_defeated` plus the
+    /// one open, if any. Only ever non-zero with `config.nomos`.
+    #[serde(default)]
+    pub motions: u64,
+    #[serde(default)]
+    pub votes: u64,
+    #[serde(default)]
+    pub motions_carried: u64,
+    #[serde(default)]
+    pub motions_defeated: u64,
 }
 
 impl Ledger {
@@ -191,12 +211,20 @@ pub struct TickReport {
     pub sanctions: [u32; NormKind::COUNT],
     pub episodes_closed: [u32; NormKind::COUNT],
     pub episodes_sanctioned: [u32; NormKind::COUNT],
+    /// The assembly this tick (ADR-0014 D7): motions moved, votes counted,
+    /// and the motion closed as carried or defeated (at most one).
+    pub motions: u32,
+    pub votes: u32,
+    pub motions_carried: u32,
+    pub motions_defeated: u32,
     /// Events in the order they happened (ADR-0014 D9): transfers, harms,
     /// delivered negotiation messages and signals (if recorded) in actor
     /// order; `Sanctioned` in actor order; `Violated` (if recorded:
     /// encroachments in cell then gatherer order, harms in actor order,
-    /// broken promises in deal order); `Acted` (if recorded); then deaths
-    /// in id order, then births in parent-id order.
+    /// broken promises in deal order); `Motioned` and `Voted` (if
+    /// recorded) in actor order; `MotionClosed` and the carried motion's
+    /// `Repealed` / `Enacted` / `Chartered`; `Acted` (if recorded); then
+    /// deaths in id order, then births in parent-id order.
     pub events: Vec<Event>,
 }
 
@@ -518,6 +546,11 @@ impl World {
         // are appended to the events after phase 3c.
         let mut sanctions: Vec<Event> = Vec::new();
         let mut violations: Vec<Event> = Vec::new();
+        // The assembly (ADR-0014 D7): motions moved and votes cast in 3b
+        // (actor order), the closing of 3c and what it put into effect.
+        let mut motions: Vec<Event> = Vec::new();
+        let mut votes: Vec<Event> = Vec::new();
+        let mut closings: Vec<Event> = Vec::new();
 
         // --- Phase 2: consume -------------------------------------------
         for (i, it) in intents.iter().enumerate() {
@@ -1031,6 +1064,55 @@ impl World {
                         }
                     };
                 }
+                // --- the assembly (ADR-0014 D7, 4-5): one floor, world-wide.
+                // A motion opens it when it is free and the charter admits
+                // the motion; a vote is counted on the open motion, once
+                // per living agent. Both are read from S(t)'s index by the
+                // policies but resolved here in actor order, so a motion
+                // moved by a lower id this tick takes the votes of the
+                // higher ids of the same tick. Procedural impossibilities
+                // are `Failure`s; nothing here is a judgement.
+                Action::Signal(Message::Motion(kind)) => {
+                    outcomes[i] = if !cfg.nomos {
+                        Outcome::Failed(Failure::FloorTaken)
+                    } else {
+                        match self.nomos.admit(kind) {
+                            Err(f) => Outcome::Failed(f),
+                            Ok(()) => {
+                                let by = self.agents[i].id;
+                                let motion = self.nomos.open_motion(kind, by, tick);
+                                self.ledger.motions += 1;
+                                report.motions += 1;
+                                motions.push(Event::Motioned {
+                                    tick,
+                                    motion,
+                                    by,
+                                    asks: kind,
+                                });
+                                Outcome::Ok
+                            }
+                        }
+                    };
+                }
+                Action::Signal(Message::Vote { aye }) => {
+                    let by = self.agents[i].id;
+                    outcomes[i] = match self.nomos.vote(by, aye) {
+                        Err(f) => Outcome::Failed(f),
+                        Ok(motion) => {
+                            self.ledger.votes += 1;
+                            report.votes += 1;
+                            if cfg.record_votes {
+                                votes.push(Event::Voted {
+                                    tick,
+                                    motion,
+                                    by,
+                                    aye,
+                                });
+                            }
+                            Outcome::Ok
+                        }
+                    };
+                }
                 _ => {}
             }
         }
@@ -1095,10 +1177,70 @@ impl World {
             // here (ADR-0014 D4): `last + standing_ticks <= tick`.
             let closed = self.nomos.expire(tick);
             self.ledger.book_closed(&closed, Some(&mut report));
+            // The motion whose voting period has passed closes here
+            // (ADR-0014 D7), before everyone alive at S(t) — deaths come
+            // in phase 6 — and takes effect from the next tick. The
+            // assembly's decision and what the kernel could do with it are
+            // two records: `MotionClosed`, then the effect, if any.
+            if self.nomos.motion_due(tick) {
+                let alive = self.agents.len();
+                if let Some(c) = self.nomos.close_motion(tick, alive) {
+                    let motion = c.motion.id;
+                    if c.carried {
+                        self.ledger.motions_carried += 1;
+                        report.motions_carried += 1;
+                    } else {
+                        self.ledger.motions_defeated += 1;
+                        report.motions_defeated += 1;
+                    }
+                    closings.push(Event::MotionClosed {
+                        tick,
+                        motion,
+                        ayes: c.ayes,
+                        nays: c.nays,
+                        alive: c.alive,
+                        carried: c.carried,
+                    });
+                    match c.effect {
+                        Effect::Nothing => {}
+                        Effect::Enacted { rule, replaced } => {
+                            if let Some((old, closed)) = replaced {
+                                self.ledger.book_closed(&closed, Some(&mut report));
+                                closings.push(Event::Repealed {
+                                    tick,
+                                    rule: old.id,
+                                    norm: old.norm,
+                                    motion,
+                                });
+                            }
+                            closings.push(Event::Enacted {
+                                tick,
+                                rule: rule.id,
+                                norm: rule.norm,
+                                motion,
+                            });
+                        }
+                        Effect::Repealed { rule, closed } => {
+                            self.ledger.book_closed(&closed, Some(&mut report));
+                            closings.push(Event::Repealed {
+                                tick,
+                                rule: rule.id,
+                                norm: rule.norm,
+                                motion,
+                            });
+                        }
+                        Effect::Chartered(charter) => closings.push(Event::Chartered {
+                            tick,
+                            charter,
+                            motion,
+                        }),
+                    }
+                }
+            }
         }
         // The tick's judgements, after every physical event of 3b and in
         // the order of ADR-0014 D9. Violations are counted either way and
-        // recorded only on request.
+        // recorded only on request; so are votes. Then the assembly.
         report.events.append(&mut sanctions);
         for v in &violations {
             if let Event::Violated { norm, .. } = v {
@@ -1109,6 +1251,9 @@ impl World {
         if cfg.record_violations {
             report.events.append(&mut violations);
         }
+        report.events.append(&mut motions);
+        report.events.append(&mut votes);
+        report.events.append(&mut closings);
 
         // --- Phase 4: move ------------------------------------------------
         let mut moved = vec![false; n];
@@ -1135,6 +1280,7 @@ impl World {
                 Action::Gather => cfg.gather_cost,
                 Action::Transfer { .. } => cfg.transfer_cost,
                 Action::Harm { .. } => cfg.harm_cost,
+                Action::Signal(Message::Motion(_)) => cfg.motion_cost,
                 Action::Signal(_) => cfg.signal_cost,
                 _ => 0,
             };
@@ -1248,10 +1394,14 @@ impl World {
         report.deaths = (before - self.agents.len()) as u32;
         report.deaths_by_cause = deaths_by_cause;
         // The dead stand accused of nothing: their episodes close
-        // (ADR-0014 D4), sanctioned or not.
+        // (ADR-0014 D4), sanctioned or not — and their votes are struck
+        // (ADR-0014 D7: the dead do not count at closing).
         if report.deaths > 0 && !self.nomos.standing.is_empty() {
             let closed = self.nomos.drop_dead(&self.agents);
             self.ledger.book_closed(&closed, Some(&mut report));
+        }
+        if report.deaths > 0 && self.nomos.motion.is_some() {
+            self.nomos.drop_dead_voters(&self.agents);
         }
 
         // --- Phase 7: birth -----------------------------------------------
@@ -1422,9 +1572,11 @@ impl World {
                 self.resources.food[cell] += a.inventory;
                 self.ledger.energy_intervened -= a.energy;
                 // Whoever leaves the world stands accused of nothing
-                // (ADR-0014 D4): its episodes close like a dead agent's.
+                // (ADR-0014 D4): its episodes close like a dead agent's,
+                // and its vote is struck (D7).
                 let closed = self.nomos.drop_agent(id);
                 self.ledger.book_closed(&closed, None);
+                self.nomos.drop_voter(id);
             }
             // Decrees (ADR-0014 D8): institutions exist only where the
             // switch is on; nothing here is bound by the charter.
@@ -1685,6 +1837,14 @@ impl World {
             if m.ayes.iter().any(|v| m.nays.binary_search(v).is_ok()) {
                 errs.push("an agent voted on both sides".into());
             }
+            let admissible = match m.kind {
+                nomos::MotionKind::Enact { norm } => norm.is_valid(),
+                nomos::MotionKind::Repeal { .. } => true,
+                nomos::MotionKind::Charter { charter } => charter.is_valid(),
+            };
+            if !admissible {
+                errs.push("the open motion asks for something no rule or charter can be".into());
+            }
         }
         for (k, d) in self.nomos.deals.iter().enumerate() {
             if d.offer_tick > d.accepted_tick || d.accepted_tick > self.tick {
@@ -1806,6 +1966,10 @@ impl World {
             for &v in arr {
                 h.u64(v);
             }
+        }
+        // The assembly's counters (ADR-0014 4-5): `state_hash` only.
+        for v in [l.motions, l.votes, l.motions_carried, l.motions_defeated] {
+            h.u64(v);
         }
     }
 
@@ -2039,7 +2203,12 @@ pub const SNAPSHOT_MAGIC: [u8; 4] = *b"CZS\0";
 /// table no longer fits), the learner's row index changes meaning (bits
 /// 5–7 are now `OCCUPIED` / `VIOLATOR_ADJACENT` / `ACCUSED`, `UPPER` /
 /// `HEARD` move to 8–9), config `perception.see_standing` (ADR-0014 4-3).
-pub const SNAPSHOT_FORMAT: u32 = 11;
+/// 12: `PolicyKind::Enforcer`, `Message::{Motion, Vote}` (in
+/// `last_signal`'s type, never written there), ledger `motions` / `votes`
+/// / `motions_carried` / `motions_defeated`, config `motion_cost` /
+/// `enforcer_motions` / `record_votes`; the kernel now opens, counts and
+/// closes motions, so `World.nomos.motion` can be `Some` (ADR-0014 4-5).
+pub const SNAPSHOT_FORMAT: u32 = 12;
 
 /// Written form: borrows the world instead of cloning it.
 #[derive(Serialize)]

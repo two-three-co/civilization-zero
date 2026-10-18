@@ -9,7 +9,7 @@ use crate::action::{Action, Outcome};
 use crate::agent::AgentId;
 use crate::intervention::Intervention;
 use crate::memory::Message;
-use crate::nomos::{Grounds, NormKind, Via};
+use crate::nomos::{Charter, Grounds, MotionKind, Norm, NormKind, Via};
 use crate::space::Pos;
 use serde::{Deserialize, Serialize};
 
@@ -147,6 +147,62 @@ pub enum Event {
         against: AgentId,
         grounds: Grounds,
     },
+    /// `by` moved motion `motion` before the assembly, asking for `asks`
+    /// (ADR-0014 D7, 4-5): the one floor is held from this tick's phase
+    /// 3b until the motion closes. Always recorded (one per motion).
+    Motioned {
+        tick: u64,
+        motion: u16,
+        by: AgentId,
+        asks: MotionKind,
+    },
+    /// `by` voted `aye` (for) or not (against) on motion `motion`. Recorded
+    /// only with `record_votes` (off by default); the tally is counted and
+    /// hashed either way.
+    Voted {
+        tick: u64,
+        motion: u16,
+        by: AgentId,
+        aye: bool,
+    },
+    /// Motion `motion` closed in this tick's phase 3c with `ayes` for and
+    /// `nays` against among `alive` living agents, and `carried` or not
+    /// (quorum, threshold and at least one aye, ADR-0014 D7). A carried
+    /// motion's effect follows as `Enacted` / `Repealed` / `Chartered` —
+    /// or nothing, when it could no longer take effect. Always recorded.
+    MotionClosed {
+        tick: u64,
+        motion: u16,
+        ayes: u32,
+        nays: u32,
+        alive: u32,
+        carried: bool,
+    },
+    /// `norm` came into force as rule `rule` by motion `motion`, from the
+    /// next tick. A rule of the same kind it replaced is recorded as
+    /// `Repealed` just before. Always recorded. (A decree's enactment is
+    /// its `Intervened` record, ADR-0014 D8.)
+    Enacted {
+        tick: u64,
+        rule: u16,
+        norm: Norm,
+        motion: u16,
+    },
+    /// Rule `rule`, which said `norm`, left force by motion `motion`: a
+    /// repeal, or the first half of a replacement. Always recorded.
+    Repealed {
+        tick: u64,
+        rule: u16,
+        norm: Norm,
+        motion: u16,
+    },
+    /// The charter was replaced by motion `motion`; the next motion is
+    /// moved and closed under `charter`. Always recorded.
+    Chartered {
+        tick: u64,
+        charter: Charter,
+        motion: u16,
+    },
 }
 
 impl Event {
@@ -163,7 +219,13 @@ impl Event {
             | Event::Accepted { tick, .. }
             | Event::Rejected { tick, .. }
             | Event::Sanctioned { tick, .. }
-            | Event::Violated { tick, .. } => *tick,
+            | Event::Violated { tick, .. }
+            | Event::Motioned { tick, .. }
+            | Event::Voted { tick, .. }
+            | Event::MotionClosed { tick, .. }
+            | Event::Enacted { tick, .. }
+            | Event::Repealed { tick, .. }
+            | Event::Chartered { tick, .. } => *tick,
         }
     }
 }

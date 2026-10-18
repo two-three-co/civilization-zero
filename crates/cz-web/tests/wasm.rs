@@ -205,11 +205,12 @@ fn negotiation_threads_work_under_wasm() {
 /// seed 3, 32², 200 random walkers, 3 patches, `{"nomos":true}`
 /// (`WorldConfig::nomos_preset()`), the first-occupancy norm decreed at
 /// tick 0 (standing 32, sanction harm), 40 ticks. If the kernel's rule
-/// changes on purpose, update both files.
-const RULED_HASH_40: &str = "33babd3d304e5d92";
-const RULED_VIOLATIONS_40: u64 = 9;
-const RULED_SANCTIONS_40: u64 = 11;
-const RULED_ACCUSED_40: u64 = 6;
+/// changes on purpose, update both files (4-5 did: the random walkers
+/// draw sixteen actions since, ADR-0014 D7).
+const RULED_HASH_40: &str = "1e2a77fc40cf7156";
+const RULED_VIOLATIONS_40: u64 = 4;
+const RULED_SANCTIONS_40: u64 = 5;
+const RULED_ACCUSED_40: u64 = 3;
 
 const ENCROACH_JSON: &str = r#"{"op":"enact","norm":{"kind":"encroach","standing_ticks":32,"sanction":1,"except_sanction":false}}"#;
 
@@ -236,7 +237,6 @@ fn institutions_read_the_same_under_wasm() {
     assert_eq!(inst["record_violations"], false);
     assert_eq!(inst["rules"][0]["id"], 0);
     assert_eq!(inst["rules"][0]["norm"]["kind"], "encroach");
-    assert_eq!(inst["motion"], serde_json::Value::Null);
     assert_eq!(inst["accused"]["episodes"], RULED_ACCUSED_40);
     assert_eq!(inst["accused"]["by_kind"][0], RULED_ACCUSED_40);
 
@@ -258,13 +258,33 @@ fn institutions_read_the_same_under_wasm() {
     let a = value(w.agent_json(accused[0] as u32).unwrap());
     assert_eq!(a["standing"][0]["rule"], 0);
     assert_eq!(a["standing"][0]["norm"], "encroach");
-    assert_eq!(a["voted"], false);
+    // Random walkers vote (4-5): the inspector's `voted` is the flag's.
+    let voted_flag = rows
+        .chunks(AGENT_FIELDS)
+        .find(|r| r[0] == accused[0])
+        .map(|r| r[8] & cz_web::FLAG_VOTED != 0)
+        .unwrap();
+    assert_eq!(a["voted"], voted_flag);
 
+    // The decree first; whatever the walkers moved and closed follows it
+    // in the same list (4-5), each by its motion.
     let t = value(w.timeline_json(0, 40).unwrap());
-    assert_eq!(t["entries"].as_array().unwrap().len(), 1);
-    assert_eq!(t["entries"][0]["kind"], "enacted");
-    assert_eq!(t["entries"][0]["rule"], 0);
-    assert_eq!(t["entries"][0]["by"], "decree");
+    let entries = t["entries"].as_array().unwrap();
+    assert!(!entries.is_empty());
+    assert_eq!(entries[0]["kind"], "enacted");
+    assert_eq!(entries[0]["rule"], 0);
+    assert_eq!(entries[0]["by"], "decree");
+    assert_eq!(
+        entries.iter().filter(|e| e["by"] == "decree").count(),
+        1,
+        "one decree"
+    );
+    assert!(entries[1..].iter().all(|e| {
+        matches!(
+            e["kind"].as_str().unwrap(),
+            "motioned" | "motion_closed" | "enacted" | "repealed" | "chartered"
+        )
+    }));
 
     let v = value(w.violations_json(0, 40).unwrap());
     assert_eq!(v["source"], "standing");

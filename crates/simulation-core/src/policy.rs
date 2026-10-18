@@ -16,9 +16,15 @@
 //! `Observation.norms` and its queries, filtered by
 //! `Perception.see_standing` — five reflex features and three learner
 //! state bits that read them, and a Harm actuator that aims at an accused
-//! neighbour first. Nothing here names an institution as an action: the
-//! vocabulary is still the eight kinds, and whether to harm is the
-//! policy's choice.
+//! neighbour first. 4-5 (ADR-0014 D7) adds the assembly's two messages to
+//! the random null model (sixteen draws now) and the scripted `Enforcer`:
+//! the forager with six rules in front of it — sanction an accused
+//! neighbour once per episode, keep a promise, move the first-occupancy
+//! norm, vote, leave a cell someone reached first — the positive control
+//! of EXP-004, designer's knowledge and nothing learned. Nothing here
+//! names an institution as an action: the vocabulary is still the eight
+//! kinds, and whether to harm is the policy's choice. The learning
+//! policies neither move nor vote in Phase 4 (D7).
 
 use crate::action::Action;
 use crate::agent::{Agent, AgentId, Memory};
@@ -51,14 +57,21 @@ pub enum PolicyKind {
     /// the table unless `learner_inherit_q` is off; mutation never touches
     /// it.
     Learner,
+    /// The scripted legislator and enforcer (ADR-0014 D7, 4-5): the
+    /// forager with six fixed rules in front of it (see [`enforcer`]),
+    /// reading the norm index directly whatever `see_standing` says. No
+    /// table, nothing learned: the positive control of EXP-004, whose
+    /// behaviour is the designer's and evidence of nothing.
+    Enforcer,
 }
 
 impl PolicyKind {
-    pub const ALL: [PolicyKind; 4] = [
+    pub const ALL: [PolicyKind; 5] = [
         PolicyKind::Forager,
         PolicyKind::Random,
         PolicyKind::Reflex,
         PolicyKind::Learner,
+        PolicyKind::Enforcer,
     ];
 
     /// Number of kinds; the length of the per-kind arrays of `TickReport`.
@@ -76,6 +89,7 @@ impl PolicyKind {
             PolicyKind::Random => "random",
             PolicyKind::Reflex => "reflex",
             PolicyKind::Learner => "learner",
+            PolicyKind::Enforcer => "enforcer",
         }
     }
 
@@ -250,7 +264,7 @@ impl PolicyTable {
     /// fixed policies.
     pub fn blank(kind: PolicyKind, cfg: &WorldConfig) -> Option<PolicyTable> {
         match kind {
-            PolicyKind::Forager | PolicyKind::Random => None,
+            PolicyKind::Forager | PolicyKind::Random | PolicyKind::Enforcer => None,
             PolicyKind::Reflex => Some(PolicyTable::Reflex {
                 weights: forager_weights(),
             }),
@@ -575,6 +589,7 @@ pub fn decide(obs: &Observation<'_>, rng: &mut RngStream) -> Intent {
         PolicyKind::Random => random(obs, rng),
         PolicyKind::Reflex => reflex(obs, rng),
         PolicyKind::Learner => learner(obs, rng),
+        PolicyKind::Enforcer => enforcer(obs, rng),
     }
 }
 
@@ -801,13 +816,30 @@ fn learner(obs: &Observation<'_>, rng: &mut RngStream) -> Intent {
     learner::decide(obs, rng)
 }
 
+/// The norm the CLI's `--enact KIND` defaults to (ADR-0014 D8) and the
+/// random null model moves: accused 32 ticks, a harm is the sanction, no
+/// exemption. For `Encroach` it is EXP-004's first-occupancy norm (D11).
+pub fn default_norm(kind: NormKind) -> nomos::Norm {
+    nomos::Norm {
+        kind,
+        standing_ticks: 32,
+        sanction: nomos::Sanction::HARM,
+        except_sanction: false,
+    }
+}
+
 fn random(obs: &Observation<'_>, rng: &mut RngStream) -> Intent {
-    // Uniform over the whole vocabulary, social actions and negotiation
-    // included (ADR-0013 D3, D5): the null model must be able to do
-    // everything a learner can. Targets are drawn from agents in reach
-    // (adjacent for Transfer / Harm, within signal_radius for Propose); an
-    // Accept or Reject answers the latest proposal in memory. With nobody in
-    // reach or nothing to answer the agent rests instead.
+    // Uniform over the whole vocabulary, social actions, negotiation and
+    // the assembly included (ADR-0013 D3, D5; ADR-0014 D7): the null
+    // model must be able to do everything a learner or a script can.
+    // Targets are drawn from agents in reach (adjacent for Transfer /
+    // Harm, within signal_radius for Propose); an Accept or Reject answers
+    // the latest proposal in memory; a motion is one of the three default
+    // norms or the repeal of a rule in force, uniformly, when the floor is
+    // free; a vote is a coin toss on the open motion. With nobody in
+    // reach, nothing to answer, no floor or no motion the agent rests
+    // instead — the null model reads the norm index as the script does,
+    // whatever `see_standing` says.
     let within = |rng: &mut RngStream, reach: u32| {
         let near: Vec<AgentId> = obs
             .neighbors()
@@ -825,7 +857,7 @@ fn random(obs: &Observation<'_>, rng: &mut RngStream) -> Intent {
             .find(|e| e.kind == InteractionKind::ProposalFrom)
     };
     let earshot = obs.config.perception.signal_radius as u32;
-    let action = match rng.below(14) {
+    let action = match rng.below(16) {
         0..=3 => Action::Move(Dir::ALL[rng.below(4) as usize]),
         4 => Action::Gather,
         5 => Action::Consume(1),
@@ -848,9 +880,19 @@ fn random(obs: &Observation<'_>, rng: &mut RngStream) -> Intent {
                 offer_tick: offer.tick,
             })
         }),
-        _ => latest_offer().map_or(Action::Rest, |offer| {
+        13 => latest_offer().map_or(Action::Rest, |offer| {
             Action::Signal(Message::Reject { to: offer.other })
         }),
+        14 => random_motion(obs, rng),
+        _ => {
+            if obs.norms.motion().is_some() && !obs.norms.voted(obs.me) {
+                Action::Signal(Message::Vote {
+                    aye: rng.chance(1, 2),
+                })
+            } else {
+                Action::Rest
+            }
+        }
     };
     Intent {
         action,
@@ -859,7 +901,154 @@ fn random(obs: &Observation<'_>, rng: &mut RngStream) -> Intent {
     }
 }
 
+/// The random walker's motion (ADR-0014 D7): with institutions and a free
+/// floor, one of the three default norms or the repeal of one of the rules
+/// in force, drawn uniformly; otherwise rest.
+fn random_motion(obs: &Observation<'_>, rng: &mut RngStream) -> Action {
+    if !obs.config.nomos || obs.norms.motion().is_some() {
+        return Action::Rest;
+    }
+    let mut options: Vec<MotionKind> = NormKind::ALL
+        .into_iter()
+        .map(|kind| MotionKind::Enact {
+            norm: default_norm(kind),
+        })
+        .collect();
+    for kind in NormKind::ALL {
+        if let Some(rule) = obs.norms.rule(kind) {
+            options.push(MotionKind::Repeal { rule: rule.id });
+        }
+    }
+    Action::Signal(Message::Motion(
+        options[rng.below(options.len() as u64) as usize],
+    ))
+}
+
+/// The scripted legislator and enforcer (ADR-0014 D7): six rules in
+/// priority order, then the forager. It reads the norm index directly
+/// (`obs.norms`, not the `see_standing`-filtered queries), so it sees
+/// whatever is in force whatever the perception says — it is the positive
+/// control, designer's knowledge by construction.
+///
+/// 1. *Sanction*: an agent within distance 1 stands accused under a rule
+///    that lets a harm answer it, the enforcer has not yet sanctioned that
+///    episode (no `Sanctioned { other, tick >= since }` in its memory —
+///    without memory it sanctions every tick) and its energy exceeds twice
+///    `harm_cost`: `Harm` it (same walk as the Harm actuator).
+/// 2. *Keep a promise*: the oldest `Promised` still short — the amount less
+///    what it gave that partner since — whose partner stands within
+///    distance 1 now, while it carries food: `Transfer` the shortfall.
+/// 3. *Move*: with `enforcer_motions`, institutions on, the floor free and
+///    no `Encroach` rule in force, two or more `EncroachedBy` within
+///    `MEMORY_HORIZON` ticks: move `Enact(Encroach { 32, HARM })`.
+/// 4. *Vote*: a motion is open and it has not voted: aye to an `Enact` of
+///    `Encroach`, `BrokenPromise` or `Harm` with `except_sanction`, and to
+///    a `Charter`; nay to a `Repeal` and to a `Harm` norm that would make
+///    sanctions violations.
+/// 5. *Do not encroach*: `occupied()` — someone on its cell arrived first
+///    — skips the forager's "gather here" and takes rules 4–5 (towards the
+///    richest other cell in sight, else explore).
+/// 6. Otherwise the forager's decision, RNG draws included.
+fn enforcer(obs: &Observation<'_>, rng: &mut RngStream) -> Intent {
+    let a = obs.agent;
+    let cfg = obs.config;
+    let memory = a.memory;
+    let plain = |action: Action| Intent {
+        action,
+        memory,
+        state: None,
+    };
+    // 1. Sanction an accused neighbour, once per episode.
+    if a.energy > 2 * cfg.harm_cost {
+        let unanswered = |i: usize| {
+            obs.norms.harmable(i) && {
+                let other = obs.agents[i].id;
+                let since = obs.norms.harmable_since(i).unwrap_or(0);
+                !a.recent.iter().any(|e| {
+                    e.kind == InteractionKind::Sanctioned && e.other == other && e.tick >= since
+                })
+            }
+        };
+        if let Some(target) = first_adjacent(obs, unanswered) {
+            return plain(Action::Harm { target });
+        }
+    }
+    // 2. Keep a promise to an adjacent partner.
+    if a.inventory > 0 {
+        for e in &a.recent {
+            if e.kind != InteractionKind::Promised {
+                continue;
+            }
+            let given: i64 = a
+                .recent
+                .iter()
+                .filter(|g| {
+                    g.kind == InteractionKind::GaveTo && g.other == e.other && g.tick >= e.tick
+                })
+                .map(|g| g.value)
+                .sum();
+            let owed = e.value - given;
+            if owed <= 0 {
+                continue;
+            }
+            let adjacent = obs
+                .agents
+                .binary_search_by_key(&e.other, |x| x.id)
+                .is_ok_and(|j| obs.agents[j].pos.manhattan(a.pos) <= 1);
+            if adjacent {
+                return plain(Action::Transfer {
+                    to: e.other,
+                    n: owed.min(a.inventory as i64) as u32,
+                });
+            }
+        }
+    }
+    // 3. Move the first-occupancy norm.
+    if cfg.nomos
+        && cfg.enforcer_motions
+        && obs.norms.motion().is_none()
+        && obs.norms.rule(NormKind::Encroach).is_none()
+    {
+        let encroached = a
+            .recent
+            .iter()
+            .filter(|e| {
+                e.kind == InteractionKind::EncroachedBy
+                    && e.tick + feature::MEMORY_HORIZON >= obs.tick
+            })
+            .count();
+        if encroached >= 2 {
+            return plain(Action::Signal(Message::Motion(MotionKind::Enact {
+                norm: default_norm(NormKind::Encroach),
+            })));
+        }
+    }
+    // 4. Vote on the open motion.
+    if let Some(kind) = obs.norms.motion() {
+        if !obs.norms.voted(obs.me) {
+            let aye = match kind {
+                MotionKind::Enact { norm } => match norm.kind {
+                    NormKind::Encroach | NormKind::BrokenPromise => true,
+                    NormKind::Harm => norm.except_sanction,
+                },
+                MotionKind::Repeal { .. } => false,
+                MotionKind::Charter { .. } => true,
+            };
+            return plain(Action::Signal(Message::Vote { aye }));
+        }
+    }
+    // 5 and 6. The forager, not gathering where someone arrived first.
+    forager_rules(obs, rng, !obs.occupied())
+}
+
 fn forager(obs: &Observation<'_>, rng: &mut RngStream) -> Intent {
+    forager_rules(obs, rng, true)
+}
+
+/// The forager's five rules; with `gather_here` off, rule 2 is skipped (the
+/// enforcer's rule 5, ADR-0014 D7) and nothing else changes, RNG draws
+/// included.
+fn forager_rules(obs: &Observation<'_>, rng: &mut RngStream, gather_here: bool) -> Intent {
     let a = obs.agent;
     let cfg = obs.config;
     let mut memory = a.memory;
@@ -877,7 +1066,7 @@ fn forager(obs: &Observation<'_>, rng: &mut RngStream) -> Intent {
         };
     }
     // 2. Harvest where standing.
-    if obs.food_here() > 0 && a.inventory < cfg.inventory_capacity {
+    if gather_here && obs.food_here() > 0 && a.inventory < cfg.inventory_capacity {
         memory.target = Some(a.pos);
         return Intent {
             action: Action::Gather,
@@ -1104,6 +1293,10 @@ mod tests {
         assert_eq!(PolicyTable::learner_len(&cfg), 32 * Action::KIND_COUNT);
         assert_eq!(PolicyKind::parse("learner"), Some(PolicyKind::Learner));
         assert_eq!(PolicyKind::parse("Learner"), None);
+        assert_eq!(PolicyKind::parse("enforcer"), Some(PolicyKind::Enforcer));
+        assert!(!PolicyKind::Enforcer.has_table());
+        assert_eq!(PolicyKind::Enforcer.index(), 4);
+        assert_eq!(PolicyKind::COUNT, 5);
     }
 
     #[test]

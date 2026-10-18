@@ -30,6 +30,11 @@
 //! open episodes. A world with institutions is built with `options`
 //! `{"nomos":true}` (`WorldConfig::nomos_preset()`, as `cz run --preset
 //! nomos`) and ruled through `intervene` (`enact` / `repeal` / `charter`).
+//! The assembly (ADR-0014 D7, 4-5) needs nothing new at the boundary:
+//! motions, votes and closings are ledger events the timeline reads, the
+//! open motion is in `institution_json`, and the `institution` mix (every
+//! tenth founder an `Enforcer` among 128-row learners, on `nomos_preset`)
+//! is the world of completion condition 2.
 //!
 //! Numbers cross the boundary as `u32` so JavaScript never needs `BigInt`;
 //! the state hash is a 16-hex-digit string. Errors are `String`s (wasm-bindgen
@@ -114,23 +119,26 @@ fn js<E: std::fmt::Display>(e: E) -> String {
 
 /// Names of the founding mixes a world can be built with, as `cz run
 /// --policy` spells them.
-pub const POLICY_MIXES: [&str; 6] = [
+pub const POLICY_MIXES: [&str; 7] = [
     "forager",
     "random",
     "mixed",
     "reflex",
     "learner",
     "mixed-learning",
+    "institution",
 ];
 
 /// How a fresh world's founding population is split between the policies.
 /// The rule is `cz run --policy`'s, so a browser world and a CLI world with
 /// the same mix reach the same hashes: `mixed` alternates Forager / Random
 /// by founding index, `mixed-learning` cycles Forager / Reflex / Learner
-/// (3-5). A forager-only world has no social behaviour at all (foragers
-/// never transfer, harm or signal), so the UI offers `mixed` and `random`
-/// to see the social layer at work, and the learning mixes (3-9c) to watch
-/// a world that learns from the start.
+/// (3-5), `institution` makes every tenth founder an Enforcer among
+/// Learners (ADR-0014 D8, 4-5). A forager-only world has no social
+/// behaviour at all (foragers never transfer, harm or signal), so the UI
+/// offers `mixed` and `random` to see the social layer at work, the
+/// learning mixes (3-9c) to watch a world that learns from the start, and
+/// `institution` to watch an assembly legislate.
 pub fn policy_mix(name: &str) -> Result<fn(u32) -> PolicyKind, String> {
     match name {
         "forager" => Ok(|_| PolicyKind::Forager),
@@ -149,11 +157,25 @@ pub fn policy_mix(name: &str) -> Result<fn(u32) -> PolicyKind, String> {
             1 => PolicyKind::Reflex,
             _ => PolicyKind::Learner,
         }),
+        "institution" => Ok(|i| {
+            if i % 10 == 0 {
+                PolicyKind::Enforcer
+            } else {
+                PolicyKind::Learner
+            }
+        }),
         other => Err(format!(
             "unknown policy mix {other:?}: expected one of {}",
             POLICY_MIXES.join(", ")
         )),
     }
+}
+
+/// Whether a founding mix is the institution world (ADR-0014 D8, 4-5):
+/// then the config is `WorldConfig::nomos_preset()` with 128-row learners
+/// whatever `options.nomos` says, as `cz run --policy institution`.
+pub fn institutional(name: &str) -> bool {
+    name == "institution"
 }
 
 /// Whether a founding mix turns weight mutation on, as `cz run --policy`
@@ -165,7 +187,8 @@ pub fn evolves(name: &str) -> bool {
 }
 
 /// Policy column of `agents()`: the kind's index in [`PolicyKind::ALL`]
-/// (0 forager, 1 random, 2 reflex, 3 learner), fixed by the kernel's order.
+/// (0 forager, 1 random, 2 reflex, 3 learner, 4 enforcer), fixed by the
+/// kernel's order.
 pub fn policy_code(kind: PolicyKind) -> i32 {
     PolicyKind::ALL
         .iter()
@@ -189,6 +212,12 @@ fn involves(e: &Event, id: AgentId) -> bool {
             *by == id || *target == id
         }
         Event::Violated { agent, against, .. } => *agent == id || *against == id,
+        Event::Motioned { by, .. } | Event::Voted { by, .. } => *by == id,
+        // The assembly's closings name no agent.
+        Event::MotionClosed { .. }
+        | Event::Enacted { .. }
+        | Event::Repealed { .. }
+        | Event::Chartered { .. } => false,
         Event::Intervened { intervention, .. } => {
             matches!(intervention, Intervention::RemoveAgent { id: removed } if *removed == id)
         }
@@ -216,6 +245,8 @@ impl WasmWorld {
     /// The rest of the config is the kernel default, as `cz run` without
     /// options: `cz run --seed S --policy P` reaches the same hashes, and
     /// `cz run --preset nomos --seed S --policy P` those of `{"nomos":true}`.
+    /// The `institution` mix is `cz run --policy institution`: `nomos_preset`
+    /// and 128-row learners whatever `options.nomos` says ([`institutional`]).
     // A wasm-bindgen constructor is positional on the JS side; anything
     // further goes into `options` rather than a ninth parameter.
     #[allow(clippy::too_many_arguments)]
@@ -231,7 +262,7 @@ impl WasmWorld {
         options: &str,
     ) -> Result<WasmWorld, String> {
         let options = WorldOptions::parse(options)?;
-        let base = if options.nomos {
+        let base = if options.nomos || institutional(policy) {
             WorldConfig::nomos_preset()
         } else {
             WorldConfig::default()
@@ -244,6 +275,11 @@ impl WasmWorld {
             patch_count: patches,
             mutation_enabled: evolves(policy),
             record_violations: options.record_violations,
+            learner_states: if institutional(policy) {
+                128
+            } else {
+                base.learner_states
+            },
             ..base
         };
         let world = World::generate(config, policy_mix(policy)?).map_err(js)?;
@@ -550,8 +586,8 @@ impl WasmWorld {
 
     /// The institution of the view (ADR-0014 D12) as JSON
     /// (`institution::Institution`): whether the world has institutions,
-    /// the charter, the rules in force, the open motion (none before 4-5)
-    /// and how many stand accused, all from the view's state.
+    /// the charter, the rules in force, the open motion and how many stand
+    /// accused, all from the view's state.
     pub fn institution_json(&self) -> Result<String, String> {
         serde_json::to_string(&institution::institution(self.view())).map_err(js)
     }
@@ -561,7 +597,8 @@ impl WasmWorld {
     /// every decree of the ledger, ledger order, with the rule id the
     /// kernel assigned it and the rule it replaced — recovered by replaying
     /// the decrees from this branch's origin, since ids are monotonic and
-    /// never reused (ADR-0014 D8). Motions join the same list with 4-5.
+    /// never reused (ADR-0014 D8) — and every motion moved, closed and put
+    /// into effect (ADR-0014 D7), which the ledger records with its ids.
     pub fn timeline_json(&self, from: u32, to: u32) -> Result<String, String> {
         let branch = self.mv.branch(self.branch).map_err(js)?;
         let now = (to as u64).min(self.view().tick);

@@ -122,6 +122,23 @@ pub struct WorldConfig {
     /// episodes are kept either way. Not part of `dynamics_hash`.
     #[serde(default)]
     pub record_violations: bool,
+    /// Paid on every `Message::Motion` attempt (ADR-0014 D7): as high as
+    /// the Harm cost by default, so the random null model does not flood
+    /// the one floor. Not part of `dynamics_hash`. `default` so older
+    /// configs load.
+    #[serde(default = "default_motion_cost")]
+    pub motion_cost: i64,
+    /// Whether `PolicyKind::Enforcer` moves motions of its own (ADR-0014
+    /// D7 rule 3: the first-occupancy norm, after two encroachments on it
+    /// within 16 ticks). On by default; EXP-004 turns it off so that every
+    /// rule is decreed at the same tick (D11). Not part of `dynamics_hash`.
+    #[serde(default = "default_true")]
+    pub enforcer_motions: bool,
+    /// Record `Event::Voted` for every vote cast (ADR-0014 D9). Off by
+    /// default (one event per voter per motion); motions, closings and
+    /// their effects are always recorded. Not part of `dynamics_hash`.
+    #[serde(default)]
+    pub record_votes: bool,
 
     /// What agents can perceive about each other (ADR-0013 D2). `default`
     /// so configs written before the field existed still load; it is always
@@ -136,6 +153,10 @@ fn default_learner_states() -> u16 {
 
 fn default_learner_epsilon() -> u16 {
     50
+}
+
+fn default_motion_cost() -> i64 {
+    2_000
 }
 
 fn default_true() -> bool {
@@ -232,6 +253,9 @@ impl Default for WorldConfig {
             nomos: false,
             charter: Charter::default(),
             record_violations: false,
+            motion_cost: default_motion_cost(),
+            enforcer_motions: true,
+            record_votes: false,
             perception: Perception::default(),
         }
     }
@@ -303,7 +327,8 @@ impl WorldConfig {
                     && self.transfer_cost >= 0
                     && self.harm_cost >= 0
                     && self.harm_damage >= 0
-                    && self.signal_cost >= 0,
+                    && self.signal_cost >= 0
+                    && self.motion_cost >= 0,
                 "costs must be non-negative",
             ),
             (self.gather_amount > 0, "gather_amount must be > 0"),

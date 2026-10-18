@@ -3,7 +3,7 @@ import { BranchesPanel, type Verification } from "./Branches";
 import { WorldClient } from "./client";
 import { InstitutionCard, NormRatesCard, SanctionsCard, ViolationsCard, type Readings } from "./Institution";
 import { InterventionPanel } from "./Intervene";
-import { compareRuleIntervention, describeStanding, sumKinds } from "./nomos";
+import { compareRuleIntervention, describeStanding, sumKinds, describeMotionKind } from "./nomos";
 import { compareIntervention, describePolicies, policyCounts } from "./policies";
 import {
   ACTION_KINDS,
@@ -776,7 +776,7 @@ export default function App() {
                     <dd className="qrow">
                       {detail.standing.length === 0 ? "not accused" : detail.standing.map((a) => describeStanding(a)).join(" · ")}
                     </dd>
-                    <dt title="whether the agent has voted on the open motion (motions arrive with 4-5)">voted</dt>
+                    <dt title="whether the agent has voted on the open motion (ADR-0014 D7: one living agent, one vote)">voted</dt>
                     <dd>{inst.motion ? (detail.voted ? "yes" : "not yet") : "no motion open"}</dd>
                   </>
                 )}
@@ -999,7 +999,9 @@ function describeMessage(m: Message): string {
   if ("say" in m) return `say ${m.say}`;
   if ("propose" in m) return `propose to #${m.propose.to}: give ${m.propose.give}, want ${m.propose.want} by +${m.propose.by}`;
   if ("accept" in m) return `accept #${m.accept.to}'s offer of tick ${m.accept.offer_tick}`;
-  return `reject #${m.reject.to}`;
+  if ("reject" in m) return `reject #${m.reject.to}`;
+  if ("motion" in m) return `move: ${describeMotionKind(m.motion)}`;
+  return `vote ${m.vote.aye ? "aye" : "nay"}`;
 }
 
 /** One entry of the agent's own memory, in its own voice. */
@@ -1071,6 +1073,18 @@ function describeEvent(e: LedgerEvent, id: number): string {
       return e.agent === id
         ? `violated rule #${e.rule} (${e.norm.replace("_", " ")}) against #${e.against}`
         : `#${e.agent} violated rule #${e.rule} (${e.norm.replace("_", " ")}) against me`;
+    case "motioned":
+      return `moved motion #${e.motion}: ${describeMotionKind(e.asks)}`;
+    case "voted":
+      return `voted ${e.aye ? "aye" : "nay"} on motion #${e.motion}`;
+    case "motion_closed":
+      return `motion #${e.motion} ${e.carried ? "carried" : "defeated"} (ayes ${e.ayes} · nays ${e.nays} · ${e.alive} alive)`;
+    case "enacted":
+      return `rule #${e.rule} enacted by motion #${e.motion}`;
+    case "repealed":
+      return `rule #${e.rule} repealed by motion #${e.motion}`;
+    case "chartered":
+      return `charter replaced by motion #${e.motion}`;
   }
 }
 

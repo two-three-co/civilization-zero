@@ -219,7 +219,7 @@ type Rule = fn(u32) -> PolicyKind;
 fn the_policy_mix_is_the_cli_rule_and_foragers_alone_are_socially_inert() {
     // `cz run --policy NAME`'s assignment, and its mutation default: the
     // evolving mixes mutate unless `--no-mutate` (ADR-0013 D6).
-    let rules: [(&str, Rule, bool); 6] = [
+    let rules: [(&str, Rule, bool); 7] = [
         ("forager", |_| PolicyKind::Forager, false),
         ("random", |_| PolicyKind::Random, false),
         (
@@ -244,24 +244,48 @@ fn the_policy_mix_is_the_cli_rule_and_foragers_alone_are_socially_inert() {
             },
             true,
         ),
+        // The institution world (ADR-0014 D8, 4-5): `nomos_preset`, 128
+        // rows, every tenth founder an enforcer — whatever `options` says.
+        (
+            "institution",
+            |i| {
+                if i % 10 == 0 {
+                    PolicyKind::Enforcer
+                } else {
+                    PolicyKind::Learner
+                }
+            },
+            false,
+        ),
     ];
     let mut hashes = Vec::new();
     for (name, rule, mutates) in rules {
         assert_eq!(evolves(name), mutates, "{name}");
         let mut ww = WasmWorld::new(9, 32, 32, 200, 3, 25, name, "").unwrap();
         ww.step(60).unwrap();
-        let mut d = World::generate(
+        let cfg = if name == "institution" {
+            WorldConfig {
+                learner_states: 128,
+                ..WorldConfig {
+                    seed: 9,
+                    width: 32,
+                    height: 32,
+                    initial_agents: 200,
+                    patch_count: 3,
+                    ..WorldConfig::nomos_preset()
+                }
+            }
+        } else {
             WorldConfig {
                 mutation_enabled: mutates,
                 ..crowded(9)
-            },
-            rule,
-        )
-        .unwrap();
+            }
+        };
+        let mut d = World::generate(cfg, rule).unwrap();
         d.run(60);
         assert_eq!(ww.state_hash_hex(), hex(&d), "{name}");
         hashes.push(ww.state_hash_hex());
-        // The policy column tells all four kinds apart (3-9c).
+        // The policy column tells all five kinds apart (3-9c, 4-5).
         for kind in PolicyKind::ALL {
             let code = policy_code(kind);
             assert_eq!(
@@ -294,7 +318,7 @@ fn the_policy_mix_is_the_cli_rule_and_foragers_alone_are_socially_inert() {
     }
     hashes.sort();
     hashes.dedup();
-    assert_eq!(hashes.len(), 6, "six mixes, six worlds");
+    assert_eq!(hashes.len(), 7, "seven mixes, seven worlds");
     for name in POLICY_MIXES {
         assert!(policy_mix(name).is_ok(), "{name}");
     }
@@ -302,8 +326,8 @@ fn the_policy_mix_is_the_cli_rule_and_foragers_alone_are_socially_inert() {
     assert!(policy_mix("").is_err());
     assert_eq!(
         PolicyKind::ALL.map(policy_code),
-        [0, 1, 2, 3],
-        "forager / random / reflex / learner, the kernel's order"
+        [0, 1, 2, 3, 4],
+        "forager / random / reflex / learner / enforcer, the kernel's order"
     );
 }
 
@@ -1233,15 +1257,16 @@ mod threads {
     }
 
     /// The page's worlds are 128², 1,000 agents, 23 patches (as `cz` and
-    /// the kernel worker compute them), snapshots every 250. In the seed
-    /// the page defaults to (42) no deal is kept in order — proposal,
-    /// acceptance, the give, the repayment — before the random walkers die
-    /// out, which is why the page takes `?seed=`. In seed 23, in both the
-    /// `mixed` and the `random` world, #909 and #363 hold one: offered at
-    /// tick 17 (2 for 1 by tick 33), accepted at 19, given at 19, repaid at
-    /// 20. TUTORIAL.md names it; if this test fails the tutorial is stale.
+    /// the kernel worker compute them), snapshots every 250. Since 4-5 the
+    /// random walkers draw sixteen actions (ADR-0014 D7), so the deals of
+    /// 3-9b's tutorial moved: in the seed the page defaults to (42), the
+    /// `random` world holds one deal kept in order — proposal, acceptance,
+    /// the give, the repayment — #852 and #569, offered at tick 32 (1 for
+    /// 1 by tick 47), accepted at 33, given at 34, repaid at 39 — and the
+    /// `mixed` world none before the walkers die out. TUTORIAL.md names
+    /// the first; if this test fails the tutorial is stale.
     #[test]
-    fn seed_23_holds_the_kept_deal_the_tutorial_names_and_seed_42_none_in_order() {
+    fn seed_42_random_holds_the_kept_deal_the_tutorial_names_and_mixed_none_in_order() {
         let page_world = |seed: u32, mix: &str, ticks: u32| {
             let mut ww = WasmWorld::new(seed, 128, 128, 1000, 23, 250, mix, "").unwrap();
             ww.step(ticks).unwrap();
@@ -1284,99 +1309,87 @@ mod threads {
                 })
                 .collect()
         };
-        for mix in ["mixed", "random"] {
-            let ww = page_world(42, mix, 300);
-            assert!(
-                in_order(&ww, 300).is_empty(),
-                "seed 42 {mix}: the tutorial says there is none"
-            );
-        }
-        for mix in ["mixed", "random"] {
-            let ww = page_world(23, mix, 100);
-            let kept = in_order(&ww, 100);
-            let d = kept
-                .iter()
-                .find(|d| d["proposer"] == 909 && d["acceptor"] == 363 && d["offer_tick"] == 17)
-                .unwrap_or_else(|| {
-                    panic!("seed 23 {mix}: the tutorial's deal is missing from {kept:?}")
-                });
-            assert_eq!(
+        let ww = page_world(42, "mixed", 300);
+        assert!(
+            in_order(&ww, 300).is_empty(),
+            "seed 42 mixed: the tutorial says there is none"
+        );
+        let ww = page_world(42, "random", 100);
+        let kept = in_order(&ww, 100);
+        let d = kept
+            .iter()
+            .find(|d| d["proposer"] == 852 && d["acceptor"] == 569 && d["offer_tick"] == 32)
+            .unwrap_or_else(|| {
+                panic!("seed 42 random: the tutorial's deal is missing from {kept:?}")
+            });
+        assert_eq!(
+            (
+                d["accepted_tick"].as_u64(),
+                d["deadline"].as_u64(),
+                d["give"].as_u64(),
+                d["want"].as_u64()
+            ),
+            (Some(33), Some(47), Some(1), Some(1))
+        );
+        assert_eq!(
+            (
+                d["given"].as_u64(),
+                d["repaid"].as_u64(),
+                d["settled_tick"].as_u64()
+            ),
+            (Some(3), Some(1), Some(39)),
+            "the proposer kept giving after the deal was kept; the window counts it all"
+        );
+        // The thread reads in order around it.
+        let t: Value = serde_json::from_str(&ww.thread_json(852, 569, 0, 100).unwrap()).unwrap();
+        let rows: Vec<(u64, &str, u64)> = t["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                let who = if e["kind"] == "harmed" {
+                    &e["by"]
+                } else {
+                    &e["from"]
+                };
                 (
-                    d["accepted_tick"].as_u64(),
-                    d["deadline"].as_u64(),
-                    d["give"].as_u64(),
-                    d["want"].as_u64()
-                ),
-                (Some(19), Some(33), Some(2), Some(1))
-            );
-            assert_eq!(
-                (
-                    d["given"].as_u64(),
-                    d["repaid"].as_u64(),
-                    d["settled_tick"].as_u64()
-                ),
-                (Some(2), Some(1), Some(20))
-            );
-            // The thread reads in order around it.
-            let t: Value =
-                serde_json::from_str(&ww.thread_json(909, 363, 0, 100).unwrap()).unwrap();
-            let rows: Vec<(u64, &str, u64)> = t["entries"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|e| {
-                    let who = if e["kind"] == "harmed" {
-                        &e["by"]
-                    } else {
-                        &e["from"]
-                    };
-                    (
-                        e["tick"].as_u64().unwrap(),
-                        e["kind"].as_str().unwrap(),
-                        who.as_u64().unwrap(),
-                    )
-                })
-                .collect();
-            let i = rows
-                .iter()
-                .position(|r| *r == (17, "proposed", 909))
-                .unwrap();
-            assert_eq!(
-                &rows[i..i + 5],
-                &[
-                    (17, "proposed", 909),
-                    (18, "transferred", 909),
-                    (19, "accepted", 363),
-                    (19, "transferred", 909),
-                    (20, "transferred", 363),
-                ],
-                "{mix}"
-            );
-            let deals = t["deals"].as_array().unwrap();
-            assert_eq!(
-                deals.len(),
-                5,
-                "{mix}: three broken, then this one kept, then its late second acceptance"
-            );
-            assert_eq!(deals[3]["status"], "fulfilled");
-            assert_eq!(deals[3]["settled_tick"], 20);
-            assert_eq!(
-                deals[4]["offer_tick"], 17,
-                "the same offer accepted again at tick 32"
-            );
-            assert_eq!(deals[4]["accepted_tick"], 32);
-            assert!(deals[..3].iter().all(|d| d["status"] == "broken"));
-            // The thread is identical in the two worlds this far (the pair's
-            // neighbourhood is all random walkers); the worlds are not.
-            if mix == "random" {
-                let mixed = page_world(23, "mixed", 100);
-                assert_eq!(
-                    mixed.thread_json(909, 363, 0, 100).unwrap(),
-                    ww.thread_json(909, 363, 0, 100).unwrap()
-                );
-                assert_ne!(mixed.state_hash_hex(), ww.state_hash_hex());
-            }
-        }
+                    e["tick"].as_u64().unwrap(),
+                    e["kind"].as_str().unwrap(),
+                    who.as_u64().unwrap(),
+                )
+            })
+            .collect();
+        let i = rows
+            .iter()
+            .position(|r| *r == (32, "proposed", 852))
+            .unwrap();
+        assert_eq!(
+            &rows[i..i + 3],
+            &[
+                (32, "proposed", 852),
+                (33, "accepted", 569),
+                (34, "transferred", 852),
+            ]
+        );
+        assert!(
+            rows.contains(&(36, "rejected", 569)),
+            "the acceptor rejects the same offer afterwards; the kernel checks nothing"
+        );
+        assert!(rows.contains(&(39, "transferred", 569)), "the repayment");
+        let deals = t["deals"].as_array().unwrap();
+        assert_eq!(
+            deals.len(),
+            4,
+            "one broken, this one kept, then two late acceptances of a lapsed offer"
+        );
+        assert_eq!(deals[0]["status"], "broken");
+        assert_eq!(deals[1]["status"], "fulfilled");
+        assert_eq!(deals[1]["settled_tick"], 39);
+        assert!(deals[2..].iter().all(|d| d["status"] == "broken"));
+        // The two worlds differ: the pair's neighbourhood holds foragers
+        // in `mixed`, whose presence changes the walkers' draws.
+        let mixed = page_world(42, "mixed", 100);
+        assert_ne!(mixed.state_hash_hex(), ww.state_hash_hex());
     }
 }
 
@@ -1894,7 +1907,9 @@ mod institutions {
         assert_eq!(inst["rules"][0]["id"], 0);
         assert_eq!(inst["rules"][0]["norm"]["kind"], "encroach");
         assert_eq!(inst["rules"][0]["enacted"], 0);
-        assert_eq!(inst["motion"], Value::Null);
+        // Random walkers move motions (4-5): the floor is whatever the
+        // state says, and the summary above already matched it.
+        assert_eq!(inst["motion"].is_null(), d.nomos.motion.is_none());
         assert_eq!(
             inst["accused"]["episodes"].as_u64().unwrap() as usize,
             d.nomos.standing.len()
@@ -1915,9 +1930,19 @@ mod institutions {
             assert_eq!(row[8] & FLAG_ACCUSED != 0, norms.accused(i));
             assert_eq!(row[8] & FLAG_HARMABLE != 0, open, "the rule allows harm");
             assert_eq!(row[8] & FLAG_REJECTABLE, 0);
-            assert_eq!(row[8] & FLAG_VOTED, 0);
+            // Random walkers vote (4-5): the bit is the state's.
+            assert_eq!(row[8] & FLAG_VOTED != 0, voted(&d.nomos, d.agents[i].id));
+            assert_eq!(row[8] & FLAG_VOTED != 0, norms.voted(i));
             accused_seen += open as usize;
         }
+        assert!(
+            rows.chunks(AGENT_FIELDS)
+                .any(|row| row[8] & FLAG_VOTED != 0)
+                == d.nomos
+                    .motion
+                    .as_ref()
+                    .is_some_and(|m| !m.ayes.is_empty() || !m.nays.is_empty())
+        );
         assert_eq!(
             accused_seen,
             inst["accused"]["agents"].as_u64().unwrap() as usize
@@ -1928,7 +1953,7 @@ mod institutions {
         let a = value(&ww.agent_json(s0.agent.0 as u32).unwrap());
         assert_eq!(a["id"], s0.agent.0);
         assert!(a.get("arrived").is_some() && a.get("recent").is_some());
-        assert_eq!(a["voted"], false);
+        assert_eq!(a["voted"], voted(&d.nomos, s0.agent));
         assert_eq!(
             a["standing"],
             serde_json::to_value(standing_of(&d.nomos, s0.agent)).unwrap()
@@ -1949,7 +1974,16 @@ mod institutions {
             value(&ww.timeline_json(0, 60).unwrap()),
             serde_json::to_value(&expect_timeline).unwrap()
         );
-        assert_eq!(expect_timeline.entries.len(), 1);
+        // The decree, then whatever the random walkers moved and closed.
+        assert_eq!(
+            expect_timeline
+                .entries
+                .iter()
+                .filter(|e| matches!(e, Entry::Enacted { by: By::Decree, .. }))
+                .count(),
+            1
+        );
+        assert!(expect_timeline.entries.len() > 1, "the walkers legislate");
         let expect_violations = violations(log.range(0..60), &d.nomos, true, 0, 60);
         assert_eq!(
             value(&ww.violations_json(0, 60).unwrap()),
@@ -2215,14 +2249,19 @@ mod institutions {
         assert_eq!(inst["rules"][0]["id"], 1);
         ruled.step(1).unwrap();
         let t = value(&ruled.timeline_json(0, 1).unwrap());
-        let kinds: Vec<&str> = t["entries"]
-            .as_array()
-            .unwrap()
+        // The decrees, in ledger order; a random walker may have moved a
+        // motion in the tick that ran (4-5), which joins the same list.
+        let entries = t["entries"].as_array().unwrap();
+        let kinds: Vec<&str> = entries
             .iter()
+            .filter(|e| e["by"] == "decree")
             .map(|e| e["kind"].as_str().unwrap())
             .collect();
         assert_eq!(kinds, vec!["enacted", "enacted", "repealed", "chartered"]);
-        assert_eq!(t["entries"][2]["norm"]["kind"], "encroach");
+        assert!(entries[4..]
+            .iter()
+            .all(|e| e["kind"] == "motioned" || e["kind"] == "motion_closed"));
+        assert_eq!(entries[2]["norm"]["kind"], "encroach");
         // The history is still the plain `Intervened` list.
         let h = value(&ruled.interventions_json().unwrap());
         assert_eq!(h.as_array().unwrap().len(), 4);
@@ -2286,8 +2325,8 @@ mod institutions {
     }
 
     /// Pinned by the test above; `tests/wasm.rs` holds the same constants.
-    const RULED_HASH_40: &str = "33babd3d304e5d92";
-    const RULED_VIOLATIONS_40: u64 = 9;
-    const RULED_SANCTIONS_40: u64 = 11;
-    const RULED_ACCUSED_40: u64 = 6;
+    const RULED_HASH_40: &str = "1e2a77fc40cf7156";
+    const RULED_VIOLATIONS_40: u64 = 4;
+    const RULED_SANCTIONS_40: u64 = 5;
+    const RULED_ACCUSED_40: u64 = 3;
 }

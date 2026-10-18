@@ -47,11 +47,21 @@
 //! the `SpatialIndex` and never stored (ADR-0014 D2).
 //!
 //! Rules are changed by interventions (`Enact` / `Repeal` / `Charter`,
-//! ADR-0014 D8) in 4-2; motions and votes follow in 4-5. The judging
-//! itself — which event is a violation of which rule, which harm or
-//! rejection is a sanction of which episode — lives in `World::apply_with`
-//! at fixed phases (ADR-0014 D4, D9).
+//! ADR-0014 D8) and, since 4-5, by the assembly (ADR-0014 D7): the world
+//! has one floor, [`Nomos::motion`]; a `Message::Motion` opens it when it
+//! is free and the [`Charter`] admits the motion ([`Nomos::admit`]), votes
+//! are counted on it ([`Nomos::vote`], one per living agent), and
+//! `vote_ticks` after it was moved the kernel closes it
+//! ([`Nomos::close_motion`]): quorum (votes as a share of the living) and
+//! threshold (ayes as a share of the votes) met, with at least one aye,
+//! and the motion carries — a norm is enacted (replacing the rule of its
+//! kind, if any), a rule repealed or the charter replaced, from the next
+//! tick. The judging itself — which event is a violation of which rule,
+//! which harm or rejection is a sanction of which episode — lives in
+//! `World::apply_with` at fixed phases (ADR-0014 D4, D9), and so does the
+//! closing of motions (phase 3c).
 
+use crate::action::Failure;
 use crate::agent::{Agent, AgentId};
 use serde::{Deserialize, Serialize};
 
@@ -318,23 +328,55 @@ impl Standing {
     }
 }
 
-/// What a motion asks for (ADR-0014 D7). Defined here so the snapshot
-/// shape is fixed; the kernel opens no motion before task 4-5.
+/// What a motion asks for (ADR-0014 D7): the payload of
+/// `Message::Motion`, held on the floor while the assembly votes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MotionKind {
+    /// Put `norm` in force as a new rule; a rule of the same kind in force
+    /// is replaced (repealed first, ADR-0014 D5).
     Enact { norm: Norm },
+    /// Take the rule with this id out of force.
     Repeal { rule: u16 },
+    /// Replace the assembly's charter (for the motions after this one).
     Charter { charter: Charter },
 }
 
+impl MotionKind {
+    /// Stable encoding for `dynamics_hash` and `Message::value`: a tag in
+    /// the top byte over the payload's own code (norms use 33 bits,
+    /// charters 49).
+    pub fn hash_code(self) -> u64 {
+        match self {
+            MotionKind::Enact { norm } => (1 << 56) ^ norm.hash_code(),
+            MotionKind::Repeal { rule } => (2 << 56) ^ rule as u64,
+            MotionKind::Charter { charter } => (3 << 56) ^ charter.hash_code(),
+        }
+    }
+
+    /// Whether carrying this motion would change what is already in force
+    /// — a repeal, a new charter, or the replacement of a rule of a kind
+    /// in force — which is what `Charter::amendable == false` forbids
+    /// (ADR-0014 D7). Enacting a kind nobody has ruled on yet is not an
+    /// amendment.
+    pub fn amends(self, nomos: &Nomos) -> bool {
+        match self {
+            MotionKind::Enact { norm } => nomos.rule_of(norm.kind).is_some(),
+            MotionKind::Repeal { .. } | MotionKind::Charter { .. } => true,
+        }
+    }
+}
+
 /// The one open motion of the assembly (ADR-0014 D7). `ayes` and `nays`
-/// are ascending ids without duplicates across the two.
+/// are ascending ids of living agents without duplicates across the two
+/// (a voter that dies is struck from its side, so the lists stay bounded
+/// by the living and a closing never counts the dead).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Motion {
     pub id: u16,
     pub by: AgentId,
-    /// Tick the motion was moved; it closes `charter.vote_ticks` later.
+    /// Tick the motion was moved; it closes in phase 3c of the first tick
+    /// `>= opened + charter.vote_ticks` (the charter in force then).
     pub opened: u64,
     pub kind: MotionKind,
     pub ayes: Vec<AgentId>,
@@ -429,6 +471,41 @@ pub struct Closed {
     pub sanctioned: bool,
 }
 
+/// What a carried motion did when it closed (ADR-0014 D7), for the ledger:
+/// `Enacted` / `Repealed` / `Chartered` events follow a `MotionClosed`
+/// with `carried: true`; `Nothing` when the motion carried but could no
+/// longer take effect (its rule left force during the vote, the charter
+/// stopped amending, the rule ids ran out) — or when it was defeated.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Effect {
+    Nothing,
+    /// `rule` is in force from the next tick; `replaced` is the rule of the
+    /// same kind it took out of force, with that rule's closed episodes.
+    Enacted {
+        rule: Rule,
+        replaced: Option<(Rule, Vec<Closed>)>,
+    },
+    /// `rule` left force; its episodes closed.
+    Repealed {
+        rule: Rule,
+        closed: Vec<Closed>,
+    },
+    Chartered(Charter),
+}
+
+/// A motion that just closed (`Nomos::close_motion`): the motion as it
+/// stood, the tally, the living at closing, the verdict and its effect.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Closing {
+    pub motion: Motion,
+    pub ayes: u32,
+    pub nays: u32,
+    /// Living agents at closing: the quorum's denominator.
+    pub alive: u32,
+    pub carried: bool,
+    pub effect: Effect,
+}
+
 /// The institutional state of a world (ADR-0014 D2). Part of the
 /// snapshot; hashed only when `config.nomos` is on. Everything in it is
 /// changed only by `World` (Apply's fixed phases and interventions).
@@ -440,8 +517,9 @@ pub struct Nomos {
     pub rules: Vec<Rule>,
     /// Next rule id to hand out. Monotonic; never reused.
     pub next_rule_id: u16,
-    /// The open motion, if any (none before task 4-5).
+    /// The one floor of the assembly (ADR-0014 D7): the open motion, if any.
     pub motion: Option<Motion>,
+    /// Next motion id to hand out. Monotonic; never reused.
     pub next_motion_id: u16,
     /// Open episodes, ascending by (agent, rule); every agent alive, every
     /// rule in force.
@@ -646,6 +724,160 @@ impl Nomos {
             }
         });
         due
+    }
+
+    // --- the assembly (ADR-0014 D7, 4-5) --------------------------------
+
+    /// Whether a motion asking for `kind` may be moved now: the floor must
+    /// be free (`FloorTaken`, also when the motion ids are exhausted), the
+    /// charter must allow an amendment if the motion is one
+    /// (`NotAmendable`), and the content must be able to become a rule or
+    /// charter (`NoSuchRule`: a repeal of an id not in force, a norm with
+    /// unknown sanction bits or no rule id left, a charter out of range).
+    /// Procedural impossibilities, all of them — never a judgement.
+    pub fn admit(&self, kind: MotionKind) -> Result<(), Failure> {
+        if self.motion.is_some() || self.next_motion_id == u16::MAX {
+            return Err(Failure::FloorTaken);
+        }
+        if !self.charter.amendable && kind.amends(self) {
+            return Err(Failure::NotAmendable);
+        }
+        let admissible = match kind {
+            MotionKind::Enact { norm } => norm.is_valid() && self.next_rule_id < u16::MAX,
+            MotionKind::Repeal { rule } => self.rule(rule).is_some(),
+            MotionKind::Charter { charter } => charter.is_valid(),
+        };
+        if admissible {
+            Ok(())
+        } else {
+            Err(Failure::NoSuchRule)
+        }
+    }
+
+    /// Opens the floor with a motion `admit` accepted, moved by `by` at
+    /// `tick`, and returns its id (handed out once, never reused).
+    pub fn open_motion(&mut self, kind: MotionKind, by: AgentId, tick: u64) -> u16 {
+        debug_assert!(self.admit(kind).is_ok(), "admit first");
+        let id = self.next_motion_id;
+        self.next_motion_id += 1;
+        self.motion = Some(Motion {
+            id,
+            by,
+            opened: tick,
+            kind,
+            ayes: Vec::new(),
+            nays: Vec::new(),
+        });
+        id
+    }
+
+    /// Counts `agent`'s vote on the open motion and returns the motion's
+    /// id: `NoMotion` without one, `AlreadyVoted` for a second vote (on
+    /// either side). The sides stay ascending by id.
+    pub fn vote(&mut self, agent: AgentId, aye: bool) -> Result<u16, Failure> {
+        let m = self.motion.as_mut().ok_or(Failure::NoMotion)?;
+        let (mine, theirs) = if aye {
+            (&mut m.ayes, &m.nays)
+        } else {
+            (&mut m.nays, &m.ayes)
+        };
+        if theirs.binary_search(&agent).is_ok() {
+            return Err(Failure::AlreadyVoted);
+        }
+        match mine.binary_search(&agent) {
+            Ok(_) => Err(Failure::AlreadyVoted),
+            Err(at) => {
+                mine.insert(at, agent);
+                Ok(m.id)
+            }
+        }
+    }
+
+    /// Whether the open motion closes in `tick`'s phase 3c: the charter's
+    /// `vote_ticks` (as it stands now) have passed since it was moved. With
+    /// `vote_ticks` 0 a motion closes in the tick it was moved, counting
+    /// the votes of the actors after the mover.
+    pub fn motion_due(&self, tick: u64) -> bool {
+        self.motion
+            .as_ref()
+            .is_some_and(|m| m.opened + self.charter.vote_ticks as u64 <= tick)
+    }
+
+    /// Closes the open motion at `tick` before `alive` living agents
+    /// (ADR-0014 D7) and puts it into effect if it carried: the votes cast
+    /// reach the quorum (`votes · 1000 >= quorum_permille · alive`), the
+    /// ayes reach the threshold of the votes (`ayes · 1000 >=
+    /// threshold_permille · votes`), and someone voted aye (a motion nobody
+    /// supported never carries, whatever the permilles). The charter read
+    /// is the one in force at closing. A carried motion that can no longer
+    /// take effect — its rule left force meanwhile, the charter no longer
+    /// amends, no rule id is left — closes as carried with `Effect::Nothing`:
+    /// the assembly's decision is recorded as it was, the effect is what the
+    /// kernel could do. `None` when no motion is open. The floor is free
+    /// afterwards.
+    pub fn close_motion(&mut self, tick: u64, alive: usize) -> Option<Closing> {
+        let motion = self.motion.take()?;
+        let (ayes, nays) = (motion.ayes.len() as u64, motion.nays.len() as u64);
+        let votes = ayes + nays;
+        let c = self.charter;
+        let carried = votes * 1000 >= c.quorum_permille as u64 * alive as u64
+            && ayes * 1000 >= c.threshold_permille as u64 * votes
+            && ayes > 0;
+        let effect = if !carried || (!c.amendable && motion.kind.amends(self)) {
+            Effect::Nothing
+        } else {
+            match motion.kind {
+                MotionKind::Enact { norm } => {
+                    if norm.is_valid() && self.next_rule_id < u16::MAX {
+                        let (rule, replaced) = self.enact(norm, tick);
+                        Effect::Enacted { rule, replaced }
+                    } else {
+                        Effect::Nothing
+                    }
+                }
+                MotionKind::Repeal { rule } => match self.repeal(rule) {
+                    Some((rule, closed)) => Effect::Repealed { rule, closed },
+                    None => Effect::Nothing,
+                },
+                MotionKind::Charter { charter } => {
+                    if charter.is_valid() {
+                        self.charter = charter;
+                        Effect::Chartered(charter)
+                    } else {
+                        Effect::Nothing
+                    }
+                }
+            }
+        };
+        Some(Closing {
+            motion,
+            ayes: ayes as u32,
+            nays: nays as u32,
+            alive: alive as u32,
+            carried,
+            effect,
+        })
+    }
+
+    /// Strikes the vote of an agent that left the world (death,
+    /// `RemoveAgent`): the dead do not count at closing (ADR-0014 D7).
+    pub fn drop_voter(&mut self, agent: AgentId) {
+        if let Some(m) = self.motion.as_mut() {
+            for side in [&mut m.ayes, &mut m.nays] {
+                if let Ok(i) = side.binary_search(&agent) {
+                    side.remove(i);
+                }
+            }
+        }
+    }
+
+    /// Strikes the votes of every agent not in `alive` (ascending by id).
+    pub fn drop_dead_voters(&mut self, alive: &[Agent]) {
+        if let Some(m) = self.motion.as_mut() {
+            for side in [&mut m.ayes, &mut m.nays] {
+                side.retain(|v| alive.binary_search_by_key(v, |a| a.id).is_ok());
+            }
+        }
     }
 }
 

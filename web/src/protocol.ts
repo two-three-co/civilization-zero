@@ -30,7 +30,7 @@
 // kernel and never judged here: `Frame.agents` gains a ninth column
 // `flags` (accused / voted / harmable / rejectable bits of the kernel's
 // NormIndex), `Frame.institution` carries the charter, the rules in force,
-// the open motion (none before 4-5) and how many stand accused, `Ledger`
+// the open motion and how many stand accused, `Ledger`
 // shows the 4-1 / 4-2 counters (gathers, encroachments, promises,
 // violations, sanctions, episodes — the UI draws rates from their
 // deltas), `AgentDetail` its `arrived` tick, open episodes and vote,
@@ -40,30 +40,39 @@
 // switches, and four requests read the ledger: `institution` (the same
 // object as the frame's), `timeline` (decrees with the rule ids they
 // received), `violations` (recorded ones, or the episodes open now) and
-// `sanctions` (each tied to the episode it answered). Motions (4-5) will
-// join the timeline and the frame without changing these shapes.
+// `sanctions` (each tied to the episode it answered).
 //
 // 4-8 (the institution explorer) adds one marker kind within v6:
 // `MARKER_SANCTION`, which the kernel worker appends to `Frame.social` from
 // the `sanctioned` records of the tick just executed, so the map can show
 // which harms (and rejections) the kernel counted as sanctions. Nothing
 // else moved.
+//
+// v7 brings the assembly to the page (ADR-0014 D7, 4-5): `PolicyKind` gains
+// `Enforcer` (policy code 4, so `POLICY_KINDS` has five entries), the
+// founding mixes gain `institution` (128-row learners with every tenth
+// founder an enforcer, always on `nomos_preset`), `Ledger` the assembly's
+// four counters, `LedgerEvent` the `motioned` / `voted` / `motion_closed` /
+// `enacted` / `repealed` / `chartered` records, `By` the `{ motion }`
+// value and `TimelineEntry` the `motioned` / `motion_closed` kinds.
+// `Frame.institution.motion` is now sometimes set. Every array keeps its v6
+// layout.
 
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 
 /** Fields per agent in `Frame.agents`: the kernel's trace layout, then `flags`. */
 export const AGENT_FIELDS = 9; // id, x, y, energy, inventory, policy (index into POLICY_KINDS), health, age, flags
 
 /** Bits of the `flags` column (cz-web `FLAG_*`, from the kernel's NormIndex at the view's tick). */
 export const FLAG_ACCUSED = 1; // some episode of accusation is open
-export const FLAG_VOTED = 2; // has voted on the open motion (none before 4-5)
+export const FLAG_VOTED = 2; // has voted on the open motion
 export const FLAG_HARMABLE = 4; // a harm reaching the agent now would count as a sanction
 export const FLAG_REJECTABLE = 8; // a rejection reaching the agent now would count as a sanction
 
-/** `PolicyKind` as serde renders it (interventions, `AgentDetail.policy`). */
-export type PolicyKind = "Forager" | "Random" | "Reflex" | "Learner";
+/** `PolicyKind` as serde renders it (interventions, `AgentDetail.policy`). `Enforcer` is the scripted legislator and enforcer of ADR-0014 D7 (4-5). */
+export type PolicyKind = "Forager" | "Random" | "Reflex" | "Learner" | "Enforcer";
 /** The policy column of `Frame.agents` indexes this (cz-web `policy_code`, the kernel's order). */
-export const POLICY_KINDS: PolicyKind[] = ["Forager", "Random", "Reflex", "Learner"];
+export const POLICY_KINDS: PolicyKind[] = ["Forager", "Random", "Reflex", "Learner", "Enforcer"];
 /** `Action::kind_index` order: what a learner's `last_step.action` and the columns of its Q row mean. */
 export const ACTION_KINDS = ["move", "gather", "consume", "rest", "transfer", "store", "harm", "signal"] as const;
 
@@ -88,12 +97,15 @@ export const MARKER_SANCTION = 3;
 /**
  * How a fresh world's founding population is assigned policies (same rule
  * as `cz run --policy`): `mixed` alternates forager / random by founding
- * index, `mixed-learning` cycles forager / reflex / learner. The evolving
- * mixes (`reflex`, `mixed-learning`) turn weight mutation on, as the CLI
- * does without `--no-mutate` (ADR-0013 D6).
+ * index, `mixed-learning` cycles forager / reflex / learner, `institution`
+ * makes every tenth founder an enforcer among learners (ADR-0014 D8, 4-5)
+ * — and is always built with institutions on (`WorldConfig::nomos_preset()`,
+ * 128-row learners), whatever `WorldInit.nomos` says. The evolving mixes
+ * (`reflex`, `mixed-learning`) turn weight mutation on, as the CLI does
+ * without `--no-mutate` (ADR-0013 D6).
  */
-export type PolicyMix = "forager" | "mixed" | "random" | "reflex" | "learner" | "mixed-learning";
-export const POLICY_MIXES: PolicyMix[] = ["forager", "mixed", "random", "reflex", "learner", "mixed-learning"];
+export type PolicyMix = "forager" | "mixed" | "random" | "reflex" | "learner" | "mixed-learning" | "institution";
+export const POLICY_MIXES: PolicyMix[] = ["forager", "mixed", "random", "reflex", "learner", "mixed-learning", "institution"];
 
 // --- Institutions (ADR-0014 D5, as serde renders the kernel's types) ---
 
@@ -126,7 +138,7 @@ export interface Rule {
   enacted: number;
 }
 
-/** How the assembly decides (`Charter`); read by motions from 4-5. */
+/** How the assembly decides (`Charter`): quorum and threshold in permille, ticks a motion stays open, whether motions may amend (ADR-0014 D7). */
 export interface Charter {
   quorum_permille: number;
   threshold_permille: number;
@@ -233,10 +245,21 @@ export interface Ledger {
   sanctions: [number, number, number];
   episodes_closed: [number, number, number];
   episodes_sanctioned: [number, number, number];
+  /** The assembly (ADR-0014 D7, 4-5): motions moved, votes counted, motions carried and defeated at closing. Only with `nomos`. */
+  motions: number;
+  votes: number;
+  motions_carried: number;
+  motions_defeated: number;
 }
 
-/** `Message` as serde renders it; `say` is the only one an agent's `last_signal` can hold. */
-export type Message = { say: number } | { propose: { to: number; give: number; want: number; by: number } } | { accept: { to: number; offer_tick: number } } | { reject: { to: number } };
+/** `Message` as serde renders it; `say` is the only one an agent's `last_signal` can hold. `motion` / `vote` address the assembly (4-5). */
+export type Message =
+  | { say: number }
+  | { propose: { to: number; give: number; want: number; by: number } }
+  | { accept: { to: number; offer_tick: number } }
+  | { reject: { to: number } }
+  | { motion: MotionKind }
+  | { vote: { aye: boolean } };
 
 export interface Signal {
   tick: number;
@@ -309,7 +332,7 @@ export interface AgentDetail {
   arrived: number | null;
   /** Episodes the agent stands accused in at the view's tick, ascending by rule (4-7). Empty without institutions. */
   standing: Accused[];
-  /** Has voted on the open motion (always false before 4-5). */
+  /** Has voted on the open motion. */
   voted: boolean;
 }
 
@@ -337,7 +360,19 @@ export type LedgerEvent =
   /** A harm or rejection read as a sanction of `target`, who stood accused under `rule` (ADR-0014 D4); always recorded, right after the physical event. */
   | { kind: "sanctioned"; tick: number; by: number; target: number; rule: number; via: Via }
   /** A judged violation; recorded only with `WorldInit.recordViolations`. */
-  | { kind: "violated"; tick: number; agent: number; rule: number; norm: NormKind; against: number; grounds: Grounds };
+  | { kind: "violated"; tick: number; agent: number; rule: number; norm: NormKind; against: number; grounds: Grounds }
+  /** `by` moved motion `motion` asking for `asks` (ADR-0014 D7); always recorded. */
+  | { kind: "motioned"; tick: number; motion: number; by: number; asks: MotionKind }
+  /** `by` voted on motion `motion`; recorded only when the world records votes (`cz run --record-votes`). */
+  | { kind: "voted"; tick: number; motion: number; by: number; aye: boolean }
+  /** Motion `motion` closed with this tally before `alive` living agents; its effect, if any, follows as `enacted` / `repealed` / `chartered`. */
+  | { kind: "motion_closed"; tick: number; motion: number; ayes: number; nays: number; alive: number; carried: boolean }
+  /** Rule `rule` came into force by motion `motion` (a decree's enactment is its `intervened` record). */
+  | { kind: "enacted"; tick: number; rule: number; norm: Norm; motion: number }
+  /** Rule `rule`, which said `norm`, left force by motion `motion` (a repeal, or the first half of a replacement). */
+  | { kind: "repealed"; tick: number; rule: number; norm: Norm; motion: number }
+  /** The charter was replaced by motion `motion`. */
+  | { kind: "chartered"; tick: number; charter: Charter; motion: number };
 
 /** The evidence a `violated` record rests on (`Grounds`, tagged by `fact`). */
 export type Grounds =
@@ -347,7 +382,7 @@ export type Grounds =
 
 // --- Institutions as cz-web reads them (ADR-0014 D12, 4-7): `WasmWorld::institution_json` / `timeline_json` / `violations_json` / `sanctions_json` ---
 
-/** The open motion, summarised (the voter lists stay in the kernel); none before 4-5. */
+/** The open motion, summarised (the voter lists stay in the kernel). */
 export interface OpenMotion {
   id: number;
   by: number;
@@ -388,16 +423,20 @@ export interface Accused {
   sanctions: number;
 }
 
-/** Who put a rule or charter in place: a decree (an intervention). Motions add their own value with 4-5. */
-export type By = "decree";
+/** Who put a rule or charter in place: a decree (an intervention), or a carried motion (ADR-0014 D7). */
+export type By = "decree" | { motion: { id: number } };
 
-/** One thing that happened to the institution, as the ledger says it (rule ids recovered by replaying the decrees from the branch's origin). */
+/** One thing that happened to the institution, as the ledger says it (a decree's rule id recovered by replaying the decrees from the branch's origin; the assembly's events carry theirs). */
 export type TimelineEntry =
-  /** `norm` came into force as rule `rule`; `replaced` is the rule of the same kind it took out of force, if any. */
+  /** `norm` came into force as rule `rule`; `replaced` is the rule of the same kind it took out of force, if any (a motion's replacement is a `repealed` entry then an `enacted` one). */
   | { kind: "enacted"; tick: number; rule: number; norm: Norm; replaced: number | null; by: By }
   /** Rule `rule` went out of force (`norm` is what it said). */
   | { kind: "repealed"; tick: number; rule: number; norm: Norm | null; by: By }
-  | { kind: "chartered"; tick: number; charter: Charter; by: By };
+  | { kind: "chartered"; tick: number; charter: Charter; by: By }
+  /** `by` moved motion `motion` asking for `asks`. */
+  | { kind: "motioned"; tick: number; motion: number; by: number; asks: MotionKind }
+  /** Motion `motion` closed: the tally, the living at closing, carried or not. */
+  | { kind: "motion_closed"; tick: number; motion: number; ayes: number; nays: number; alive: number; carried: boolean };
 
 /** The institution's history over ticks `from..now` (`now` = the request's `to` capped at the view's tick), ledger order. */
 export interface Timeline {
@@ -593,7 +632,7 @@ export type Request =
   | { type: "deals"; from: number; to: number }
   /** The institution of the view (the same object every frame carries; 4-7). */
   | { type: "institution" }
-  /** Decrees (and, from 4-5, motions) of ticks `from..to` (capped at the view's tick) with the rule ids they received. */
+  /** Decrees and motions (moved, closed, put into effect) of ticks `from..to` (capped at the view's tick) with the rule ids they received. */
   | { type: "timeline"; from: number; to: number }
   /** Recorded violations of ticks `from..to`, or the episodes open at the view's tick. */
   | { type: "violations"; from: number; to: number }

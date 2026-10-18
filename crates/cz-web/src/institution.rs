@@ -27,9 +27,11 @@
 //! ADR-0012), so a walk needs what the ledger does not say: the rules in
 //! force and the episodes open at the origin ([`Origin`]). Every function
 //! reads "as of `now`" — the tick of the view — so a reader that has sought
-//! back sees the institution as it stood then. Motions arrive with task
-//! 4-5; the shapes here leave room for them (`By`, `Institution::motion`)
-//! without pretending they exist.
+//! back sees the institution as it stood then. The assembly's events
+//! (ADR-0014 D7, 4-5: `Motioned`, `MotionClosed`, `Enacted`, `Repealed`,
+//! `Chartered`) carry their ids, so the timeline lists them as they are
+//! and `By::Motion` names the motion; a replacement by motion shows as the
+//! ledger records it, a `Repealed` then an `Enacted` of the same motion.
 
 use serde::Serialize;
 use simulation_core::{
@@ -51,7 +53,7 @@ pub struct Institution {
     pub charter: Charter,
     /// Rules in force, ascending by id (at most one per kind).
     pub rules: Vec<Rule>,
-    /// The open motion, if any (none before task 4-5).
+    /// The open motion, if any.
     pub motion: Option<OpenMotion>,
     /// Episodes of accusation open at this tick.
     pub accused: AccusedCount,
@@ -161,7 +163,7 @@ pub fn standing_of(nomos: &Nomos, agent: AgentId) -> Vec<Accused> {
 }
 
 /// Whether `agent` has voted on the open motion (false while no motion is
-/// open, i.e. before task 4-5).
+/// open).
 pub fn voted(nomos: &Nomos, agent: AgentId) -> bool {
     nomos.motion.as_ref().is_some_and(|m| {
         m.ayes.binary_search(&agent).is_ok() || m.nays.binary_search(&agent).is_ok()
@@ -197,6 +199,8 @@ impl Origin {
 pub enum By {
     /// An intervention (`Enact` / `Repeal` / `Charter`), ADR-0014 D8.
     Decree,
+    /// A carried motion (ADR-0014 D7); `id` is the motion's.
+    Motion { id: u16 },
 }
 
 /// One thing that happened to the institution (`timeline`).
@@ -205,7 +209,9 @@ pub enum By {
 pub enum Entry {
     /// `norm` came into force as rule `rule`; `replaced` is the rule of the
     /// same kind it took out of force, if there was one (D5: enacting a
-    /// kind in force is repeal + enactment).
+    /// kind in force is repeal + enactment). A motion's replacement is two
+    /// entries, as the ledger records it: `Repealed`, then `Enacted` with
+    /// `replaced: None`.
     Enacted {
         tick: u64,
         rule: u16,
@@ -223,6 +229,24 @@ pub enum Entry {
     },
     /// The charter was replaced.
     Chartered { tick: u64, charter: Charter, by: By },
+    /// `by` moved motion `motion` asking for `asks` (ADR-0014 D7).
+    Motioned {
+        tick: u64,
+        motion: u16,
+        by: AgentId,
+        asks: MotionKind,
+    },
+    /// Motion `motion` closed with this tally before `alive` living agents
+    /// and `carried` or not; what it put into effect follows as its own
+    /// entries, `By::Motion` of the same id.
+    MotionClosed {
+        tick: u64,
+        motion: u16,
+        ayes: u32,
+        nays: u32,
+        alive: u32,
+        carried: bool,
+    },
 }
 
 impl Entry {
@@ -230,7 +254,9 @@ impl Entry {
         match self {
             Entry::Enacted { tick, .. }
             | Entry::Repealed { tick, .. }
-            | Entry::Chartered { tick, .. } => *tick,
+            | Entry::Chartered { tick, .. }
+            | Entry::Motioned { tick, .. }
+            | Entry::MotionClosed { tick, .. } => *tick,
         }
     }
 }
@@ -268,8 +294,97 @@ impl RuleBook {
     }
 
     /// Applies one ledger event, mirroring `Nomos::enact` / `repeal` and
-    /// `World::intervene`'s charter change, and says what it did.
+    /// `World::intervene`'s charter change for a decree, and taking the
+    /// assembly's events (which carry their rule ids) as they are, and
+    /// says what it did.
     fn apply(&mut self, e: &Event) -> Option<Entry> {
+        match *e {
+            Event::Motioned {
+                tick,
+                motion,
+                by,
+                asks,
+            } => {
+                return Some(Entry::Motioned {
+                    tick,
+                    motion,
+                    by,
+                    asks,
+                })
+            }
+            Event::MotionClosed {
+                tick,
+                motion,
+                ayes,
+                nays,
+                alive,
+                carried,
+            } => {
+                return Some(Entry::MotionClosed {
+                    tick,
+                    motion,
+                    ayes,
+                    nays,
+                    alive,
+                    carried,
+                })
+            }
+            Event::Enacted {
+                tick,
+                rule,
+                norm,
+                motion,
+            } => {
+                let replaced = self
+                    .in_force
+                    .iter()
+                    .position(|r| r.norm.kind == norm.kind)
+                    .map(|i| self.in_force.remove(i).id);
+                let r = Rule {
+                    id: rule,
+                    norm,
+                    enacted: tick,
+                };
+                self.next_id = self.next_id.max(rule.saturating_add(1));
+                self.in_force.push(r);
+                self.known.push(r);
+                return Some(Entry::Enacted {
+                    tick,
+                    rule,
+                    norm,
+                    replaced,
+                    by: By::Motion { id: motion },
+                });
+            }
+            Event::Repealed {
+                tick,
+                rule,
+                norm,
+                motion,
+            } => {
+                if let Some(i) = self.in_force.iter().position(|r| r.id == rule) {
+                    self.in_force.remove(i);
+                }
+                return Some(Entry::Repealed {
+                    tick,
+                    rule,
+                    norm: Some(norm),
+                    by: By::Motion { id: motion },
+                });
+            }
+            Event::Chartered {
+                tick,
+                charter,
+                motion,
+            } => {
+                return Some(Entry::Chartered {
+                    tick,
+                    charter,
+                    by: By::Motion { id: motion },
+                })
+            }
+            _ => {}
+        }
         let Event::Intervened { tick, intervention } = e else {
             return None;
         };
@@ -320,9 +435,10 @@ impl RuleBook {
     }
 }
 
-/// The decrees among `events` — a branch's ledger from its origin, ledger
-/// order — replayed over `origin`, as entries with `from <= tick < now`.
-/// Events at `now` or later are not read.
+/// The decrees and the assembly's events among `events` — a branch's
+/// ledger from its origin, ledger order — replayed over `origin`, as
+/// entries with `from <= tick < now`. Events at `now` or later are not
+/// read.
 pub fn timeline(events: &[Event], origin: &Origin, from: u64, now: u64) -> Timeline {
     let mut book = RuleBook::at(origin);
     let entries = events

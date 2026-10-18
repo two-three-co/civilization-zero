@@ -32,8 +32,8 @@ pub use event_log::{EventLog, LogError};
 pub use intervention::{Intervention, InterventionError, ParamsMode, Who};
 pub use memory::{Interaction, InteractionKind, Message, Signal, Terms};
 pub use nomos::{
-    Charter, Closed, Grounds, Motion, MotionKind, Nomos, Norm, NormIndex, NormKind, OpenDeal, Rule,
-    Sanction, Standing, Via,
+    Charter, Closed, Closing, Effect, Grounds, Motion, MotionKind, Nomos, Norm, NormIndex,
+    NormKind, OpenDeal, Rule, Sanction, Standing, Via,
 };
 pub use policy::{
     Intent, LearnerStep, Neighbor, Observation, PolicyKind, PolicyParams, PolicyTable,

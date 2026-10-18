@@ -2,8 +2,8 @@
 
 use multiverse::{BranchId, Multiverse, MultiverseError};
 use simulation_core::{
-    Event, Intervention, InterventionError, Norm, NormKind, ParamsMode, PolicyKind, PolicyTable,
-    Sanction, Who, World, WorldConfig,
+    Charter, Event, Intervention, InterventionError, Norm, NormKind, ParamsMode, PolicyKind,
+    PolicyTable, Sanction, Who, World, WorldConfig,
 };
 
 fn root() -> World {
@@ -277,6 +277,121 @@ fn enacting_a_rule_at_a_fork_is_reproducible() {
 
 fn root_plain() -> World {
     root()
+}
+
+/// ADR-0014 4-5 acceptance: forking while a motion is open is
+/// reproducible — the floor and its voters are state, the votes and the
+/// closing replay from the ledger — and a decree at the fork tick that
+/// changes what the motion can do replays too.
+#[test]
+fn forking_while_a_motion_is_open_is_reproducible() {
+    let root = World::generate(
+        WorldConfig {
+            seed: 31,
+            width: 48,
+            height: 48,
+            initial_agents: 150,
+            patch_count: 6,
+            record_votes: true,
+            charter: Charter {
+                quorum_permille: 50,
+                threshold_permille: 500,
+                vote_ticks: 12,
+                amendable: true,
+            },
+            ..WorldConfig::nomos_preset()
+        },
+        |i| match i % 3 {
+            0 => PolicyKind::Random,
+            1 => PolicyKind::Enforcer,
+            _ => PolicyKind::Learner,
+        },
+    )
+    .unwrap();
+    let mut mv = Multiverse::new(root, 50);
+    let r = BranchId(0);
+    mv.step(r, 400).unwrap();
+    // A tick at which a motion is open with at least one vote on it.
+    let at = (100..400u64)
+        .find(|&t| {
+            mv.state_at(r, t)
+                .unwrap()
+                .nomos
+                .motion
+                .as_ref()
+                .is_some_and(|m| !m.ayes.is_empty() || !m.nays.is_empty())
+        })
+        .expect("random walkers and enforcers legislate");
+    let open = mv.state_at(r, at).unwrap();
+    let motion_id = open.nomos.motion.as_ref().unwrap().id;
+    // A shorter voting period, decreed at the fork tick: the open motion
+    // closes at the next phase 3c under the new charter.
+    let shorten = Intervention::Charter {
+        charter: Charter {
+            quorum_permille: 0,
+            threshold_permille: 500,
+            vote_ticks: 1,
+            amendable: true,
+        },
+    };
+    let a = mv.fork(r, at, &[shorten]).unwrap();
+    let b = mv.fork(r, at, &[shorten]).unwrap();
+    mv.step(a, 100).unwrap();
+    mv.step(b, 100).unwrap();
+    let (ha, hb) = (
+        mv.branch(a).unwrap().head().state_hash(),
+        mv.branch(b).unwrap().head().state_hash(),
+    );
+    assert_eq!(ha, hb, "same decree on the same open floor, same history");
+    assert_ne!(
+        ha,
+        mv.state_at(r, at + 100).unwrap().state_hash(),
+        "the charter is state and changed the closing"
+    );
+    assert_eq!(
+        mv.state_at(a, at + 50).unwrap().state_hash(),
+        mv.state_at(b, at + 50).unwrap().state_hash()
+    );
+    let log = mv.branch(a).unwrap().log();
+    assert_eq!(
+        log.at(at)[0],
+        Event::Intervened {
+            tick: at,
+            intervention: shorten
+        }
+    );
+    // The motion open at the fork closed in the fork's first tick (its
+    // period had long passed under the new charter), with the votes the
+    // parent had already counted.
+    let closing = log
+        .at(at)
+        .iter()
+        .find(|e| matches!(e, Event::MotionClosed { .. }))
+        .copied()
+        .expect("the open motion closes at once");
+    if let Event::MotionClosed {
+        motion, ayes, nays, ..
+    } = closing
+    {
+        assert_eq!(motion, motion_id);
+        let m = open.nomos.motion.as_ref().unwrap();
+        assert!(ayes as usize >= m.ayes.len() && nays as usize >= m.nays.len());
+    }
+    // The parent's motion closed later, under the old period.
+    let parent_closing = mv
+        .branch(r)
+        .unwrap()
+        .log()
+        .range(at..400)
+        .iter()
+        .find(|e| matches!(e, Event::MotionClosed { .. }))
+        .copied();
+    assert!(
+        parent_closing.is_some_and(|e| e.tick() > at),
+        "{parent_closing:?}"
+    );
+    mv.branch(a).unwrap().head().check_invariants().unwrap();
+    assert_eq!(mv.branches().len(), 3);
 }
 
 #[test]

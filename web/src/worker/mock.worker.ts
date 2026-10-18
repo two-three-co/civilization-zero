@@ -79,6 +79,8 @@ function policyOf(c: WorldInit, i: number): number {
       return 3;
     case "mixed-learning":
       return [0, 2, 3][i % 3];
+    case "institution":
+      return i % 10 === 0 ? 4 : 3;
     default:
       return 0;
   }
@@ -309,6 +311,10 @@ function ledger(): Ledger {
     sanctions: [0, 0, 0],
     episodes_closed: [0, 0, 0],
     episodes_sanctioned: [0, 0, 0],
+    motions: 0,
+    votes: 0,
+    motions_carried: 0,
+    motions_defeated: 0,
   };
 }
 

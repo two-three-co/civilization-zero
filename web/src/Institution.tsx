@@ -84,10 +84,10 @@ export function InstitutionCard({ frame, readings, onEnable }: CardProps & { onE
         </dd>
         <dt>by kind</dt>
         <dd>{NORM_KINDS.map((kind, i) => `${normName(kind)} ${k[i]}`).join(" · ")}</dd>
-        <dt title="how the assembly decides (read by motions from 4-5; decrees are never bound by it)">charter</dt>
+        <dt title="how the assembly decides (ADR-0014 D7: a motion closes vote_ticks after it was moved and carries when the votes reach the quorum of the living and the ayes the threshold of the votes; decrees are never bound by it)">charter</dt>
         <dd className="qrow">{describeCharter(inst.charter)}</dd>
-        <dt>motion</dt>
-        <dd className="qrow">{inst.motion ? describeMotion(inst.motion) : "none open — motions and votes arrive with 4-5; until then rules come from decrees (interventions)"}</dd>
+        <dt title="the assembly's one floor (World.nomos.motion): the motion open at this tick, if any">motion</dt>
+        <dd className="qrow">{inst.motion ? describeMotion(inst.motion) : "none open — the floor is free (enforcers move the first-occupancy norm after two encroachments on them; random walkers move anything)"}</dd>
         <dt>violations</dt>
         <dd className="qrow">
           {inst.record_violations
@@ -109,14 +109,14 @@ export function InstitutionCard({ frame, readings, onEnable }: CardProps & { onE
           ))}
         </ol>
       )}
-      <h2 className="sub">Timeline · decrees ({entries.length})</h2>
+      <h2 className="sub">Timeline · decrees and motions ({entries.length})</h2>
       {readings === null ? (
         <p className="muted hint">reading the ledger…</p>
       ) : entries.length === 0 ? (
         <p className="muted hint">
           nothing in ticks {readings.timeline.from}–{Math.max(readings.timeline.from, readings.timeline.now - 1)} — every
-          decree is read back from the kernel's ledger, so one you apply appears here with the id the kernel gave its
-          rule
+          decree and motion is read back from the kernel's ledger, so one you apply appears here with the id the kernel
+          gave its rule
         </p>
       ) : (
         <ol className="history">

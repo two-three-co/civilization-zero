@@ -211,7 +211,54 @@ fn bench_step(c: &mut Criterion) {
             )
         });
     }
+    // The institution world of ADR-0014's completion condition 2 (4-5):
+    // `nomos_preset`, 128-row learners with every tenth founder an
+    // enforcer, the first-occupancy rule decreed at tick 0, warmed 3,000
+    // ticks like the 128-row learner. Enforcers sanction the accused and
+    // vote on what the random-free assembly is moved (nothing, with the
+    // rule already in force); the gate is native ≥ 1,800 tick/s.
+    let w = institution_world(1_000, 128, 3_000);
+    eprintln!(
+        "step/institution: {} agents, {} open episodes, {} sanctions, {} motions so far",
+        w.agents.len(),
+        w.nomos.standing.len(),
+        w.ledger.sanctions.iter().sum::<u64>(),
+        w.ledger.motions
+    );
+    g.throughput(Throughput::Elements(w.agents.len() as u64 * 10));
+    g.bench_with_input(BenchmarkId::new("institution", 1_000), &w, |b, base| {
+        b.iter_batched_ref(
+            || base.clone(),
+            |w| w.run(10),
+            criterion::BatchSize::LargeInput,
+        )
+    });
     g.finish();
+}
+
+/// `cz run --policy institution --enact encroach` after `warm` ticks
+/// (ADR-0014 D8 / completion condition 2).
+fn institution_world(agents: u32, side: u16, warm: u64) -> World {
+    let cfg = WorldConfig {
+        seed: 42,
+        width: side,
+        height: side,
+        initial_agents: agents,
+        patch_count: (side as u32 * side as u32) / 700,
+        learner_states: 128,
+        ..WorldConfig::nomos_preset()
+    };
+    let mut w = World::generate(cfg, |i| {
+        if i % 10 == 0 {
+            PolicyKind::Enforcer
+        } else {
+            PolicyKind::Learner
+        }
+    })
+    .unwrap();
+    w.intervene(first_occupant_rule()).unwrap();
+    w.run(warm);
+    w
 }
 
 /// Building the per-tick `NormIndex` (ADR-0014 D2; 4-2 acceptance: ≤ 30 µs
@@ -275,11 +322,14 @@ fn bench_norm_index(c: &mut Criterion) {
 /// `reflex_evolved_rules/1000` and `learner128_rules/1000` are the ADR-0014
 /// 4-3 budget's worlds: `nomos` on, the first-occupancy rule in force since
 /// tick 0, agents standing accused (and, among learners, sanctioning), 21
-/// features / 128 rows reading the norm index — ≤ 200 ns per agent-step.
+/// features / 128 rows reading the norm index — ≤ 250 ns per agent-step
+/// (the 2026-10-18 revision, D6). `institution/3000` is the world of
+/// completion condition 2 (4-5): the same with every tenth founder an
+/// enforcer, whose script reads the index directly.
 fn bench_decide(c: &mut Criterion) {
     let mut g = c.benchmark_group("decide");
     type Build = fn() -> World;
-    let worlds: [(&str, Build); 8] = [
+    let worlds: [(&str, Build); 9] = [
         ("serial/1000", || {
             warmed_world_of(1_000, 128, PolicyKind::Forager, false)
         }),
@@ -311,6 +361,7 @@ fn bench_decide(c: &mut Criterion) {
                 3_000,
             ))
         }),
+        ("institution/3000", || institution_world(1_000, 128, 3_000)),
     ];
     for (name, build) in worlds {
         let mut w = build();
